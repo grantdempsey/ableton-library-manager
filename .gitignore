@@ -1,0 +1,39 @@
+# 📁 Python Runtime Caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.manifest
+*.spec
+
+# 📦 PyInstaller Compilation Footprints
+build/
+dist/
+
+# 🛰️ Local Ableton App/System Backups (Safety Override)
+Options.txt
+Log.txt
+
+# 🖥️ OS Metadata Leftovers
+.DS_Store
+Thumbs.db
+
+# 💾 Local Virtual Environments / Package Bundles
+env/
+venv/
+ENV/
+.env
+.venv
+
+# 🧪 Local regression-test workspaces
+Sandbox_Input/
+Sandbox_Output/
+test_profile_io.json
+
+# 🗃️ Per-user application state
+library_assets.db
+sidebar_cache.json
+saved_searches.json
+library_config.json
+library_config.json.bak
+config_backups/
+move_logs/
