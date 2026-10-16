@@ -15,7 +15,7 @@ _drum_tree = None
 _synth_tree = None
 _status_label_ref = None
 _candidate_tree = None
-
+_loop_path_label = None
 def refresh_matrix_data():
     """Distributes dictionary rule matrices out cleanly to their respective table grids."""
     if _drum_tree is not None:
@@ -427,6 +427,13 @@ def open_loop_layout(anchor, library):
     win.after(150, poll)
     win.bind("<Escape>", lambda _e: win.destroy())
     _center_over(win, anchor)
+    return win
+
+
+def _loop_path_text():
+    labels = {"bpm": "<BPM range>", "key": "<Key>"}
+    parts = [labels[level] for level in sorter_engine.LOOP_LAYOUT if level in labels]
+    return "Samples\\Loops\\" + "\\".join(parts) if parts else "Samples\\Loops"
 
 
 def ask_confirm(anchor, title, message, yes_text="Yes"):
@@ -745,15 +752,50 @@ def build(parent, status_label_ref):
     lists_frame = tk.Frame(master_workspace, bg=gui_theme.THEME["bg_dark"])
     lists_frame.grid(row=0, column=0, sticky="nsew")
     lists_frame.columnconfigure(0, weight=1)
-    lists_frame.rowconfigure(0, weight=1, uniform="sections")
+    lists_frame.rowconfigure(0, weight=0)
     lists_frame.rowconfigure(1, weight=1, uniform="sections")
     lists_frame.rowconfigure(2, weight=1, uniform="sections")
+    lists_frame.rowconfigure(3, weight=1, uniform="sections")
+
+    # OVERVIEW: WHERE EACH KIND OF FILE GOES
+    global _loop_path_label
+    flow = tk.Frame(lists_frame, bg=gui_theme.THEME["bg_field"], bd=1, relief="solid", padx=10, pady=6)
+    flow.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+    flow.columnconfigure(1, weight=1)
+    tk.Label(flow, text="Where each kind of file goes", font=("Segoe UI", 10, "bold"),
+             bg=gui_theme.THEME["bg_field"], fg=gui_theme.THEME["accent_gold"]
+             ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
+
+    def flow_row(row, kind, where, button=None):
+        tk.Label(flow, text=kind, font=("Segoe UI", 9, "bold"), bg=gui_theme.THEME["bg_field"],
+                 fg=gui_theme.THEME["fg_light"], width=14, anchor="w").grid(row=row, column=0, sticky="w")
+        label = tk.Label(flow, text=where, font=("Consolas", 9), bg=gui_theme.THEME["bg_field"],
+                         fg=gui_theme.THEME["fg_muted"], anchor="w", justify="left")
+        label.grid(row=row, column=1, sticky="w", padx=(0, 10))
+        if button:
+            tk.Button(flow, text=button[0], command=button[1], bg=gui_theme.THEME["tag_enabled"],
+                      fg="white", activebackground=gui_theme.THEME["tag_enabled"],
+                      activeforeground="white", bd=0, font=("Segoe UI", 8, "bold"),
+                      padx=8).grid(row=row, column=2, sticky="e", pady=1)
+        return label
+
+    def edit_loop_layout_from_strip():
+        win = open_loop_layout(parent, gui_theme.USER_LIBRARY_PATH)
+        win.bind("<Destroy>", lambda e: _loop_path_label.config(text=_loop_path_text())
+                 if e.widget is win and _loop_path_label is not None else None, add="+")
+
+    _loop_path_label = flow_row(1, "Loops", _loop_path_text(), ("Edit layout…", edit_loop_layout_from_strip))
+    flow_row(2, "One-shots", "Samples\\One-Shots\\<folder chosen by the one-shot rules below>")
+    flow_row(3, "Presets & racks", "<folder chosen by file type, in the last table below>")
+    tk.Label(flow, text="Loops ignore the one-shot rules; they are filed only by tempo and key.",
+             font=("Segoe UI", 8), bg=gui_theme.THEME["bg_field"], fg=gui_theme.THEME["fg_muted"]
+             ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
     # SECTION 1: LEARNING SUGGESTIONS
     candidate_section = tk.Frame(lists_frame, bg=gui_theme.THEME["bg_dark"])
-    candidate_section.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
+    candidate_section.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
     tk.Label(
-        candidate_section, text="Suggestions to review",
+        candidate_section, text="One-shot rule suggestions to review",
         font=("Segoe UI", 10, "bold"), bg=gui_theme.THEME["bg_dark"],
         fg=gui_theme.THEME["accent_gold"]
     ).pack(anchor="w", pady=(0, 2))
@@ -786,10 +828,10 @@ def build(parent, status_label_ref):
 
     # SECTION 2: DRUM MATRIX GRID
     drum_section = tk.Frame(lists_frame, bg=gui_theme.THEME["bg_dark"])
-    drum_section.grid(row=1, column=0, sticky="nsew", pady=(5, 10))
+    drum_section.grid(row=2, column=0, sticky="nsew", pady=(5, 10))
     
-    tk.Label(drum_section, text="How should the app recognize sounds?", font=("Segoe UI", 10, "bold"), bg=gui_theme.THEME["bg_dark"], fg=gui_theme.THEME["fg_light"]).pack(anchor="w", pady=(0, 2))
-    tk.Label(drum_section, text="These rules look at filenames (drums, bass, vocals, FX and more) and choose a destination folder. Most users can leave them as they are.", font=("Segoe UI", 8), bg=gui_theme.THEME["bg_dark"], fg=gui_theme.THEME["fg_muted"], wraplength=760, justify="left").pack(anchor="w", pady=(0, 4))
+    tk.Label(drum_section, text="One-shots: how should the app recognize sounds?", font=("Segoe UI", 10, "bold"), bg=gui_theme.THEME["bg_dark"], fg=gui_theme.THEME["fg_light"]).pack(anchor="w", pady=(0, 2))
+    tk.Label(drum_section, text="These rules apply to one-shots only (drums, bass hits, vocals, FX and more). They look at filenames and choose a folder inside Samples\\One-Shots. Most users can leave them as they are.", font=("Segoe UI", 8), bg=gui_theme.THEME["bg_dark"], fg=gui_theme.THEME["fg_muted"], wraplength=760, justify="left").pack(anchor="w", pady=(0, 4))
     
     drum_wrapper = ttk.Frame(drum_section)
     drum_wrapper.pack(fill="both", expand=True)
@@ -810,9 +852,9 @@ def build(parent, status_label_ref):
 
     # SECTION 3: SYNTH & PRESET EXTENSIONS MATRIX GRID
     synth_section = tk.Frame(lists_frame, bg=gui_theme.THEME["bg_dark"])
-    synth_section.grid(row=2, column=0, sticky="nsew", pady=(5, 0))
+    synth_section.grid(row=3, column=0, sticky="nsew", pady=(5, 0))
     
-    tk.Label(synth_section, text="Where should special file types go?", font=("Segoe UI", 10, "bold"), bg=gui_theme.THEME["bg_dark"], fg=gui_theme.THEME["fg_light"]).pack(anchor="w", pady=(0, 2))
+    tk.Label(synth_section, text="Presets, racks & other special files: where should they go?", font=("Segoe UI", 10, "bold"), bg=gui_theme.THEME["bg_dark"], fg=gui_theme.THEME["fg_light"]).pack(anchor="w", pady=(0, 2))
     tk.Label(synth_section, text="These rules organize presets, Ableton devices, and MIDI files by their file type.", font=("Segoe UI", 8), bg=gui_theme.THEME["bg_dark"], fg=gui_theme.THEME["fg_muted"], wraplength=760, justify="left").pack(anchor="w", pady=(0, 4))
     
     synth_wrapper = ttk.Frame(synth_section)
