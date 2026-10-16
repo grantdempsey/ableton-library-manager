@@ -19,7 +19,7 @@ def _clean_name(name):
     return re.sub(r'[<>:"/\\|?*]', "", name).strip().strip(".")
 
 
-def open_type_editor(win, anchor, library, on_change, auto_find=False):
+def open_type_editor(win, anchor, library, on_change, auto_find=False, include_loops=False):
     """Lets the user add folders, add keywords to any folder, or learn new folders from the library."""
     theme = gui_theme.THEME
     editor = tk.Toplevel(win)
@@ -150,7 +150,12 @@ def open_type_editor(win, anchor, library, on_change, auto_find=False):
     find_button = tk.Button(suggest_row, text="Find suggestions", bd=0, font=("Segoe UI", 10, "bold"),
                             bg=theme["tag_enabled"], fg="white", activebackground=theme["tag_enabled"],
                             activeforeground="white", cursor="hand2", padx=14, pady=4)
-    find_button.pack(anchor="w", pady=(0, 6))
+    find_button.pack(anchor="w", pady=(0, 4))
+    editor_loops = tk.BooleanVar(value=include_loops)
+    tk.Checkbutton(suggest_row, text="Include loops (match the build window)", variable=editor_loops,
+                   bg=theme["bg_dark"], fg=theme["fg_light"], selectcolor=theme["bg_field"],
+                   activebackground=theme["bg_dark"], activeforeground=theme["fg_light"],
+                   font=("Segoe UI", 9), command=lambda: find()).pack(anchor="w", pady=(0, 4))
     suggestion_list = tk.Listbox(suggest_row, height=6, exportselection=False, bg=theme["bg_field"],
                                  fg=theme["fg_light"], selectbackground=theme["tag_enabled"],
                                  selectforeground="white", bd=0, highlightthickness=0,
@@ -164,9 +169,10 @@ def open_type_editor(win, anchor, library, on_change, auto_find=False):
         state["busy"] = True
         find_button.config(state="disabled", text="Scanning...")
         result = {}
+        with_loops = editor_loops.get()
 
         def work():
-            result["value"] = xo_filter.suggest_types(library)
+            result["value"] = xo_filter.suggest_types(library, include_loops=with_loops)
 
         def poll():
             try:
@@ -312,6 +318,7 @@ def open_xo_builder(anchor):
                             activebackground=theme["tag_enabled"], activeforeground="white", cursor="hand2",
                             bd=0, font=("Segoe UI", 9, "bold"),
                             command=lambda: open_type_editor(win, anchor, library, folders_changed,
+                                                             include_loops=loops_var.get(),
                                                              auto_find=bool(state["plan"] is not None
                                                                             and state.get("unrecognized"))))
     edit_button.pack(side="left")

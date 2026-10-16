@@ -150,7 +150,7 @@ _STOP_WORDS = {"loop", "loops", "bpm", "one", "shot", "oneshot", "dry", "wet", "
                "maj", "min", "minor", "major", "version", "bonus", "final"}
 
 
-def suggest_types(library_root, min_files=25, should_cancel=None):
+def suggest_types(library_root, min_files=25, should_cancel=None, include_loops=True):
     """Finds words common in files no type recognizes; each could become its own folder.
 
     Words found in most unrecognized files are almost always a pack or brand name,
@@ -165,7 +165,7 @@ def suggest_types(library_root, min_files=25, should_cancel=None):
             if os.path.splitext(filename)[1].lower() not in AUDIO_EXTS:
                 continue
             sound_type, is_loop = classify(os.path.join(dirpath, filename), library_root)
-            if sound_type is not None:
+            if sound_type is not None or (is_loop and not include_loops):
                 continue
             total += 1
             stem = re.sub(r"([a-z])([A-Z])", r"\1 \2", os.path.splitext(filename)[0])
