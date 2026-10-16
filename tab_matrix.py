@@ -1366,54 +1366,38 @@ def build(parent, status_label_ref):
             height=2, command=command
         ).pack(fill="x", pady=(0, bottom))
 
-    def suggest_from_library():
+    def auto_suggest_from_library():
         library = gui_theme.USER_LIBRARY_PATH
         if not library or not os.path.isdir(library):
-            show_notice(parent, "Suggest rules", "Set your Ableton User Library location first (Organize tab).")
             return
-        suggest_button.config(state="disabled", text="Scanning your library...")
         result = {}
 
         def work():
             try:
                 found = rule_suggester.suggest_rules(library)
                 result["added"] = rule_suggester.add_suggestions_as_candidates(found)
-                result["found"] = len(found)
-            except (OSError, ValueError, json.JSONDecodeError) as error:
-                result["error"] = str(error)
+            except (OSError, ValueError, json.JSONDecodeError):
+                result["added"] = 0
 
         def poll():
             if thread.is_alive():
-                parent.after(200, poll)
+                parent.after(300, poll)
                 return
-            suggest_button.config(state="normal", text="Suggest rules from my library…")
-            if "error" in result:
-                messagebox.showerror("Suggest rules", result["error"])
-                return
-            refresh_matrix_data()
-            if result["added"]:
-                show_notice(parent, "Suggest rules",
-                            f"Added {result['added']} suggestions to the review list at the top of this tab. "
-                            "Select one and choose Use or Dismiss. Nothing changes until you approve it.")
-            else:
-                show_notice(parent, "Suggest rules", "No new suggestions. Your rules already cover the patterns found.")
+            try:
+                refresh_matrix_data()
+                if result.get("added") and _status_label_ref:
+                    _status_label_ref.config(
+                        text=f" Application Status: Found {result['added']} new rule suggestion(s) in your library. Review them on the Rules tab.",
+                        fg=gui_theme.THEME["accent_neon"])
+            except tk.TclError:
+                pass
 
         thread = threading.Thread(target=work, daemon=True)
         thread.start()
-        parent.after(200, poll)
+        parent.after(300, poll)
 
     add_action_button("Advanced options…", lambda: open_advanced_options(parent), primary=True, bottom=5)
-    add_action_button("Test a filename…", lambda: open_filename_tester(parent), bottom=5)
-    add_action_button("Loop folder layout…",
-                      lambda: open_loop_layout(parent, gui_theme.USER_LIBRARY_PATH), bottom=5)
-    suggest_button = tk.Button(
-        action_panel, text="Suggest rules from my library…", command=suggest_from_library,
-        bg=gui_theme.THEME["btn_secondary"], fg=gui_theme.THEME["fg_light"],
-        activebackground=gui_theme.THEME["btn_secondary_hover"],
-        activeforeground=gui_theme.THEME["accent_neon"], bd=1, relief="solid",
-        font=("Segoe UI", 9, "bold"), height=2, wraplength=170
-    )
-    suggest_button.pack(fill="x", pady=(0, 14))
+    add_action_button("Test a filename…", lambda: open_filename_tester(parent), bottom=14)
     tk.Label(
         action_panel, text="Profile management",
         font=("Segoe UI", 10, "bold"), bg=gui_theme.THEME["bg_field"],
@@ -1423,3 +1407,4 @@ def build(parent, status_label_ref):
     add_action_button("Import profile", lambda: execute_profile_json_import(parent), bottom=0)
 
     refresh_matrix_data()
+    parent.after(2000, auto_suggest_from_library)
