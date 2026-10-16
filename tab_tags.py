@@ -11,6 +11,7 @@ from tab_matrix import messagebox, ask_confirm, ask_fields, show_notice
 
 import gui_theme
 import sorter_engine
+import xo_dialog
 
 
 SUPPORTED_AUDIO_EXTENSIONS = {
@@ -165,6 +166,13 @@ class TagsTab(ttk.Frame):
             activeforeground=theme["fg_light"], bd=1
         )
         self.rescan_button.pack(side="left", padx=6)
+        self.xo_button = tk.Button(
+            search_controls, text="Build XO folder", command=lambda: xo_dialog.open_xo_builder(self),
+            bg=theme["btn_secondary"], fg=theme["fg_light"],
+            activebackground=theme["btn_secondary_hover"],
+            activeforeground=theme["fg_light"], bd=1
+        )
+        self.xo_button.pack(side="left", padx=6)
         tk.Label(
             search_controls, text="Ctrl+F search  •  Space play/stop  •  F favorite",
             font=("Segoe UI", 8), bg=theme["bg_panel"], fg=theme["fg_muted"]

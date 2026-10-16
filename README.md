@@ -152,6 +152,7 @@ python build_app.py
 - Sounds & Tags: independent category/tag highlights, accurate result counts, waveform strip, Auto-play, saved searches, keyboard shortcuts, favorites, faster startup via cached tag counts.
 - Rules: priorities, shadowed-rule detection, explain-a-filename, backup/restore of rules.
 - Home: library status card and in-app README viewer.
+- XO filter folder: **Build XO folder** on Sounds & Tags groups your sounds by type (kicks, snares, nature, foley, vocals, textures...) into one folder per type using hard links, so XO can filter by folder with no extra disk space. Originals are never moved. Keep the folder outside OneDrive.
 - Polish: all dialogs centre on the app, unified green and lavender theme, progress bar with file counts.
 
 ---
