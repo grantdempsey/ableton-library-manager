@@ -2,6 +2,7 @@
 import tkinter as tk
 from tkinter import ttk, filedialog
 from tab_matrix import messagebox, themed_dialog, ask_confirm, show_notice
+import tab_matrix
 import os
 import re
 import stat
@@ -688,6 +689,7 @@ class OrganizeTab(ttk.Frame):
         self.progress_bar["value"] = 100
         
         was_cancelled = bool(self.active_sorter and self.active_sorter.cancel_event.is_set())
+        tab_matrix.rescan_suggestions()
         self.write_console_message("Cleanup stopped early. Files already moved can be undone." if was_cancelled else "In-place database restructure operations resolved clean!")
         lines = []
         if tracking_stats.get("Native Live Racks (.adg, .amxd, .alc, .adv)", 0) > 0: lines.append(f"• Native Racks: {tracking_stats['Native Live Racks (.adg, .amxd, .alc, .adv)']}")

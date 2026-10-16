@@ -16,6 +16,7 @@ _synth_tree = None
 _status_label_ref = None
 _candidate_tree = None
 _loop_path_label = None
+_auto_suggest_ref = None
 def refresh_matrix_data():
     """Distributes dictionary rule matrices out cleanly to their respective table grids."""
     if _drum_tree is not None:
@@ -1407,4 +1408,15 @@ def build(parent, status_label_ref):
     add_action_button("Import profile", lambda: execute_profile_json_import(parent), bottom=0)
 
     refresh_matrix_data()
+    global _auto_suggest_ref
+    _auto_suggest_ref = auto_suggest_from_library
     parent.after(2000, auto_suggest_from_library)
+
+
+def rescan_suggestions():
+    """Re-run the library rule scan after files were organized or imported."""
+    if _auto_suggest_ref is not None:
+        try:
+            _auto_suggest_ref()
+        except tk.TclError:
+            pass
