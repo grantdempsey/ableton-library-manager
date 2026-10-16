@@ -1472,6 +1472,12 @@ def plan_rule_placement(pattern, folder, data=None):
         [ordered[i] for i in narrower],
     )
 
+def suggest_rule_priority(pattern, folder):
+    """Previews where a new rule would rank, without changing anything."""
+    index, broader, narrower = plan_rule_placement(pattern, folder)
+    total = len([p for p in DRUM_KEYWORDS if p != pattern]) + 1
+    return {"position": index + 1, "total": total, "above": broader, "below": narrower}
+
 def add_rule_with_smart_priority(pattern, folder):
     """Adds a rule, ranks it using plan_rule_placement, and persists the change."""
     re.compile(pattern)

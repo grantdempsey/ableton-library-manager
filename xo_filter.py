@@ -6,6 +6,7 @@ folders and any personal tags, then mirrors the files into one folder per type.
 Hard links mean no extra disk space; originals are never modified or moved.
 """
 import hashlib
+import json
 import os
 import re
 
@@ -94,10 +95,88 @@ AUDIO_EXTS = {".wav", ".aif", ".aiff", ".flac", ".mp3", ".ogg", ".m4a", ".aac",
               ".opus", ".oga", ".caf", ".au", ".snd", ".wma"}
 
 _TOKEN_TYPE = {}
-for _type, _words in SOUND_TYPES.items():
-    for _word in _words:
-        _TOKEN_TYPE.setdefault(_word, []).append(_type)
-_TYPE_ORDER = {name: i for i, name in enumerate(SOUND_TYPES)}
+_TYPE_ORDER = {}
+
+
+def load_custom_types():
+    """Returns the user's {folder name: [keywords]} from the config file."""
+    try:
+        with open(sorter_engine.CONFIG_FILE, "r", encoding="utf-8") as handle:
+            raw = json.load(handle).get("XO_CUSTOM_TYPES", {})
+    except (OSError, ValueError):
+        return {}
+    return {str(name): [str(w) for w in words] for name, words in raw.items() if isinstance(words, list)}
+
+
+def save_custom_types(custom):
+    """Persists custom types; a built-in name adds keywords to it, a new name creates a folder."""
+    data = {}
+    if os.path.exists(sorter_engine.CONFIG_FILE):
+        with open(sorter_engine.CONFIG_FILE, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    data["XO_CUSTOM_TYPES"] = custom
+    sorter_engine._write_config(data)
+    apply_custom_types()
+
+
+def parse_keywords(text):
+    return sorted({w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) >= 2})
+
+
+def all_types():
+    """Built-in types merged with custom keywords; custom-only types come first so they win ties."""
+    custom = load_custom_types()
+    merged = {name: set(words) for name, words in custom.items() if name not in SOUND_TYPES}
+    for name, words in SOUND_TYPES.items():
+        merged[name] = set(words) | set(custom.get(name, ()))
+    return merged
+
+
+def apply_custom_types():
+    """Rebuilds the token lookup tables from built-in and custom types."""
+    types = all_types()
+    _TOKEN_TYPE.clear()
+    for type_name, words in types.items():
+        for word in words:
+            _TOKEN_TYPE.setdefault(word, []).append(type_name)
+    _TYPE_ORDER.clear()
+    _TYPE_ORDER.update({name: i for i, name in enumerate(types)})
+
+
+apply_custom_types()
+
+_STOP_WORDS = {"loop", "loops", "bpm", "one", "shot", "oneshot", "dry", "wet", "with", "from", "and",
+               "the", "vol", "pack", "kit", "sample", "samples", "audio", "wav", "demo", "free",
+               "maj", "min", "minor", "major", "version", "bonus", "final"}
+
+
+def suggest_types(library_root, min_files=25, should_cancel=None):
+    """Finds words common in files no type recognizes; each could become its own folder.
+
+    Words found in most unrecognized files are almost always a pack or brand name,
+    so they are skipped. Returns [{word, count, example}] most common first.
+    """
+    counts, examples, total = {}, {}, 0
+    for dirpath, dirnames, filenames in os.walk(library_root):
+        if should_cancel and should_cancel():
+            break
+        dirnames[:] = [d for d in dirnames if d not in sorter_engine.IGNORED_DIRECTORIES]
+        for filename in filenames:
+            if os.path.splitext(filename)[1].lower() not in AUDIO_EXTS:
+                continue
+            if classify(os.path.join(dirpath, filename), library_root)[0] is not None:
+                continue
+            total += 1
+            stem = re.sub(r"([a-z])([A-Z])", r"\1 \2", os.path.splitext(filename)[0])
+            for word in set(re.findall(r"[a-z]{4,}", stem.lower())):
+                counts[word] = counts.get(word, 0) + 1
+                examples.setdefault(word, filename)
+    known = set(_TOKEN_TYPE) | _STOP_WORDS
+    return [
+        {"word": word, "count": count, "example": examples[word]}
+        for word, count in sorted(counts.items(), key=lambda item: -item[1])
+        if count >= min_files and count <= total * 0.5 and word not in known
+    ]
 
 
 def _tokens(text):
@@ -171,6 +250,7 @@ def _personal_tags_by_path(library_root):
 
 def build_plan(library_root, include_loops=False, selected_types=None, should_cancel=None):
     """Walks the library and returns {sound_type: [source paths]} plus summary counts."""
+    apply_custom_types()
     personal = _personal_tags_by_path(library_root)
     plan = {}
     stats = {"scanned": 0, "unclassified": 0, "loops_skipped": 0}

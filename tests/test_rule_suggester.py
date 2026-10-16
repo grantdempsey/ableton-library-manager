@@ -50,6 +50,27 @@ class RuleSuggesterTests(unittest.TestCase):
         self.assertNotIn("rain", tokens)
         self.assertNotIn("kick", tokens)
 
+    def test_priority_preview_matches_actual_placement(self):
+        self._files([f"Pack - Djembe {i}.wav" for i in range(6)])
+        rule_suggester.add_suggestions_as_candidates(rule_suggester.suggest_rules(self.lib))
+        preview = sorter_engine.suggest_rule_priority(r"\bdjembe\w*\b", "Percussion")
+        sorter_engine.review_learning_candidate("djembe", "Percussion", "approved")
+        ordered = sorter_engine._ordered_rule_patterns(
+            {"DRUM_KEYWORDS": sorter_engine.DRUM_KEYWORDS, "RULE_METADATA": sorter_engine.RULE_METADATA})
+        self.assertEqual(ordered.index(r"\bdjembe\w*\b") + 1, preview["position"])
+
+    def test_custom_xo_type_and_learned_suggestions(self):
+        import xo_filter
+        self.addCleanup(xo_filter.apply_custom_types)
+        xo_filter.save_custom_types({"Melodies": ["melody"], "Kicks": ["thump"]})
+        self.assertEqual(xo_filter.classify(os.path.join(self.lib, "Pack - Melody 1.wav"), self.lib)[0], "Melodies")
+        self.assertEqual(xo_filter.classify(os.path.join(self.lib, "Big Thump.wav"), self.lib)[0], "Kicks")
+        xo_filter.save_custom_types({})
+        self.assertIsNone(xo_filter.classify(os.path.join(self.lib, "Pack - Melody 1.wav"), self.lib)[0])
+        self._files([f"Zzyx Pack - Quasar {i}.wav" for i in range(30)] + [f"Other Thing {i}.wav" for i in range(40)])
+        words = [s["word"] for s in xo_filter.suggest_types(self.lib)]
+        self.assertIn("quasar", words)
+
     def test_candidates_are_stored_once_as_pending(self):
         self._files([f"Pack - Djembe {i}.wav" for i in range(6)])
         suggestions = rule_suggester.suggest_rules(self.lib)

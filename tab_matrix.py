@@ -54,9 +54,15 @@ def refresh_matrix_data():
         _candidate_tree.delete(*_candidate_tree.get_children())
         for candidate in sorter_engine.LEARNED_RULE_CANDIDATES:
             if candidate.get("status", "pending") == "pending":
+                try:
+                    placement = sorter_engine.suggest_rule_priority(
+                        candidate.get("pattern", ""), candidate.get("target", ""))
+                    priority = f"#{placement['position']} of {placement['total']}"
+                except (re.error, ValueError):
+                    priority = "-"
                 _candidate_tree.insert(
                     '', 'end',
-                    values=(candidate.get("token", ""), candidate.get("target", ""),
+                    values=(candidate.get("token", ""), candidate.get("target", ""), priority,
                             candidate.get("count", 0), candidate.get("pattern", ""))
                 )
 
@@ -602,9 +608,9 @@ def build(parent, status_label_ref):
     lists_frame = tk.Frame(master_workspace, bg=gui_theme.THEME["bg_dark"])
     lists_frame.grid(row=0, column=0, sticky="nsew")
     lists_frame.columnconfigure(0, weight=1)
-    lists_frame.rowconfigure(0, weight=2)
-    lists_frame.rowconfigure(1, weight=1)
-    lists_frame.rowconfigure(2, weight=1)
+    lists_frame.rowconfigure(0, weight=1, uniform="sections")
+    lists_frame.rowconfigure(1, weight=1, uniform="sections")
+    lists_frame.rowconfigure(2, weight=1, uniform="sections")
 
     # SECTION 1: LEARNING SUGGESTIONS
     candidate_section = tk.Frame(lists_frame, bg=gui_theme.THEME["bg_dark"])
@@ -626,15 +632,16 @@ def build(parent, status_label_ref):
     candidate_scroll.pack(side="right", fill="y")
     _candidate_tree = ttk.Treeview(
         candidate_wrapper,
-        columns=("Token", "Target", "Evidence", "Generated Pattern"),
-        show="headings", style="Treeview",
+        columns=("Token", "Target", "Priority", "Evidence", "Generated Pattern"),
+        show="headings", style="Treeview", height=5,
         yscrollcommand=candidate_scroll.set
     )
     _candidate_tree.pack(fill="both", expand=True)
     candidate_scroll.config(command=_candidate_tree.yview)
     for column, heading, width in (
-        ("Token", "Word found", 110), ("Target", "Suggested folder", 150),
-        ("Evidence", "Examples", 75), ("Generated Pattern", "Matching pattern", 300)
+        ("Token", "Word found", 100), ("Target", "Suggested folder", 150),
+        ("Priority", "Priority if used", 100),
+        ("Evidence", "Examples", 70), ("Generated Pattern", "Matching pattern", 260)
     ):
         _candidate_tree.heading(column, text=heading)
         _candidate_tree.column(column, width=width, anchor="w")
@@ -651,7 +658,7 @@ def build(parent, status_label_ref):
     drum_scroll = ttk.Scrollbar(drum_wrapper)
     drum_scroll.pack(side="right", fill="y")
     
-    _drum_tree = ttk.Treeview(drum_wrapper, columns=('Regex Pattern', 'Target Destination Folder', 'Priority', 'State'), show='headings', style="Treeview", yscrollcommand=drum_scroll.set)
+    _drum_tree = ttk.Treeview(drum_wrapper, columns=('Regex Pattern', 'Target Destination Folder', 'Priority', 'State'), show='headings', style="Treeview", height=5, yscrollcommand=drum_scroll.set)
     _drum_tree.pack(fill="both", expand=True)
     drum_scroll.config(command=_drum_tree.yview)
     _drum_tree.heading('Regex Pattern', text='What the filename contains')
@@ -675,7 +682,7 @@ def build(parent, status_label_ref):
     synth_scroll = ttk.Scrollbar(synth_wrapper)
     synth_scroll.pack(side="right", fill="y")
     
-    _synth_tree = ttk.Treeview(synth_wrapper, columns=('Extension Pattern', 'Target Destination Folder'), show='headings', style="Treeview", yscrollcommand=synth_scroll.set)
+    _synth_tree = ttk.Treeview(synth_wrapper, columns=('Extension Pattern', 'Target Destination Folder'), show='headings', style="Treeview", height=5, yscrollcommand=synth_scroll.set)
     _synth_tree.pack(fill="both", expand=True)
     synth_scroll.config(command=_synth_tree.yview)
     _synth_tree.heading('Extension Pattern', text='File type')
@@ -1117,6 +1124,33 @@ def build(parent, status_label_ref):
         activeforeground=gui_theme.THEME["btn_primary_fg"], bd=0,
         font=("Segoe UI", 9, "bold"), height=2,
         command=lambda: review_selected_candidate("approved")
+    ).pack(fill="x", pady=(0, 5))
+
+    def use_all_candidates():
+        pending = [c for c in sorter_engine.LEARNED_RULE_CANDIDATES if c.get("status", "pending") == "pending"]
+        if not pending:
+            show_notice(parent, "Use all suggestions", "There are no suggestions to review.")
+            return
+        if not ask_confirm(parent, "Use all suggestions",
+                           f"Add all {len(pending)} suggested rules? Each one is ranked automatically so it "
+                           "won't steal files from a more specific rule. You can still disable or remove any "
+                           "rule later, and Organize backs up before moving anything.", yes_text="Use all"):
+            return
+        applied = 0
+        try:
+            for candidate in pending:
+                sorter_engine.review_learning_candidate(candidate["token"], candidate["target"], "approved")
+                applied += 1
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            messagebox.showerror("Candidate Review Failure", str(error))
+        _sync_config_state(f"Added {applied} suggested rules")
+
+    tk.Button(
+        action_panel, text="Use all suggestions",
+        bg=gui_theme.THEME["btn_secondary"], fg=gui_theme.THEME["fg_light"],
+        activebackground=gui_theme.THEME["btn_secondary_hover"],
+        activeforeground=gui_theme.THEME["accent_neon"], bd=1, relief="solid",
+        font=("Segoe UI", 9, "bold"), height=2, command=use_all_candidates
     ).pack(fill="x", pady=(0, 5))
     tk.Button(
         action_panel, text="Dismiss this suggestion",

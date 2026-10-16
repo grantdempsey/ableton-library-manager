@@ -1,4 +1,5 @@
 import os
+import re
 import threading
 import tkinter as tk
 from tkinter import filedialog
@@ -12,6 +13,202 @@ DEFAULT_DEST = r"C:\XO Samples for Filters"
 
 def _drive(path):
     return os.path.splitdrive(os.path.abspath(path))[0].lower()
+
+
+def _clean_name(name):
+    return re.sub(r'[<>:"/\\|?*]', "", name).strip().strip(".")
+
+
+def open_type_editor(win, anchor, library, on_change):
+    """Lets the user add folders, add keywords to any folder, or learn new folders from the library."""
+    theme = gui_theme.THEME
+    editor = tk.Toplevel(win)
+    editor.title("Edit XO folders")
+    editor.configure(bg=theme["bg_dark"])
+    editor.transient(win)
+    editor.resizable(False, False)
+    state = {"selected": None, "suggestions": [], "busy": False}
+
+    def make_label(parent, text, fg=None, font=("Segoe UI", 9), **pack):
+        tk.Label(parent, text=text, font=font, bg=theme["bg_dark"], fg=fg or theme["fg_muted"],
+                 wraplength=470, justify="left", anchor="w").pack(fill="x", **pack)
+
+    make_label(editor, "Edit XO folders", theme["accent_neon"], ("Segoe UI", 12, "bold"), padx=20, pady=(16, 2))
+    make_label(editor, "Pick a folder to add your own keywords (★ marks folders you created). Or create a new "
+               "folder: type a name and the words that belong in it. Keywords match filenames, folder names "
+               "and your tags.", padx=20, pady=(0, 8))
+
+    body = tk.Frame(editor, bg=theme["bg_dark"])
+    body.pack(fill="x", padx=20)
+    listbox = tk.Listbox(body, width=26, height=14, exportselection=False, bg=theme["bg_field"],
+                         fg=theme["fg_light"], selectbackground=theme["btn_primary"],
+                         selectforeground=theme["btn_primary_fg"], bd=0, highlightthickness=0,
+                         font=("Segoe UI", 9))
+    listbox.pack(side="left", fill="y")
+    form = tk.Frame(body, bg=theme["bg_dark"])
+    form.pack(side="left", fill="both", expand=True, padx=(14, 0))
+
+    make_label(form, "Folder name")
+    name_var = tk.StringVar()
+    name_entry = tk.Entry(form, textvariable=name_var, bg=theme["bg_field"], fg=theme["fg_light"],
+                          insertbackground=theme["fg_light"], disabledbackground=theme["bg_field"],
+                          disabledforeground=theme["fg_muted"], bd=0, highlightthickness=1, font=("Segoe UI", 10))
+    name_entry.pack(fill="x", ipady=4)
+    built_in = tk.Label(form, text="", font=("Segoe UI", 8), bg=theme["bg_dark"], fg=theme["fg_muted"],
+                        wraplength=300, justify="left", anchor="w")
+    built_in.pack(fill="x", pady=(4, 0))
+    make_label(form, "Your keywords (comma or space separated)", pady=(6, 0))
+    words_box = tk.Text(form, width=36, height=5, bg=theme["bg_field"], fg=theme["fg_light"],
+                        insertbackground=theme["fg_light"], bd=0, highlightthickness=1, wrap="word",
+                        font=("Segoe UI", 10))
+    words_box.pack(fill="x")
+    message = tk.Label(form, text="", font=("Segoe UI", 9), bg=theme["bg_dark"], fg=theme["accent_neon"],
+                       wraplength=300, justify="left", anchor="w")
+    message.pack(fill="x", pady=(6, 0))
+
+    def refill():
+        custom = xo_filter.load_custom_types()
+        listbox.delete(0, "end")
+        names = [n for n in custom if n not in xo_filter.SOUND_TYPES] + list(xo_filter.SOUND_TYPES)
+        state["names"] = names
+        for name in names:
+            listbox.insert("end", ("★ " if name in custom and name not in xo_filter.SOUND_TYPES else "") + name)
+
+    def new_type():
+        listbox.selection_clear(0, "end")
+        state["selected"] = None
+        name_entry.config(state="normal")
+        name_var.set("")
+        built_in.config(text="")
+        words_box.delete("1.0", "end")
+        message.config(text="")
+        name_entry.focus_set()
+
+    def on_select(_event=None):
+        picked = listbox.curselection()
+        if not picked:
+            return
+        name = state["names"][picked[0]]
+        state["selected"] = name
+        custom = xo_filter.load_custom_types()
+        is_builtin = name in xo_filter.SOUND_TYPES
+        name_entry.config(state="normal")
+        name_var.set(name)
+        name_entry.config(state="disabled" if is_builtin else "normal")
+        built_in.config(text=("Built-in words: " + ", ".join(sorted(xo_filter.SOUND_TYPES[name])[:14]) + "..."
+                              ) if is_builtin else "")
+        words_box.delete("1.0", "end")
+        words_box.insert("1.0", ", ".join(custom.get(name, [])))
+        message.config(text="")
+
+    def save():
+        name = _clean_name(name_var.get())
+        words = xo_filter.parse_keywords(words_box.get("1.0", "end"))
+        if not name:
+            message.config(text="Give the folder a name.")
+            return
+        if name not in xo_filter.SOUND_TYPES and not words:
+            message.config(text="Add at least one keyword for a new folder.")
+            return
+        custom = xo_filter.load_custom_types()
+        custom[name] = words
+        if not words and name in xo_filter.SOUND_TYPES:
+            custom.pop(name, None)
+        xo_filter.save_custom_types(custom)
+        refill()
+        message.config(text=f"Saved '{name}'. Scan again to see the new counts.", fg=theme["fg_light"])
+        on_change()
+
+    def delete():
+        name = state["selected"]
+        if not name:
+            return
+        custom = xo_filter.load_custom_types()
+        if name not in custom:
+            message.config(text="Built-in folders can't be deleted; clear your keywords to reset it.")
+            return
+        custom.pop(name)
+        xo_filter.save_custom_types(custom)
+        refill()
+        new_type()
+        message.config(text=f"Removed '{name}'.", fg=theme["fg_light"])
+        on_change()
+
+    row = tk.Frame(form, bg=theme["bg_dark"])
+    row.pack(fill="x", pady=(8, 0))
+    for text, command, primary in (("Save", save, True), ("New folder", new_type, False), ("Delete", delete, False)):
+        tk.Button(row, text=text, command=command, bd=0, font=("Segoe UI", 9, "bold"), width=10,
+                  bg=theme["btn_primary"] if primary else theme["btn_secondary"],
+                  fg=theme["btn_primary_fg"] if primary else theme["fg_light"]).pack(side="left", padx=(0, 6))
+
+    make_label(editor, "Learn folders from my library", theme["accent_gold"], ("Segoe UI", 10, "bold"),
+               padx=20, pady=(14, 0))
+    make_label(editor, "Finds words that show up in many sounds no folder recognizes yet. Pick one to start a "
+               "new folder with it.", padx=20, pady=(0, 4))
+    suggest_row = tk.Frame(editor, bg=theme["bg_dark"])
+    suggest_row.pack(fill="x", padx=20)
+    suggestion_list = tk.Listbox(suggest_row, height=6, exportselection=False, bg=theme["bg_field"],
+                                 fg=theme["fg_light"], selectbackground=theme["btn_primary"],
+                                 selectforeground=theme["btn_primary_fg"], bd=0, highlightthickness=0,
+                                 font=("Segoe UI", 9))
+    suggestion_list.pack(fill="x")
+    find_button = tk.Button(editor, text="Find suggestions", bd=0, font=("Segoe UI", 9, "bold"),
+                            bg=theme["btn_secondary"], fg=theme["fg_light"])
+    find_button.pack(anchor="w", padx=20, pady=(6, 0))
+
+    def find():
+        if state["busy"]:
+            return
+        state["busy"] = True
+        find_button.config(state="disabled", text="Scanning...")
+        result = {}
+
+        def work():
+            result["value"] = xo_filter.suggest_types(library)
+
+        def poll():
+            try:
+                if not editor.winfo_exists():
+                    return
+            except tk.TclError:
+                return
+            if thread.is_alive():
+                editor.after(150, poll)
+                return
+            state["busy"] = False
+            find_button.config(state="normal", text="Find suggestions")
+            state["suggestions"] = result["value"][:40]
+            suggestion_list.delete(0, "end")
+            for item in state["suggestions"]:
+                suggestion_list.insert("end", f"{item['word']}  ({item['count']:,} files, e.g. {item['example'][:50]})")
+            if not state["suggestions"]:
+                suggestion_list.insert("end", "Nothing new found; your folders already cover your library.")
+
+        thread = threading.Thread(target=work, daemon=True)
+        thread.start()
+        editor.after(150, poll)
+
+    def use_suggestion(_event=None):
+        picked = suggestion_list.curselection()
+        if not picked or picked[0] >= len(state["suggestions"]):
+            return
+        word = state["suggestions"][picked[0]]["word"]
+        new_type()
+        name_var.set(word.title())
+        words_box.insert("1.0", word)
+        message.config(text="Review the name and keywords, then click Save.", fg=theme["fg_light"])
+
+    find_button.config(command=find)
+    suggestion_list.bind("<<ListboxSelect>>", use_suggestion)
+    listbox.bind("<<ListboxSelect>>", on_select)
+
+    close_row = tk.Frame(editor, bg=theme["bg_dark"])
+    close_row.pack(fill="x", padx=20, pady=(10, 16))
+    tk.Button(close_row, text="Close", width=10, command=editor.destroy, bd=0, font=("Segoe UI", 9, "bold"),
+              bg=theme["btn_secondary"], fg=theme["fg_light"]).pack(side="right")
+    editor.bind("<Escape>", lambda _e: editor.destroy())
+    refill()
+    _center_over(editor, win)
 
 
 def open_xo_builder(anchor):
@@ -91,6 +288,12 @@ def open_xo_builder(anchor):
     scan_button = tk.Button(buttons, text="Scan", width=10, bg=theme["btn_primary"], fg=theme["btn_primary_fg"],
                             bd=0, font=("Segoe UI", 9, "bold"))
     scan_button.pack(side="right")
+    edit_button = tk.Button(buttons, text="Edit folders…", bg=theme["btn_secondary"], fg=theme["fg_light"],
+                            bd=0, font=("Segoe UI", 9, "bold"),
+                            command=lambda: open_type_editor(
+                                win, anchor, library,
+                                lambda: status.config(text="Folders changed. Click Scan to refresh the list.")))
+    edit_button.pack(side="left")
 
     def close():
         state["cancel"] = True
