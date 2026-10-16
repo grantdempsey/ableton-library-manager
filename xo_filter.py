@@ -156,7 +156,7 @@ def suggest_types(library_root, min_files=25, should_cancel=None):
     Words found in most unrecognized files are almost always a pack or brand name,
     so they are skipped. Returns [{word, count, example}] most common first.
     """
-    counts, examples, total = {}, {}, 0
+    counts, examples, loop_counts, total = {}, {}, {}, 0
     for dirpath, dirnames, filenames in os.walk(library_root):
         if should_cancel and should_cancel():
             break
@@ -164,16 +164,19 @@ def suggest_types(library_root, min_files=25, should_cancel=None):
         for filename in filenames:
             if os.path.splitext(filename)[1].lower() not in AUDIO_EXTS:
                 continue
-            if classify(os.path.join(dirpath, filename), library_root)[0] is not None:
+            sound_type, is_loop = classify(os.path.join(dirpath, filename), library_root)
+            if sound_type is not None:
                 continue
             total += 1
             stem = re.sub(r"([a-z])([A-Z])", r"\1 \2", os.path.splitext(filename)[0])
             for word in set(re.findall(r"[a-z]{4,}", stem.lower())):
                 counts[word] = counts.get(word, 0) + 1
+                if is_loop:
+                    loop_counts[word] = loop_counts.get(word, 0) + 1
                 examples.setdefault(word, filename)
     known = set(_TOKEN_TYPE) | _STOP_WORDS
     return [
-        {"word": word, "count": count, "example": examples[word]}
+        {"word": word, "count": count, "example": examples[word], "loops": loop_counts.get(word, 0)}
         for word, count in sorted(counts.items(), key=lambda item: -item[1])
         if count >= min_files and count <= total * 0.5 and word not in known
     ]

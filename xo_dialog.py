@@ -116,7 +116,7 @@ def open_type_editor(win, anchor, library, on_change, auto_find=False):
             custom.pop(name, None)
         xo_filter.save_custom_types(custom)
         refill()
-        message.config(text=f"Saved '{name}'. Scan again to see the new counts.", fg=theme["fg_light"])
+        message.config(text=f"Saved '{name}'. The build window is re-scanning.", fg=theme["fg_light"])
         on_change()
 
     def delete():
@@ -131,7 +131,7 @@ def open_type_editor(win, anchor, library, on_change, auto_find=False):
         xo_filter.save_custom_types(custom)
         refill()
         new_type()
-        message.config(text=f"Removed '{name}'.", fg=theme["fg_light"])
+        message.config(text=f"Removed '{name}'. The build window is re-scanning.", fg=theme["fg_light"])
         on_change()
 
     row = tk.Frame(form, bg=theme["bg_dark"])
@@ -182,7 +182,9 @@ def open_type_editor(win, anchor, library, on_change, auto_find=False):
             state["suggestions"] = result["value"][:40]
             suggestion_list.delete(0, "end")
             for item in state["suggestions"]:
-                suggestion_list.insert("end", f"{item['word']}  ({item['count']:,} files, e.g. {item['example'][:50]})")
+                loops = item.get("loops", 0)
+                detail = f"{item['count']:,} files" + (f", {loops:,} are loops" if loops else "")
+                suggestion_list.insert("end", f"{item['word']}  ({detail}, e.g. {item['example'][:40]})")
             if not state["suggestions"]:
                 suggestion_list.insert("end", "Nothing new found; your folders already cover your library.")
 
@@ -296,9 +298,12 @@ def open_xo_builder(anchor):
                            fg=theme["btn_primary_fg"] if primary else theme["fg_light"])
 
     def folders_changed():
-        status.config(text="Folders changed. Click Scan to refresh the list.")
         set_scan_primary(True)
         build_button.config(state="disabled", bg=theme["btn_secondary"], fg=theme["fg_muted"])
+        if state["busy"]:
+            status.config(text="Folders changed. Click Scan to refresh the list.")
+        else:
+            scan()
 
     loops_var.trace_add("write", lambda *_: folders_changed()
                         if state["plan"] is not None else None)
@@ -352,7 +357,7 @@ def open_xo_builder(anchor):
             skipped.append(f"{stats['loops_skipped']:,} loops skipped")
         if stats["unclassified"]:
             skipped.append(f"{stats['unclassified']:,} not recognized")
-        status.config(text=f"Found {total:,} sounds in {len(plan)} types"
+        status.config(text=f"Scan complete: found {total:,} sounds in {len(plan)} types"
                            + (f" ({', '.join(skipped)})." if skipped else "."))
         if total:
             build_button.config(state="normal", bg=theme["btn_primary"], fg=theme["btn_primary_fg"])
