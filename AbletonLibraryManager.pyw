@@ -18,7 +18,7 @@ import sorter_engine
 class ProductionStudioManagerApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Ableton Production Assets & Sample Studio Manager v2.0.0")
+        self.title("Ableton Production Assets & Sample Studio Manager v2.0.1")
         self.geometry("1180x760")
         self.minsize(1020, 700)
         self.set_application_styling_theme()

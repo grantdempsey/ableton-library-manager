@@ -1,6 +1,7 @@
 # tab_cover.py - Ableton Production Assets & Sample Studio Manager Unified Home Dashboard
 import os
-import sysimport tkinter as tk
+import sys
+import tkinter as tk
 from tkinter import ttk
 import gui_theme
 import sorter_engine
@@ -32,7 +33,7 @@ def build(parent_frame):
     # 3. System Deployment Subtitle
     lbl_version = tk.Label(
         f_center_box, 
-        text="Organize your sounds, presets, and samples with confidence • Version 1.0", 
+        text="Organize your sounds, presets, and samples with confidence • Version 2.0.1", 
         font=("Segoe UI", 11, "italic"), 
         bg=t["bg_dark"], 
         fg=t["fg_muted"]
