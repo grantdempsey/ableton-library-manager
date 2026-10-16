@@ -1,4 +1,4 @@
-# 🎹 Ableton Production Assets & Sample Studio Manager v2.0.0
+# 🎹 Ableton Production Assets & Sample Studio Manager v2.0.1
 
 A high-performance, cross-platform desktop tool designed to automate the categorization, sorting, and structural cleanup of Ableton audio libraries, presets, and preferences.
 
@@ -147,14 +147,15 @@ python build_app.py
 
 ---
 
-## 🆕 What's new in v2.0.0
+## 🆕 What's new in v2.0.1
 - Safety: automatic backups before cleanup, move log with **Undo last cleanup**, **Preview changes**, Cancel.
 - Sounds & Tags: independent category/tag highlights, accurate result counts, waveform strip, Auto-play, saved searches, keyboard shortcuts, favorites, faster startup via cached tag counts.
 - Rules: priorities, shadowed-rule detection, explain-a-filename, backup/restore of rules.
 - Home: library status card and in-app README viewer.
 - XO filter folder: **Build XO folder** on Sounds & Tags groups your sounds by type (kicks, snares, nature, foley, vocals, textures...) into one folder per type using hard links, so XO can filter by folder with no extra disk space. Originals are never moved. Keep the folder outside OneDrive.
-- Suggest rules from my library: on the Rules tab, scans your catch-all folder (Other One-Shots) and proposes new keyword rules (e.g. "djembe" → Percussion, "rain" → a new Nature folder). Each suggestion shows the priority it would get; **Use this suggestion** ranks it automatically, and **Use all suggestions** adds them in one go. Nothing changes until you approve.
-- Loop folder layout: **Loop folder layout…** on the Rules tab lets you choose which levels loops are filed into (Tempo, Key) and reorder them with ▲/▼. The recommendation puts the level with the fewest folders first and leaves out a level most of your loops can't fill. Organize applies the layout to new loops and re-files loops that sit in folders this app created; folders you made yourself are left alone. Use Preview changes first; Undo covers it.
+- Rule suggestions: the Rules tab scans your catch-all folder (Other One-Shots) when the app opens and after every Organize or Import, and proposes new keyword rules (e.g. "djembe" → Percussion, "rain" → a new Nature folder). Each suggestion shows the priority it would get; **Use this suggestion** ranks it automatically, and **Use all suggestions** adds them in one go. Nothing changes until you approve.
+- Loop folder layout: on the Rules tab's **Loops** tab, **Edit layout…** lets you choose which levels loops are filed into (Tempo, Key) and reorder them with ▲/▼. The recommendation puts the level with the fewest folders first and leaves out a level most of your loops can't fill. Organize applies the layout to new loops and re-files loops that sit in folders this app created; folders you made yourself are left alone. Use Preview changes first; Undo covers it.
+- The Rules tab is split into **Loops**, **One-shots** and **Presets & racks** tabs, so each kind of file shows where it goes and the controls for changing it.
 - XO folders are editable: **Edit folders…** in the XO builder lets you add your own keywords to any folder, create new folders, and **Find suggestions** learns candidate folder names from words common in sounds no folder recognizes yet.
 - Organize now re-checks the Other One-Shots folder, so files that match a rule (or a rule you approve later) move to the right folder. Use **Preview** first; Undo is available.
 - Tags live only inside this app. Ableton doesn't read them, and this app doesn't read Ableton's browser tags.
