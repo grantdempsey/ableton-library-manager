@@ -158,6 +158,13 @@ class TagsTab(ttk.Frame):
             activeforeground=theme["fg_light"], bd=1
         )
         self.saved_button.pack(side="left", padx=6)
+        self.rescan_button = tk.Button(
+            search_controls, text="Rescan library", command=self.rescan_library,
+            bg=theme["btn_secondary"], fg=theme["fg_light"],
+            activebackground=theme["btn_secondary_hover"],
+            activeforeground=theme["fg_light"], bd=1
+        )
+        self.rescan_button.pack(side="left", padx=6)
         tk.Label(
             search_controls, text="Ctrl+F search  •  Space play/stop  •  F favorite",
             font=("Segoe UI", 8), bg=theme["bg_panel"], fg=theme["fg_muted"]
@@ -442,6 +449,19 @@ class TagsTab(ttk.Frame):
         self._render_results(load_sidebar=False)
         self._request_sidebar_load(gui_theme.USER_LIBRARY_PATH)
 
+    def rescan_library(self):
+        if self._refresh_running:
+            return
+        library_root = gui_theme.USER_LIBRARY_PATH
+        if not library_root or not os.path.isdir(library_root):
+            return
+        self._refresh_running = True
+        self.rescan_button.configure(state="disabled")
+        self._set_status("Scanning the library for sounds...")
+        threading.Thread(
+            target=self._discover_then_refresh, args=(library_root,), daemon=True
+        ).start()
+
     def _discover_then_refresh(self, library_root):
         try:
             discovered = sorter_engine.index_existing_library(library_root)
@@ -588,6 +608,7 @@ class TagsTab(ttk.Frame):
 
     def _finish_refresh(self, discovered, error, sidebar_data=None):
         self._refresh_running = False
+        self.rescan_button.configure(state="normal")
         self.__dict__.setdefault("_static_counts", {}).clear()
         self.filter_button.configure(state="normal")
         if error:

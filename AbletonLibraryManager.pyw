@@ -149,6 +149,7 @@ class ProductionStudioManagerApp(tk.Tk):
         # 4. Searchable sound index
         self.tags_panel = TagsTab(self.tab_notebook, self.status_lbl)
         self.tab_notebook.add(self.tags_panel, text=" 🏷️  Sounds & Tags ")
+        self.after(1500, self.tags_panel.rescan_library)
 
         # 5. Rule Matrix Configuration Dashboard
         tab3_frame = ttk.Frame(self.tab_notebook)
