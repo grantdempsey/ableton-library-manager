@@ -106,6 +106,40 @@ class RuleSuggesterTests(unittest.TestCase):
         self.assertTrue(done.wait(10))
         moved = os.path.join(self.lib, "Percussion", "Shakers")
         self.assertTrue(os.path.isdir(moved) and len(os.listdir(moved)) == 6)
+    def test_loop_layout_applies_to_new_and_existing_loops(self):
+        loops = os.path.join(self.lib, "Samples", "Loops", "100-114 BPM", "AMIN")
+        custom = os.path.join(self.lib, "Samples", "Loops", "My Favorites")
+        os.makedirs(loops)
+        os.makedirs(custom)
+        self._files(["Dark Loop 105 BPM Amin.wav"], folder=loops)
+        self._files(["Keeper Loop 105 BPM Amin.wav"], folder=custom)
+        self._files(["Fresh Loop 120 BPM Cmaj.wav"], folder=self.catch_all)
+        sorter_engine.LOOP_LAYOUT = ["key", "bpm"]
+        self.addCleanup(lambda: setattr(sorter_engine, "LOOP_LAYOUT", ["bpm", "key"]))
+        done = threading.Event()
+        sorter = sorter_engine.ParallelLibrarySorter(
+            self.lib, self.lib, _Window(), lambda _m: None,
+            lambda *_: done.set(), copy_mode=False)
+        sorter.start_parallel_sort()
+        self.assertTrue(done.wait(10))
+        base = os.path.join(self.lib, "Samples", "Loops")
+        self.assertTrue(os.path.exists(os.path.join(base, "AMIN", "100-114 BPM", "Dark Loop 105 BPM Amin.wav")))
+        self.assertTrue(os.path.exists(os.path.join(base, "CMAJ", "115-129 BPM", "Fresh Loop 120 BPM Cmaj.wav")))
+        self.assertTrue(os.path.exists(os.path.join(custom, "Keeper Loop 105 BPM Amin.wav")))
+
+    def test_recommended_layout_puts_fewest_folders_first_and_skips_sparse_levels(self):
+        self._files([f"Loop {90 + i} BPM {k}.wav" for i, k in enumerate(["A Min", "C Maj", "D Min", "F Maj"] * 3)])
+        result = sorter_engine.recommend_loop_layout(self.lib)
+        self.assertEqual(result["layout"], ["bpm", "key"])
+        self._files([f"Groove {i} loop {95 + i} bpm.wav" for i in range(30)], folder=self.catch_all)
+        result = sorter_engine.recommend_loop_layout(self.lib)
+        self.assertEqual(result["layout"], ["bpm"])
+
+    def test_invalid_loop_layout_is_rejected(self):
+        with self.assertRaises(ValueError):
+            sorter_engine._validate_config({"LOOP_LAYOUT": ["bpm", "bpm"]})
+        with self.assertRaises(ValueError):
+            sorter_engine._validate_config({"LOOP_LAYOUT": ["pack"]})
 
 
 if __name__ == "__main__":

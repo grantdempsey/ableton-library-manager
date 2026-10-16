@@ -79,7 +79,7 @@ def _sync_config_state(status_msg):
         disk_data["DRUM_KEYWORDS"] = sorter_engine.DRUM_KEYWORDS
         disk_data["SYNTH_EXTS"] = sorter_engine.SYNTH_EXTS
         disk_data["NATIVE_EXTS"] = sorter_engine.NATIVE_EXTS
-        
+        disk_data["LOOP_LAYOUT"] = list(sorter_engine.LOOP_LAYOUT)
         if hasattr(sorter_engine, 'IGNORED_DIRECTORIES'):
             disk_data["IGNORED_DIRECTORIES"] = sorter_engine.IGNORED_DIRECTORIES
             
@@ -292,6 +292,141 @@ def open_filename_tester(anchor):
     win.bind("<Escape>", lambda _e: win.destroy())
     _center_over(win, anchor)
     entry.focus_set()
+
+
+def open_loop_layout(anchor, library):
+    """Pick which folder levels loops are filed into, and in what order."""
+    theme = gui_theme.THEME
+    names = {"bpm": "Tempo (BPM range)", "key": "Musical key"}
+    samples = {"bpm": "100-114 BPM", "key": "AMIN"}
+    win = tk.Toplevel(anchor)
+    win.title("Loop folder layout")
+    win.configure(bg=theme["bg_dark"])
+    win.transient(anchor.winfo_toplevel())
+    win.resizable(False, False)
+    current = list(sorter_engine.LOOP_LAYOUT)
+    state = {"levels": [[level, True] for level in current]
+             + [[level, False] for level in sorter_engine.LOOP_LEVELS if level not in current],
+             "recommended": None}
+
+    def label(text, font=("Segoe UI", 9), fg=None, **pack):
+        widget = tk.Label(win, text=text, font=font, bg=theme["bg_dark"], fg=fg or theme["fg_muted"],
+                          wraplength=460, justify="left", anchor="w")
+        widget.pack(fill="x", padx=20, **pack)
+        return widget
+
+    label("Loop folder layout", ("Segoe UI", 12, "bold"), theme["accent_neon"], pady=(16, 2))
+    label("Loops are filed into nested folders. Put the broadest level first and the most specific last, "
+          "so you narrow down as you open folders. Untick a level to skip it.", pady=(0, 8))
+    advice = label("Checking your library for a recommendation...", fg=theme["fg_light"], pady=(0, 8))
+    rows = tk.Frame(win, bg=theme["bg_field"])
+    rows.pack(fill="x", padx=20)
+    example = label("", font=("Consolas", 9), fg=theme["accent_gold"], pady=(10, 2))
+    message = label("", fg=theme["fg_light"], pady=(0, 4))
+
+    def enabled_layout():
+        return [level for level, on in state["levels"] if on]
+
+    def render():
+        for child in rows.winfo_children():
+            child.destroy()
+        for index, (level, on) in enumerate(state["levels"]):
+            row = tk.Frame(rows, bg=theme["bg_field"])
+            row.pack(fill="x", padx=8, pady=3)
+            var = tk.BooleanVar(value=on)
+
+            def toggle(i=index, v=var):
+                state["levels"][i][1] = v.get()
+                render()
+
+            tk.Checkbutton(row, text=f"{index + 1}.  {names[level]}", variable=var, command=toggle,
+                           bg=theme["bg_field"], fg=theme["fg_light"], selectcolor=theme["bg_dark"],
+                           activebackground=theme["bg_field"], activeforeground=theme["fg_light"],
+                           font=("Segoe UI", 10), anchor="w").pack(side="left")
+            for text, delta in (("▼", 1), ("▲", -1)):
+                target = index + delta
+                tk.Button(row, text=text, width=3, bd=0, bg=theme["btn_secondary"], fg=theme["fg_light"],
+                          state="normal" if 0 <= target < len(state["levels"]) else "disabled",
+                          command=lambda i=index, t=target: move(i, t)).pack(side="right", padx=(4, 0))
+        parts = ["Samples", "Loops"] + [samples[level] for level in enabled_layout()] + ["My Loop 105 BPM Amin.wav"]
+        example.config(text="Example:  " + "\\".join(parts))
+
+    def move(index, target):
+        state["levels"][index], state["levels"][target] = state["levels"][target], state["levels"][index]
+        message.config(text="")
+        render()
+
+    def describe(result):
+        stats = result["stats"]
+        if not result["loops"]:
+            return "No loops found yet, so Tempo then Key is suggested."
+        lines = [f"Recommended: {' then '.join(names[l] for l in result['layout']) or 'no sub-folders'}."]
+        for level in sorter_engine.LOOP_LEVELS:
+            info = stats[level]
+            percent = round(info["coverage"] * 100)
+            if level in result["layout"]:
+                lines.append(f"{names[level]}: {percent}% of your {result['loops']:,} loops have one "
+                             f"({info['folders']} folders).")
+            else:
+                lines.append(f"{names[level]} left out: only {percent}% of loops have one, so most would "
+                             "pile into a 'No Key Info' or 'Unsorted' folder.")
+        if len(result["layout"]) > 1:
+            lines.append("Fewest folders first keeps the top level short and lets the detailed level sit last.")
+        return "\n".join(lines)
+
+    def apply_recommendation():
+        result = state["recommended"]
+        if not result:
+            return
+        chosen = result["layout"]
+        state["levels"] = [[level, True] for level in chosen] + \
+                          [[level, False] for level in sorter_engine.LOOP_LEVELS if level not in chosen]
+        message.config(text="Recommended layout selected. Click Save to keep it.")
+        render()
+
+    def save():
+        layout = enabled_layout()
+        sorter_engine.LOOP_LAYOUT = layout
+        _sync_config_state("Loop layout saved: " + (" > ".join(names[l] for l in layout) or "no sub-folders"))
+        message.config(text="Saved. Run Organize (use Preview first) to apply it to existing loops. "
+                            "Folders you created yourself are left alone.")
+
+    render()
+    row = tk.Frame(win, bg=theme["bg_dark"])
+    row.pack(fill="x", padx=20, pady=(6, 16))
+    tk.Button(row, text="Close", width=10, command=win.destroy, bg=theme["btn_secondary"],
+              fg=theme["fg_light"], bd=0, font=("Segoe UI", 9, "bold")).pack(side="right")
+    tk.Button(row, text="Save", width=10, command=save, bg=theme["btn_primary"],
+              fg=theme["btn_primary_fg"], bd=0, font=("Segoe UI", 9, "bold")).pack(side="right", padx=8)
+    recommend_button = tk.Button(row, text="Use recommended", command=apply_recommendation, state="disabled",
+                                 bg=theme["tag_enabled"], fg="white", activebackground=theme["tag_enabled"],
+                                 activeforeground="white", bd=0, font=("Segoe UI", 9, "bold"), padx=10, pady=3)
+    recommend_button.pack(side="left")
+
+    result = {}
+
+    def work():
+        result["value"] = sorter_engine.recommend_loop_layout(library)
+
+    def poll():
+        try:
+            if not win.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        if thread.is_alive():
+            win.after(150, poll)
+            return
+        state["recommended"] = result["value"]
+        advice.config(text=describe(result["value"]))
+        recommend_button.config(state="normal")
+        _center_over(win, anchor)
+
+    thread = threading.Thread(target=work, daemon=True)
+    thread.start()
+    win.after(150, poll)
+    win.bind("<Escape>", lambda _e: win.destroy())
+    _center_over(win, anchor)
 
 
 def ask_confirm(anchor, title, message, yes_text="Yes"):
@@ -1227,6 +1362,8 @@ def build(parent, status_label_ref):
 
     add_action_button("Advanced options…", lambda: open_advanced_options(parent), primary=True, bottom=5)
     add_action_button("Test a filename…", lambda: open_filename_tester(parent), bottom=5)
+    add_action_button("Loop folder layout…",
+                      lambda: open_loop_layout(parent, gui_theme.USER_LIBRARY_PATH), bottom=5)
     suggest_button = tk.Button(
         action_panel, text="Suggest rules from my library…", command=suggest_from_library,
         bg=gui_theme.THEME["btn_secondary"], fg=gui_theme.THEME["fg_light"],

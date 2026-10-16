@@ -34,6 +34,8 @@ RULE_METADATA = {}
 SMART_LEARNING_ENABLED = True
 LEARNING_COUNTS = {}
 LEARNED_RULE_CANDIDATES = []
+LOOP_LEVELS = ("bpm", "key")
+LOOP_LAYOUT = list(LOOP_LEVELS)
 _ASSET_SCHEMA_READY = set()
 _ASSET_SCHEMA_LOCK = threading.Lock()
 
@@ -89,6 +91,7 @@ def _default_config():
         "NATIVE_EXTS": {".adg": "Live Instrument Racks", ".amxd": "Max For Live Devices"},
         "IGNORED_DIRECTORIES": ["eastwest", "kontakt library", "spectrasonics", "steam",
                                "vstplugins", "common files"],
+        "LOOP_LAYOUT": list(LOOP_LEVELS),
         **_default_learning_state()
     }
 
@@ -114,13 +117,17 @@ def _validate_config(data):
         raise ValueError("LEARNED_RULE_CANDIDATES must be a list.")
     if not isinstance(data.get("RULE_METADATA", {}), dict):
         raise ValueError("RULE_METADATA must be an object.")
+    layout = data.get("LOOP_LAYOUT", list(LOOP_LEVELS))
+    if (not isinstance(layout, list) or len(set(layout)) != len(layout)
+            or any(level not in LOOP_LEVELS for level in layout)):
+        raise ValueError("LOOP_LAYOUT must list each of 'bpm' and 'key' at most once.")
     return data
 
 def load_external_config():
     """Reads configuration matrices directly from disk to keep UI settings synced."""
     global BPM_RANGES, DRUM_KEYWORDS, SYNTH_EXTS, NATIVE_EXTS, IGNORED_DIRECTORIES
     global RULE_METADATA
-    global SMART_LEARNING_ENABLED, LEARNING_COUNTS, LEARNED_RULE_CANDIDATES
+    global SMART_LEARNING_ENABLED, LEARNING_COUNTS, LEARNED_RULE_CANDIDATES, LOOP_LAYOUT
     if not os.path.exists(CONFIG_FILE):
         _write_config(_default_config(), create_backup=False)
     try:
@@ -146,6 +153,7 @@ def load_external_config():
     LEARNING_COUNTS = user_rules.get("LEARNING_COUNTS", {})
     LEARNED_RULE_CANDIDATES = user_rules.get("LEARNED_RULE_CANDIDATES", [])
     RULE_METADATA = user_rules.get("RULE_METADATA", {})
+    LOOP_LAYOUT = list(user_rules.get("LOOP_LAYOUT", LOOP_LEVELS))
     for index, pattern in enumerate(DRUM_KEYWORDS):
         RULE_METADATA.setdefault(pattern, {
             "priority": len(DRUM_KEYWORDS) - index,
@@ -2003,6 +2011,7 @@ class ParallelLibrarySorter:
             # If the file is ALREADY sitting inside one of your top-level organized system blocks,
             # DO NOT parse its folder name for keywords. This completely stops Percussion\Percussion loops.
             is_already_sorted = False
+            relayout_loop = False
             if path_segments:
                 top_level_folder = path_segments[0]
                 if top_level_folder in ["percussion", "midi", "serum presets", "live instrument racks", "max for live devices"]:
@@ -2011,9 +2020,19 @@ class ParallelLibrarySorter:
                     # The catch-all folder is re-checked so new and existing rules can still claim its files.
                     is_catch_all = len(path_segments) > 2 and path_segments[1] == "one-shots" and path_segments[2] == "other one-shots"
                     is_already_sorted = not is_catch_all
+                    # Loops in folders this app created follow the current loop layout; custom folders are left alone.
+                    relayout_loop = (path_segments[1] == "loops" and ext in AUDIO_EXTS
+                                     and is_generated_loop_folder(path_segments[2:-1]))
 
-            if is_already_sorted:
+            if is_already_sorted and not relayout_loop:
                 return
+
+            if relayout_loop:
+                classification_reason = "loop_name_or_metadata"
+                classification_confidence = 0.80
+                target_dir = os.path.join(
+                    self.dest, "Samples", "Loops", *loop_subfolders(f_normalized, f_lower))
+                stat_key = "Loops Separated by BPM & Key"
 
             # 1. KEYWORD GRID OVERRIDE PATTERN SCAN
             grid_matched_folder = None
@@ -2107,30 +2126,8 @@ class ParallelLibrarySorter:
                     if force_loop or (not force_one_shot and (is_meta_loop or is_text_loop)):
                         classification_reason = "routing_tag" if force_loop else "loop_name_or_metadata"
                         classification_confidence = 0.98 if force_loop else 0.80
-                        match = re.search(
-                            r'(?<!\w)(\d{2,3})\s*bpm(?!\w)', f_normalized
-                        )
-                        if not match: match = re.search(r'(?<!\w)(\d{2,3})(?!\w)', f_lower)
-                        
-                        bpm_folder = "Unsorted Tempos"
-                        if match:
-                            try:
-                                p_bpm = int(match.group(1))
-                                if 40 <= p_bpm <= 250:
-                                    for low, high, folder_name in BPM_RANGES:
-                                        if low <= p_bpm <= high:
-                                            bpm_folder = folder_name
-                                            break
-                            except ValueError: pass
-                        
-                        key_match = re.search(
-                            r'(?<!\w)([a-gA-G][#b]?m(?:in)?|'
-                            r'[a-gA-G][#b]?(?:maj)?|\d{1,2}[a-dB-D])(?!\w)',
-                            f_normalized
-                        )
-                        musical_key = key_match.group(1).upper() if key_match else "No Key Info"
-                        
-                        target_dir = os.path.join(self.dest, "Samples", "Loops", bpm_folder, musical_key)
+                        target_dir = os.path.join(
+                            self.dest, "Samples", "Loops", *loop_subfolders(f_normalized, f_lower))
                         stat_key = "Loops Separated by BPM & Key"
                     else:
                         classification_reason = "audio_fallback"
@@ -2287,6 +2284,83 @@ def calculate_crc32(filepath):
                 crc = zlib.crc32(chunk, crc)
             return crc & 0xFFFFFFFF
     except Exception: return None
+
+_KEY_PATTERN = (r'(?<!\w)([a-gA-G][#b]?m(?:in)?|'
+                r'[a-gA-G][#b]?(?:maj)?|\d{1,2}[a-dB-D])(?!\w)')
+_KEY_FOLDER_RE = re.compile(r'[a-g][#b]?m(?:in)?|[a-g][#b]?(?:maj)?|\d{1,2}[a-d]')
+
+
+def loop_bpm_folder(f_normalized, f_lower):
+    match = re.search(r'(?<!\w)(\d{2,3})\s*bpm(?!\w)', f_normalized)
+    if not match:
+        match = re.search(r'(?<!\w)(\d{2,3})(?!\w)', f_lower)
+    if match:
+        try:
+            bpm = int(match.group(1))
+        except ValueError:
+            return "Unsorted Tempos"
+        if 40 <= bpm <= 250:
+            for low, high, folder_name in BPM_RANGES:
+                if low <= bpm <= high:
+                    return folder_name
+    return "Unsorted Tempos"
+
+
+def loop_key_folder(f_normalized):
+    match = re.search(_KEY_PATTERN, f_normalized)
+    return match.group(1).upper() if match else "No Key Info"
+
+
+def loop_subfolders(f_normalized, f_lower, layout=None):
+    """Folder names under Samples/Loops for one loop, following the chosen layout."""
+    parts = []
+    for level in (LOOP_LAYOUT if layout is None else layout):
+        parts.append(loop_bpm_folder(f_normalized, f_lower) if level == "bpm"
+                     else loop_key_folder(f_normalized))
+    return parts
+
+
+def is_generated_loop_folder(segments):
+    """True when every folder level is one this app creates (BPM range, key, or its fallback)."""
+    labels = {label.lower() for _low, _high, label in BPM_RANGES} | {"unsorted tempos", "no key info"}
+    return all(seg in labels or _KEY_FOLDER_RE.fullmatch(seg) for seg in segments)
+
+
+def recommend_loop_layout(library_root, should_cancel=None):
+    """Suggests a loop folder order: levels most files can fill, fewest folders (broadest) first."""
+    totals = {"loops": 0}
+    found = {level: 0 for level in LOOP_LEVELS}
+    distinct = {level: set() for level in LOOP_LEVELS}
+    for dirpath, dirnames, filenames in os.walk(library_root):
+        if should_cancel and should_cancel():
+            break
+        dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRECTORIES]
+        for filename in filenames:
+            if os.path.splitext(filename)[1].lower() not in AUDIO_EXTS:
+                continue
+            f_lower = filename.lower()
+            f_normalized = re.sub(r'[_#\-]', ' ', f_lower)
+            has_bpm = re.search(r'\b\d{2,3}\s*(bpm|BPM)\b', f_normalized)
+            if not (has_bpm or any(k in f_normalized for k in ('loop', 'fill', 'roll', 'groove'))):
+                continue
+            totals["loops"] += 1
+            bpm = loop_bpm_folder(f_normalized, f_lower)
+            if bpm != "Unsorted Tempos":
+                found["bpm"] += 1
+                distinct["bpm"].add(bpm)
+            key = loop_key_folder(f_normalized)
+            if key != "No Key Info":
+                found["key"] += 1
+                distinct["key"].add(key)
+    loops = totals["loops"]
+    stats = {level: {"coverage": (found[level] / loops if loops else 0.0),
+                     "folders": len(distinct[level])} for level in LOOP_LEVELS}
+    usable = [level for level in LOOP_LEVELS if stats[level]["coverage"] >= 0.5]
+    usable.sort(key=lambda level: (stats[level]["folders"], LOOP_LEVELS.index(level)))
+    if not loops:
+        usable = list(LOOP_LEVELS)
+    return {"layout": usable, "loops": loops, "stats": stats}
+
 
 def force_delete_empty_folders(root_dir):
     """Recursively sweeps and clears out dead paths from storage blocks."""
