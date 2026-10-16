@@ -57,7 +57,7 @@ def refresh_matrix_data():
                 try:
                     placement = sorter_engine.suggest_rule_priority(
                         candidate.get("pattern", ""), candidate.get("target", ""))
-                    priority = f"#{placement['position']} of {placement['total']}"
+                    priority = f"{placement['total'] - placement['position'] + 1} of {placement['total']}"
                 except (re.error, ValueError):
                     priority = "-"
                 _candidate_tree.insert(
@@ -622,7 +622,8 @@ def build(parent, status_label_ref):
     ).pack(anchor="w", pady=(0, 2))
     tk.Label(
         candidate_section,
-        text="Smart Learning only suggests rules. Select a suggestion, then choose Use or Dismiss. Nothing is changed automatically.",
+        text="Smart Learning only suggests rules. Select a suggestion, then choose Use or Dismiss. Nothing is changed automatically. "
+             "Priority uses the same scale as the rules below: a higher number is checked first, so new words go to the bottom (1) and never take files from a more specific rule.",
         font=("Segoe UI", 8), bg=gui_theme.THEME["bg_dark"], fg=gui_theme.THEME["fg_muted"],
         wraplength=760, justify="left"
     ).pack(anchor="w", pady=(0, 4))

@@ -41,8 +41,8 @@ def open_type_editor(win, anchor, library, on_change):
     body = tk.Frame(editor, bg=theme["bg_dark"])
     body.pack(fill="x", padx=20)
     listbox = tk.Listbox(body, width=26, height=14, exportselection=False, bg=theme["bg_field"],
-                         fg=theme["fg_light"], selectbackground=theme["btn_primary"],
-                         selectforeground=theme["btn_primary_fg"], bd=0, highlightthickness=0,
+                         fg=theme["fg_light"], selectbackground=theme["tag_enabled"],
+                         selectforeground="white", bd=0, highlightthickness=0,
                          font=("Segoe UI", 9))
     listbox.pack(side="left", fill="y")
     form = tk.Frame(body, bg=theme["bg_dark"])
@@ -147,14 +147,16 @@ def open_type_editor(win, anchor, library, on_change):
                "new folder with it.", padx=20, pady=(0, 4))
     suggest_row = tk.Frame(editor, bg=theme["bg_dark"])
     suggest_row.pack(fill="x", padx=20)
+    find_button = tk.Button(suggest_row, text="Find suggestions", bd=0, font=("Segoe UI", 10, "bold"),
+                            bg=theme["tag_enabled"], fg="white", activebackground=theme["tag_enabled"],
+                            activeforeground="white", cursor="hand2", padx=14, pady=4)
+    find_button.pack(anchor="w", pady=(0, 6))
     suggestion_list = tk.Listbox(suggest_row, height=6, exportselection=False, bg=theme["bg_field"],
-                                 fg=theme["fg_light"], selectbackground=theme["btn_primary"],
-                                 selectforeground=theme["btn_primary_fg"], bd=0, highlightthickness=0,
+                                 fg=theme["fg_light"], selectbackground=theme["tag_enabled"],
+                                 selectforeground="white", bd=0, highlightthickness=0,
                                  font=("Segoe UI", 9))
     suggestion_list.pack(fill="x")
-    find_button = tk.Button(editor, text="Find suggestions", bd=0, font=("Segoe UI", 9, "bold"),
-                            bg=theme["btn_secondary"], fg=theme["fg_light"])
-    find_button.pack(anchor="w", padx=20, pady=(6, 0))
+    suggestion_list.insert("end", "Click Find suggestions to scan your library.")
 
     def find():
         if state["busy"]:
@@ -288,11 +290,21 @@ def open_xo_builder(anchor):
     scan_button = tk.Button(buttons, text="Scan", width=10, bg=theme["btn_primary"], fg=theme["btn_primary_fg"],
                             bd=0, font=("Segoe UI", 9, "bold"))
     scan_button.pack(side="right")
+    def set_scan_primary(primary):
+        scan_button.config(bg=theme["btn_primary"] if primary else theme["btn_secondary"],
+                           fg=theme["btn_primary_fg"] if primary else theme["fg_light"])
+
+    def folders_changed():
+        status.config(text="Folders changed. Click Scan to refresh the list.")
+        set_scan_primary(True)
+        build_button.config(state="disabled", bg=theme["btn_secondary"], fg=theme["fg_muted"])
+
+    loops_var.trace_add("write", lambda *_: folders_changed()
+                        if state["plan"] is not None else None)
+
     edit_button = tk.Button(buttons, text="Edit folders…", bg=theme["btn_secondary"], fg=theme["fg_light"],
                             bd=0, font=("Segoe UI", 9, "bold"),
-                            command=lambda: open_type_editor(
-                                win, anchor, library,
-                                lambda: status.config(text="Folders changed. Click Scan to refresh the list.")))
+                            command=lambda: open_type_editor(win, anchor, library, folders_changed))
     edit_button.pack(side="left")
 
     def close():
@@ -335,17 +347,23 @@ def open_xo_builder(anchor):
                            + (f" ({', '.join(skipped)})." if skipped else "."))
         if total:
             build_button.config(state="normal", bg=theme["btn_primary"], fg=theme["btn_primary_fg"])
+            set_scan_primary(False)
+        else:
+            set_scan_primary(True)
         _center_over(win, anchor)
 
     def scan():
         if state["busy"]:
             return
         set_busy(True)
+        set_scan_primary(True)
         status.config(text="Scanning your library...")
         result = {}
 
+        include_loops = loops_var.get()
+
         def work():
-            result["value"] = xo_filter.build_plan(library, include_loops=loops_var.get(),
+            result["value"] = xo_filter.build_plan(library, include_loops=include_loops,
                                                    should_cancel=lambda: state["cancel"])
 
         def poll():

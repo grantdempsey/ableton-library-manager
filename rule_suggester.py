@@ -110,6 +110,14 @@ def add_suggestions_as_candidates(suggestions):
         with open(sorter_engine.CONFIG_FILE, "r", encoding="utf-8") as handle:
             data = json.load(handle)
     candidates = data.setdefault("LEARNED_RULE_CANDIDATES", [])
+    # Approved candidates whose rule was later deleted can be suggested again.
+    live_rules = set(data.get("DRUM_KEYWORDS", sorter_engine.DRUM_KEYWORDS))
+    before = len(candidates)
+    candidates[:] = [
+        c for c in candidates
+        if not (c.get("status") == "approved" and c.get("pattern") not in live_rules)
+    ]
+    removed_stale = len(candidates) != before
     known = {(c.get("token"), c.get("target")) for c in candidates}
     added = 0
     for suggestion in suggestions:
@@ -123,7 +131,7 @@ def add_suggestions_as_candidates(suggestions):
         })
         known.add(key)
         added += 1
-    if added:
+    if added or removed_stale:
         sorter_engine._write_config(data)
         sorter_engine.load_external_config()
     return added

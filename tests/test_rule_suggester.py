@@ -71,6 +71,19 @@ class RuleSuggesterTests(unittest.TestCase):
         words = [s["word"] for s in xo_filter.suggest_types(self.lib)]
         self.assertIn("quasar", words)
 
+    def test_deleted_rule_can_be_suggested_again(self):
+        self._files([f"Pack - Djembe {i}.wav" for i in range(6)])
+        rule_suggester.add_suggestions_as_candidates(rule_suggester.suggest_rules(self.lib))
+        sorter_engine.review_learning_candidate("djembe", "Percussion", "approved")
+        self.assertEqual(rule_suggester.suggest_rules(self.lib), [])
+        with open(sorter_engine.CONFIG_FILE, encoding="utf-8") as handle:
+            data = json.load(handle)
+        data["DRUM_KEYWORDS"].pop(r"\bdjembe\w*\b")
+        sorter_engine._write_config(data)
+        sorter_engine.load_external_config()
+        again = rule_suggester.suggest_rules(self.lib)
+        self.assertEqual(rule_suggester.add_suggestions_as_candidates(again), 1)
+
     def test_candidates_are_stored_once_as_pending(self):
         self._files([f"Pack - Djembe {i}.wav" for i in range(6)])
         suggestions = rule_suggester.suggest_rules(self.lib)
