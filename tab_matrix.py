@@ -740,7 +740,7 @@ def build(parent, status_label_ref):
     ).pack(anchor="w")
     tk.Label(
         header,
-        text="Review learning suggestions first. The other sections control how files are recognized and organized.",
+        text="Pick a kind of file below. Each tab shows where it goes and the controls for changing it.",
         font=("Segoe UI", 9), bg=gui_theme.THEME["bg_dark"], fg=gui_theme.THEME["fg_muted"],
         wraplength=900, justify="left"
     ).pack(anchor="w", pady=(2, 0))
@@ -750,55 +750,56 @@ def build(parent, status_label_ref):
     master_workspace.columnconfigure(0, weight=1)
     master_workspace.rowconfigure(0, weight=1)
 
-    lists_frame = tk.Frame(master_workspace, bg=gui_theme.THEME["bg_dark"])
+    sections = ttk.Notebook(master_workspace)
+    sections.grid(row=0, column=0, sticky="nsew")
+    loops_tab = tk.Frame(sections, bg=gui_theme.THEME["bg_dark"], padx=14, pady=12)
+    oneshot_tab = tk.Frame(sections, bg=gui_theme.THEME["bg_dark"], padx=14, pady=12)
+    preset_tab = tk.Frame(sections, bg=gui_theme.THEME["bg_dark"], padx=14, pady=12)
+    sections.add(loops_tab, text="  Loops  ")
+    sections.add(oneshot_tab, text="  One-shots  ")
+    sections.add(preset_tab, text="  Presets & racks  ")
+    for tab in (oneshot_tab, preset_tab):
+        tab.columnconfigure(0, weight=1)
+        tab.columnconfigure(1, weight=0)
+        tab.rowconfigure(0, weight=1)
+
+    lists_frame = tk.Frame(oneshot_tab, bg=gui_theme.THEME["bg_dark"])
     lists_frame.grid(row=0, column=0, sticky="nsew")
     lists_frame.columnconfigure(0, weight=1)
-    lists_frame.rowconfigure(0, weight=0)
+    lists_frame.rowconfigure(0, weight=1, uniform="sections")
     lists_frame.rowconfigure(1, weight=1, uniform="sections")
-    lists_frame.rowconfigure(2, weight=1, uniform="sections")
-    lists_frame.rowconfigure(3, weight=1, uniform="sections")
 
-    # OVERVIEW: WHERE EACH KIND OF FILE GOES
+    # LOOPS TAB
     global _loop_path_label
-    flow = tk.Frame(lists_frame, bg=gui_theme.THEME["bg_field"], bd=1, relief="solid", padx=10, pady=6)
-    flow.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-    flow.columnconfigure(1, weight=1)
-    tk.Label(flow, text="Where each kind of file goes", font=("Segoe UI", 10, "bold"),
-             bg=gui_theme.THEME["bg_field"], fg=gui_theme.THEME["accent_gold"]
-             ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
-
-    def flow_row(row, kind, where, button=None):
-        tk.Label(flow, text=kind, font=("Segoe UI", 9, "bold"), bg=gui_theme.THEME["bg_field"],
-                 fg=gui_theme.THEME["fg_light"], width=14, anchor="w").grid(row=row, column=0, sticky="w")
-        label = tk.Label(flow, text=where, font=("Consolas", 9), bg=gui_theme.THEME["bg_field"],
-                         fg=gui_theme.THEME["fg_muted"], anchor="w", justify="left")
-        label.grid(row=row, column=1, sticky="w", padx=(0, 10))
-        if button:
-            tk.Button(flow, text=button[0], command=button[1], bg=gui_theme.THEME["tag_enabled"],
-                      fg="white", activebackground=gui_theme.THEME["tag_enabled"],
-                      activeforeground="white", bd=0, font=("Segoe UI", 8, "bold"),
-                      padx=8).grid(row=row, column=2, sticky="e", pady=1)
-        return label
+    tk.Label(loops_tab, text="Loop folders", font=("Segoe UI", 11, "bold"),
+             bg=gui_theme.THEME["bg_dark"], fg=gui_theme.THEME["fg_light"]).pack(anchor="w")
+    tk.Label(loops_tab, text="Loops ignore the one-shot rules. They are filed only by tempo and key, "
+             "in the order you choose.", font=("Segoe UI", 9), bg=gui_theme.THEME["bg_dark"],
+             fg=gui_theme.THEME["fg_muted"], wraplength=700, justify="left").pack(anchor="w", pady=(2, 12))
+    loop_card = tk.Frame(loops_tab, bg=gui_theme.THEME["bg_field"], bd=1, relief="solid", padx=14, pady=12)
+    loop_card.pack(fill="x")
+    tk.Label(loop_card, text="Loops are filed into", font=("Segoe UI", 9), bg=gui_theme.THEME["bg_field"],
+             fg=gui_theme.THEME["fg_muted"]).pack(anchor="w")
+    _loop_path_label = tk.Label(loop_card, text=_loop_path_text(), font=("Consolas", 10),
+                                bg=gui_theme.THEME["bg_field"], fg=gui_theme.THEME["fg_light"])
+    _loop_path_label.pack(anchor="w", pady=(2, 10))
 
     def edit_loop_layout_from_strip():
         win = open_loop_layout(parent, gui_theme.USER_LIBRARY_PATH)
         win.bind("<Destroy>", lambda e: _loop_path_label.config(text=_loop_path_text())
                  if e.widget is win and _loop_path_label is not None else None, add="+")
 
-    _loop_path_label = flow_row(1, "Loops", _loop_path_text(), ("Edit layout…", edit_loop_layout_from_strip))
-    flow_row(2, "One-shots", "Samples\\One-Shots\\<folder chosen by the one-shot rules below>")
-    flow_row(3, "Presets & racks", "<folder chosen by file type, in the last table below>")
-    tk.Label(flow, text="Loops ignore the one-shot rules; they are filed only by tempo and key.",
-             font=("Segoe UI", 8), bg=gui_theme.THEME["bg_field"], fg=gui_theme.THEME["fg_muted"]
-             ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(4, 0))
+    tk.Button(loop_card, text="Edit layout…", command=edit_loop_layout_from_strip,
+              bg=gui_theme.THEME["tag_enabled"], fg="white", activebackground=gui_theme.THEME["tag_enabled"],
+              activeforeground="white", bd=0, font=("Segoe UI", 9, "bold"), padx=14, pady=4).pack(anchor="w")
 
-    # SECTION 1: LEARNING SUGGESTIONS
+    # ONE-SHOTS TAB, SECTION 1: LEARNING SUGGESTIONS
     candidate_section = tk.Frame(lists_frame, bg=gui_theme.THEME["bg_dark"])
-    candidate_section.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
+    candidate_section.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
     tk.Label(
-        candidate_section, text="One-shot rule suggestions to review",
+        candidate_section, text="Suggestions to review",
         font=("Segoe UI", 10, "bold"), bg=gui_theme.THEME["bg_dark"],
-        fg=gui_theme.THEME["accent_gold"]
+        fg=gui_theme.THEME["fg_light"]
     ).pack(anchor="w", pady=(0, 2))
     tk.Label(
         candidate_section,
@@ -829,9 +830,9 @@ def build(parent, status_label_ref):
 
     # SECTION 2: DRUM MATRIX GRID
     drum_section = tk.Frame(lists_frame, bg=gui_theme.THEME["bg_dark"])
-    drum_section.grid(row=2, column=0, sticky="nsew", pady=(5, 10))
+    drum_section.grid(row=1, column=0, sticky="nsew", pady=(5, 0))
     
-    tk.Label(drum_section, text="One-shots: how should the app recognize sounds?", font=("Segoe UI", 10, "bold"), bg=gui_theme.THEME["bg_dark"], fg=gui_theme.THEME["fg_light"]).pack(anchor="w", pady=(0, 2))
+    tk.Label(drum_section, text="How should the app recognize one-shots?", font=("Segoe UI", 10, "bold"), bg=gui_theme.THEME["bg_dark"], fg=gui_theme.THEME["fg_light"]).pack(anchor="w", pady=(0, 2))
     tk.Label(drum_section, text="These rules apply to one-shots only (drums, bass hits, vocals, FX and more). They look at filenames and choose a folder inside Samples\\One-Shots. Most users can leave them as they are.", font=("Segoe UI", 8), bg=gui_theme.THEME["bg_dark"], fg=gui_theme.THEME["fg_muted"], wraplength=760, justify="left").pack(anchor="w", pady=(0, 4))
     
     drum_wrapper = ttk.Frame(drum_section)
@@ -852,10 +853,10 @@ def build(parent, status_label_ref):
     _drum_tree.column('State', width=100, anchor='center')
 
     # SECTION 3: SYNTH & PRESET EXTENSIONS MATRIX GRID
-    synth_section = tk.Frame(lists_frame, bg=gui_theme.THEME["bg_dark"])
-    synth_section.grid(row=3, column=0, sticky="nsew", pady=(5, 0))
+    synth_section = tk.Frame(preset_tab, bg=gui_theme.THEME["bg_dark"])
+    synth_section.grid(row=0, column=0, sticky="nsew")
     
-    tk.Label(synth_section, text="Presets, racks & other special files: where should they go?", font=("Segoe UI", 10, "bold"), bg=gui_theme.THEME["bg_dark"], fg=gui_theme.THEME["fg_light"]).pack(anchor="w", pady=(0, 2))
+    tk.Label(synth_section, text="Where should presets, racks and other special files go?", font=("Segoe UI", 10, "bold"), bg=gui_theme.THEME["bg_dark"], fg=gui_theme.THEME["fg_light"]).pack(anchor="w", pady=(0, 2))
     tk.Label(synth_section, text="These rules organize presets, Ableton devices, and MIDI files by their file type.", font=("Segoe UI", 8), bg=gui_theme.THEME["bg_dark"], fg=gui_theme.THEME["fg_muted"], wraplength=760, justify="left").pack(anchor="w", pady=(0, 4))
     
     synth_wrapper = ttk.Frame(synth_section)
@@ -879,12 +880,19 @@ def build(parent, status_label_ref):
 
     # SECTION 3: CONTROL COLUMN PANEL
     action_panel = tk.Frame(
-        master_workspace, bg=gui_theme.THEME["bg_field"],
+        oneshot_tab, bg=gui_theme.THEME["bg_field"],
         bd=1, relief="solid", padx=12, pady=12
     )
     action_panel.grid(row=0, column=1, sticky="nsew", padx=(15, 0))
     action_panel.config(width=230)
     action_panel.grid_propagate(False)
+    preset_panel = tk.Frame(
+        preset_tab, bg=gui_theme.THEME["bg_field"],
+        bd=1, relief="solid", padx=12, pady=12
+    )
+    preset_panel.grid(row=0, column=1, sticky="nsew", padx=(15, 0))
+    preset_panel.config(width=230)
+    preset_panel.grid_propagate(False)
     
     def dialog_anchor():
         popup_ref = advanced_window["popup"]
@@ -1291,7 +1299,7 @@ def build(parent, status_label_ref):
     tk.Label(
         action_panel, text="Review a suggestion",
         font=("Segoe UI", 10, "bold"), bg=gui_theme.THEME["bg_field"],
-        fg=gui_theme.THEME["accent_gold"], anchor="w"
+        fg=gui_theme.THEME["fg_light"], anchor="w"
     ).pack(fill="x", pady=(0, 3))
     tk.Label(
         action_panel, text="Select a suggestion in the list, then decide whether to use it.",
@@ -1353,9 +1361,9 @@ def build(parent, status_label_ref):
         fg=gui_theme.THEME["fg_muted"], wraplength=190, justify="left", anchor="w"
     ).pack(fill="x", pady=(0, 6))
 
-    def add_action_button(text, command, *, primary=False, bottom=5):
+    def add_action_button(text, command, *, primary=False, bottom=5, panel=None):
         tk.Button(
-            action_panel, text=text,
+            panel or action_panel, text=text,
             bg=gui_theme.THEME["btn_primary"] if primary else gui_theme.THEME["btn_secondary"],
             fg=gui_theme.THEME["btn_primary_fg"] if primary else gui_theme.THEME["fg_light"],
             activebackground=(
@@ -1398,14 +1406,30 @@ def build(parent, status_label_ref):
         parent.after(300, poll)
 
     add_action_button("Advanced options…", lambda: open_advanced_options(parent), primary=True, bottom=5)
-    add_action_button("Test a filename…", lambda: open_filename_tester(parent), bottom=14)
+    add_action_button("Test a filename…", lambda: open_filename_tester(parent), bottom=0)
     tk.Label(
-        action_panel, text="Profile management",
+        preset_panel, text="Advanced options",
         font=("Segoe UI", 10, "bold"), bg=gui_theme.THEME["bg_field"],
-        fg=gui_theme.THEME["fg_muted"], anchor="w"
-    ).pack(fill="x", pady=(0, 5))
-    add_action_button("Export profile", lambda: execute_profile_json_export(parent))
-    add_action_button("Import profile", lambda: execute_profile_json_import(parent), bottom=0)
+        fg=gui_theme.THEME["fg_light"], anchor="w"
+    ).pack(fill="x", pady=(0, 2))
+    tk.Label(
+        preset_panel, text="Add, remove or change where a file type goes. Every change asks you to confirm first.",
+        font=("Segoe UI", 9), bg=gui_theme.THEME["bg_field"],
+        fg=gui_theme.THEME["fg_muted"], wraplength=190, justify="left", anchor="w"
+    ).pack(fill="x", pady=(0, 6))
+    add_action_button("Advanced options…", lambda: open_advanced_options(parent), primary=True, bottom=0,
+                      panel=preset_panel)
+
+    footer = tk.Frame(master_workspace, bg=gui_theme.THEME["bg_dark"])
+    footer.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+    tk.Label(footer, text="Profile (all rules and settings):", font=("Segoe UI", 9),
+             bg=gui_theme.THEME["bg_dark"], fg=gui_theme.THEME["fg_muted"]).pack(side="left")
+    for text, command in (("Import", lambda: execute_profile_json_import(parent)),
+                          ("Export", lambda: execute_profile_json_export(parent))):
+        tk.Button(footer, text=text, command=command, bg=gui_theme.THEME["btn_secondary"],
+                  fg=gui_theme.THEME["fg_light"], activebackground=gui_theme.THEME["btn_secondary_hover"],
+                  activeforeground=gui_theme.THEME["accent_neon"], bd=1, relief="solid",
+                  font=("Segoe UI", 9, "bold"), width=9).pack(side="right", padx=(6, 0))
 
     refresh_matrix_data()
     global _auto_suggest_ref
