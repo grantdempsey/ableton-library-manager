@@ -52,7 +52,9 @@ def refresh_matrix_data():
             _synth_tree.insert('', 'end', values=(pat, fld))
     if _candidate_tree is not None:
         _candidate_tree.delete(*_candidate_tree.get_children())
-        for candidate in sorter_engine.LEARNED_RULE_CANDIDATES:
+        ordered = sorted(sorter_engine.LEARNED_RULE_CANDIDATES,
+                         key=lambda c: (-int(c.get("count", 0) or 0), c.get("token", "")))
+        for candidate in ordered:
             if candidate.get("status", "pending") == "pending":
                 try:
                     placement = sorter_engine.suggest_rule_priority(

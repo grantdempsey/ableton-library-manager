@@ -19,7 +19,7 @@ def _clean_name(name):
     return re.sub(r'[<>:"/\\|?*]', "", name).strip().strip(".")
 
 
-def open_type_editor(win, anchor, library, on_change):
+def open_type_editor(win, anchor, library, on_change, auto_find=False):
     """Lets the user add folders, add keywords to any folder, or learn new folders from the library."""
     theme = gui_theme.THEME
     editor = tk.Toplevel(win)
@@ -211,7 +211,8 @@ def open_type_editor(win, anchor, library, on_change):
     editor.bind("<Escape>", lambda _e: editor.destroy())
     refill()
     _center_over(editor, win)
-
+    if auto_find:
+        editor.after(100, find)
 
 def open_xo_builder(anchor):
     theme = gui_theme.THEME
@@ -302,9 +303,12 @@ def open_xo_builder(anchor):
     loops_var.trace_add("write", lambda *_: folders_changed()
                         if state["plan"] is not None else None)
 
-    edit_button = tk.Button(buttons, text="Edit folders…", bg=theme["btn_secondary"], fg=theme["fg_light"],
+    edit_button = tk.Button(buttons, text="Edit folders…", bg=theme["tag_enabled"], fg="white",
+                            activebackground=theme["tag_enabled"], activeforeground="white", cursor="hand2",
                             bd=0, font=("Segoe UI", 9, "bold"),
-                            command=lambda: open_type_editor(win, anchor, library, folders_changed))
+                            command=lambda: open_type_editor(win, anchor, library, folders_changed,
+                                                             auto_find=bool(state["plan"] is not None
+                                                                            and state.get("unrecognized"))))
     edit_button.pack(side="left")
 
     def close():
@@ -337,6 +341,11 @@ def open_xo_builder(anchor):
                            activebackground=theme["bg_field"], activeforeground=theme["fg_light"],
                            font=("Segoe UI", 9), anchor="w").grid(row=index // 2, column=index % 2,
                                                                   sticky="w", padx=10, pady=1)
+        state["unrecognized"] = stats["unclassified"]
+        if stats["unclassified"]:
+            edit_button.config(text=f"Edit / learn folders ({stats['unclassified']:,} unrecognized)…")
+        else:
+            edit_button.config(text="Edit folders…")
         total = sum(len(files) for files in plan.values())
         skipped = []
         if stats["loops_skipped"]:
