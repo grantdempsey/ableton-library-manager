@@ -2002,7 +2002,9 @@ class ParallelLibrarySorter:
                 if top_level_folder in ["percussion", "midi", "serum presets", "live instrument racks", "max for live devices"]:
                     is_already_sorted = True
                 elif top_level_folder == "samples" and len(path_segments) > 1 and path_segments[1] in ["one-shots", "loops"]:
-                    is_already_sorted = True
+                    # The catch-all folder is re-checked so new and existing rules can still claim its files.
+                    is_catch_all = len(path_segments) > 2 and path_segments[1] == "one-shots" and path_segments[2] == "other one-shots"
+                    is_already_sorted = not is_catch_all
 
             if is_already_sorted:
                 return
@@ -2138,6 +2140,8 @@ class ParallelLibrarySorter:
                     return
 
             target_dir = os.path.normpath(target_dir)
+            if os.path.normpath(root) == target_dir:
+                return
             tags = sorted(set(
                 tags + derive_filename_tags(f) +
                 [f"category:{os.path.basename(target_dir)}"]

@@ -35,7 +35,7 @@ SOUND_TYPES = {
         "piano", "pianos", "keys", "key", "rhodes", "organ", "wurli", "wurlitzer",
         "clav", "harpsichord", "epiano",
     },
-    "Guitar & Bass Guitar": {"guitar", "guitars", "acoustic", "strum", "banjo", "ukulele"},
+    "Guitar & Bass Guitar": {"guitar", "guitars", "strum", "banjo", "ukulele"},
     "Strings & Orchestral": {
         "string", "strings", "violin", "viola", "cello", "orchestra", "orchestral",
         "harp", "pizzicato", "ensemble",

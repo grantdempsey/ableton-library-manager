@@ -153,6 +153,9 @@ python build_app.py
 - Rules: priorities, shadowed-rule detection, explain-a-filename, backup/restore of rules.
 - Home: library status card and in-app README viewer.
 - XO filter folder: **Build XO folder** on Sounds & Tags groups your sounds by type (kicks, snares, nature, foley, vocals, textures...) into one folder per type using hard links, so XO can filter by folder with no extra disk space. Originals are never moved. Keep the folder outside OneDrive.
+- Suggest rules from my library: on the Rules tab, scans your catch-all folder (Other One-Shots) and proposes new keyword rules (e.g. "djembe" → Percussion, "rain" → a new Nature folder). Suggestions land in the review list; nothing changes until you approve one.
+- Organize now re-checks the Other One-Shots folder, so files that match a rule (or a rule you approve later) move to the right folder. Use **Preview** first; Undo is available.
+- Tags live only inside this app. Ableton doesn't read them, and this app doesn't read Ableton's browser tags.
 - Polish: all dialogs centre on the app, unified green and lavender theme, progress bar with file counts.
 
 ---
