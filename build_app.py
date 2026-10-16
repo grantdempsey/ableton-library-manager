@@ -71,6 +71,7 @@ def run_production_compiler_pipeline():
         "--hidden-import=subprocess",
         "--hidden-import=json",
         "--hidden-import=re",
+        "--add-data=README.md;.",
         
         script_entry
     ]

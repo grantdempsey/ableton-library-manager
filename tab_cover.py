@@ -1,6 +1,6 @@
 # tab_cover.py - Ableton Production Assets & Sample Studio Manager Unified Home Dashboard
 import os
-import tkinter as tk
+import sysimport tkinter as tk
 from tkinter import ttk
 import gui_theme
 import sorter_engine
@@ -56,7 +56,10 @@ def build(parent_frame):
     lbl_guide_body.pack(anchor="w", padx=15, pady=(0, 6))
 
     def open_readme(_event=None):
-        readme = os.path.join(os.path.dirname(os.path.abspath(__file__)), "README.md")
+        base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+        readme = os.path.join(base_dir, "README.md")
+        if not os.path.isfile(readme):
+            readme = os.path.join(os.path.dirname(sys.executable), "README.md")
         try:
             with open(readme, "r", encoding="utf-8") as handle:
                 content = handle.read()
