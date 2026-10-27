@@ -210,6 +210,7 @@ class ImportTab(ttk.Frame):
 
     def handle_pipeline_completion(self, execution_analytics, was_copied):
         """Callback engine interface triggered automatically upon sorting group completion."""
+        self.event_generate("<<LibraryChanged>>", when="tail")
         tab_matrix.rescan_suggestions()
         self.write_console_message("=" * 65)
         self.write_console_message("  INGESTION SUMMARY LEDGER DISPATCH")

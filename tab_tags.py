@@ -11,7 +11,6 @@ from tab_matrix import messagebox, ask_confirm, ask_fields, show_notice
 
 import gui_theme
 import sorter_engine
-import xo_dialog
 
 
 SUPPORTED_AUDIO_EXTENSIONS = {
@@ -166,13 +165,6 @@ class TagsTab(ttk.Frame):
             activeforeground=theme["fg_light"], bd=1
         )
         self.rescan_button.pack(side="left", padx=6)
-        self.xo_button = tk.Button(
-            search_controls, text="Build XO folder", command=lambda: xo_dialog.open_xo_builder(self),
-            bg=theme["btn_secondary"], fg=theme["fg_light"],
-            activebackground=theme["btn_secondary_hover"],
-            activeforeground=theme["fg_light"], bd=1
-        )
-        self.xo_button.pack(side="left", padx=6)
         tk.Label(
             search_controls, text="Ctrl+F search  •  Space play/stop  •  F favorite",
             font=("Segoe UI", 8), bg=theme["bg_panel"], fg=theme["fg_muted"]
@@ -450,12 +442,26 @@ class TagsTab(ttk.Frame):
         self._write_saved_searches([i for i in self._load_saved_searches() if i["name"] != item["name"]])
 
     def refresh(self):
+        self._static_counts.clear()
         self._cached_tags = []
         self._cached_tag_scope = None
         self._rendered_tag_scope = None
         self._sidebar_loaded = False
         self._render_results(load_sidebar=False)
         self._request_sidebar_load(gui_theme.USER_LIBRARY_PATH)
+
+    def invalidate_library(self, _event=None):
+        """Invalidates index-derived state and reloads now or on the next visit."""
+        self._sidebar_generation += 1
+        self._static_counts.clear()
+        self._cached_tags = []
+        self._cached_tag_scope = None
+        self._rendered_tag_scope = None
+        self._sidebar_loaded = False
+        self._has_loaded = False
+        self._page_index = 0
+        if self._tab_is_visible():
+            self.ensure_loaded()
 
     def rescan_library(self):
         if self._refresh_running:
@@ -516,7 +522,7 @@ class TagsTab(ttk.Frame):
             sorter_engine.sqlite3.Error
         ) as error:
             self.after(
-                0, lambda: self._finish_sidebar_load(None, error, generation)
+                0, lambda error=error: self._finish_sidebar_load(None, error, generation)
             )
             return
         self.after(
@@ -526,6 +532,7 @@ class TagsTab(ttk.Frame):
     def _finish_sidebar_load(self, sidebar_data, error, generation):
         self._sidebar_loading = False
         if generation != self._sidebar_generation:
+            self._static_counts.clear()
             self._request_sidebar_load(gui_theme.USER_LIBRARY_PATH)
             return
         if error:

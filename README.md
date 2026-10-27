@@ -23,9 +23,10 @@ A high-performance, cross-platform desktop tool designed to automate the categor
 2. **Import:** Choose the folders, preview the suggested organization, and then copy or move files into the library.
 3. **Organize:** Clean up an existing library after reviewing the available safety options.
 4. **Sounds & Tags:** Search the indexed library by words from filenames, folders, or tags and manage personal tags.
-5. **Rules:** Review the app's sorting rules and approve or reject learning suggestions.
-6. **Skip Folders:** Tell the app which folders should never be scanned.
-7. **Advanced:** Optional performance and Ableton configuration tools for experienced users.
+5. **Integrations:** Prepare categorized sample folders for XO using the existing folder builder.
+6. **Rules:** Review the app's sorting rules and approve or reject learning suggestions.
+7. **Skip Folders:** Tell the app which folders should never be scanned.
+8. **Advanced:** Optional performance and Ableton configuration tools for experienced users.
 
 ## 🧠 Smart learning workflow
 
@@ -127,6 +128,10 @@ the library. Favorite uses the same lavender visual treatment as enabled tags. T
 summary shows the visible results for the active search, collection, and tag filters. Tag
 counts, collection totals, and the overall indexed-library total load from the indexed User
 Library in the background so collection navigation stays responsive.
+Import and Organize completion (including previews, undo, and nested-folder repairs)
+invalidates the browser's cached results and counts. They reload immediately if the
+browser is visible, or when you next open Sounds & Tags, without another filesystem scan.
+Your search, collection, and tag filters are preserved, and paging returns to the first page.
 
 After deleting files with another tool, use **Sounds & Tags > Rescan library** to
 update the index and its counts without moving any files. Rescanning discovers new sounds
@@ -159,7 +164,7 @@ python build_app.py
 - Sounds & Tags: independent category/tag highlights, accurate result counts, waveform strip, Auto-play, saved searches, keyboard shortcuts, favorites, faster startup via cached tag counts.
 - Rules: priorities, shadowed-rule detection, explain-a-filename, backup/restore of rules.
 - Home: library status card and in-app README viewer.
-- XO filter folder: **Build XO folder** on Sounds & Tags groups your sounds by type (kicks, snares, nature, foley, vocals, textures...) into one folder per type using hard links, so XO can filter by folder with no extra disk space. Originals are never moved. Keep the folder outside OneDrive.
+- XO filter folder: **Integrations > Build XO folder** groups your sounds by type (kicks, snares, nature, foley, vocals, textures...) into one folder per type so XO can filter by folder. Files are hard-linked when possible and copied otherwise (copies use extra disk space). Originals are never moved. Hard links share file contents and are not independent backups. Keep the folder outside OneDrive. This is a folder-based workflow, not direct XO control. Serum preset management is not implemented yet.
 - Rule suggestions: the Rules tab scans your catch-all folder (Other One-Shots) when the app opens and after every Organize or Import, and proposes new keyword rules (e.g. "djembe" → Percussion, "rain" → a new Nature folder). Each suggestion shows the priority it would get; **Use this suggestion** ranks it automatically, and **Use all suggestions** adds them in one go. Nothing changes until you approve.
 - Loop folder layout: on the Rules tab's **Loops** tab, **Edit layout…** lets you choose which levels loops are filed into (Tempo, Key) and reorder them with ▲/▼. The recommendation puts the level with the fewest folders first and leaves out a level most of your loops can't fill. Organize applies the layout to new loops and re-files loops that sit in folders this app created; folders you made yourself are left alone. Use Preview changes first; Undo covers it.
 - The Rules tab is split into **Loops**, **One-shots** and **Presets & racks** tabs, so each kind of file shows where it goes and the controls for changing it.

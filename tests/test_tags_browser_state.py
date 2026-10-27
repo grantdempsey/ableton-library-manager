@@ -5,6 +5,42 @@ from tab_tags import TagsTab
 
 
 class TagsBrowserStateTests(unittest.TestCase):
+    def test_library_change_invalidates_counts_and_preserves_filters(self):
+        tab = object.__new__(TagsTab)
+        tab._sidebar_generation = 3
+        tab._static_counts = {"library": {"All sounds": 100}}
+        tab._cached_tags = [("favorite", 100)]
+        tab._cached_tag_scope = ("type:loop", False, "kick")
+        tab._rendered_tag_scope = tab._cached_tag_scope
+        tab._sidebar_loaded = True
+        tab._has_loaded = True
+        tab._page_index = 4
+        tab._active_collection = "Loops"
+        tab.active_tag_filter = "favorite"
+        tab.search_var = mock.Mock()
+        tab.search_var.get.return_value = "kick"
+        tab._tab_is_visible = mock.Mock(return_value=False)
+        tab.ensure_loaded = mock.Mock()
+
+        tab.invalidate_library()
+
+        self.assertEqual(4, tab._sidebar_generation)
+        self.assertEqual({}, tab._static_counts)
+        self.assertEqual([], tab._cached_tags)
+        self.assertIsNone(tab._cached_tag_scope)
+        self.assertIsNone(tab._rendered_tag_scope)
+        self.assertFalse(tab._sidebar_loaded)
+        self.assertFalse(tab._has_loaded)
+        self.assertEqual(0, tab._page_index)
+        self.assertEqual("Loops", tab._active_collection)
+        self.assertEqual("favorite", tab.active_tag_filter)
+        tab.search_var.set.assert_not_called()
+        tab.ensure_loaded.assert_not_called()
+
+        tab._tab_is_visible.return_value = True
+        tab.invalidate_library()
+        tab.ensure_loaded.assert_called_once_with()
+
     def test_sidebar_reload_redraws_counts_even_when_scope_is_unchanged(self):
         tab = object.__new__(TagsTab)
         tab._sidebar_generation = 1
@@ -147,10 +183,12 @@ class TagsBrowserStateTests(unittest.TestCase):
         tab = object.__new__(TagsTab)
         tab._sidebar_generation = 2
         tab._sidebar_loading = True
+        tab._static_counts = {"library": {"All sounds": 100}}
         tab._request_sidebar_load = mock.Mock()
         tab._finish_sidebar_load({"total_count": 1}, None, 1)
 
         tab._request_sidebar_load.assert_called_once()
+        self.assertEqual({}, tab._static_counts)
 
     def test_tag_selection_does_not_mutate_collection_callback_state(self):
         tab = object.__new__(TagsTab)

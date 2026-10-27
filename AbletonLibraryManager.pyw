@@ -10,6 +10,7 @@ from tab_organize import OrganizeTab
 from tab_exclusions import ExclusionsTab
 from tab_experimental import ExperimentalTab
 from tab_tags import TagsTab
+from tab_integrations import IntegrationsTab
 import tab_cover
 import tab_matrix
 import gui_theme
@@ -150,6 +151,10 @@ class ProductionStudioManagerApp(tk.Tk):
         self.tags_panel = TagsTab(self.tab_notebook, self.status_lbl)
         self.tab_notebook.add(self.tags_panel, text=" 🏷️  Sounds & Tags ")
         self.after(1500, self.tags_panel.rescan_library)
+        self.bind("<<LibraryChanged>>", self.tags_panel.invalidate_library, add="+")
+
+        self.integrations_panel = IntegrationsTab(self.tab_notebook)
+        self.tab_notebook.add(self.integrations_panel, text=" Integrations ")
 
         # 5. Rule Matrix Configuration Dashboard
         tab3_frame = ttk.Frame(self.tab_notebook)
