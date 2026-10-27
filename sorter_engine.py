@@ -635,7 +635,7 @@ def get_indexed_asset(path):
             return None
         tag_rows = [
             row for row in connection.execute(
-                "SELECT tag, enabled FROM asset_tags WHERE asset_path = ? ORDER BY tag",
+                "SELECT tag, enabled, source FROM asset_tags WHERE asset_path = ? ORDER BY tag",
                 (os.path.normpath(path),)
             )
         ]
@@ -649,7 +649,8 @@ def get_indexed_asset(path):
             "path": asset[0], "filename": asset[1], "size": asset[2],
             "modified_time": asset[3], "destination": asset[4],
             "reason": asset[5], "confidence": asset[6],
-            "updated_at": asset[7], "tags": tags, "disabled_tags": disabled_tags
+            "updated_at": asset[7], "tags": tags, "disabled_tags": disabled_tags,
+            "personal_tags": [row[0] for row in tag_rows if row[1] and row[2] == "personal"]
         }
     finally:
         connection.close()
@@ -1185,8 +1186,15 @@ def bulk_update_asset_tags(paths, tag, enabled=True, remove=False):
         raise ValueError("Select at least one indexed sound.")
     connection = _asset_index_connection()
     try:
+        connection.execute("BEGIN")
+        placeholders = ",".join("?" for _path in normalized_paths)
+        indexed_count = connection.execute(
+            f"SELECT COUNT(*) FROM assets WHERE path IN ({placeholders})",
+            normalized_paths
+        ).fetchone()[0]
+        if indexed_count != len(normalized_paths):
+            raise ValueError("One or more selected sounds are no longer indexed. Refresh the Library.")
         if remove:
-            placeholders = ",".join("?" for _path in normalized_paths)
             connection.execute(
                 f"DELETE FROM asset_tags WHERE tag = ? AND asset_path IN ({placeholders})",
                 [normalized_tag, *normalized_paths]

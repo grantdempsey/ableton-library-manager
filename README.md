@@ -22,7 +22,7 @@ A high-performance, cross-platform desktop tool designed to automate the categor
 1. **Home:** A simple starting point with a guided preview-first workflow and optional Smart Learning.
 2. **Import:** Choose the folders, preview the suggested organization, and then copy or move files into the library.
 3. **Organize:** Clean up an existing library after reviewing the available safety options.
-4. **Sounds & Tags:** Search the indexed library by words from filenames, folders, or tags and manage personal tags.
+4. **Library:** Find and audition indexed sounds, edit personal tags inline, and curate multiple sounds at once.
 5. **Integrations:** Prepare categorized sample folders for XO using the existing folder builder.
 6. **Rules:** Review the app's sorting rules and approve or reject learning suggestions.
 7. **Skip Folders:** Tell the app which folders should never be scanned.
@@ -98,7 +98,7 @@ remain represented at both paths because both files still exist. Preview output 
 the tags for each record, making it possible to inspect how Ableton metadata and routing decisions
 relate before changing files.
 
-The **Sounds & Tags** tab exposes the indexed User Library directly. It supports:
+The **Library** tab (formerly Sounds & Tags) exposes the indexed User Library directly. It supports:
 
 - Searching by filename or path
 - Filtering by an exact tag
@@ -110,7 +110,7 @@ The **Sounds & Tags** tab exposes the indexed User Library directly. It supports
 The browser only shows sound and MIDI records whose paths are inside the configured Ableton
 User Library. On Windows, the app checks both local Documents and the OneDrive Documents
 location and uses the existing folder. Preview records for source files elsewhere, including
-files inside the project folder, are not shown there. Tag counts use the same boundary. Sounds & Tags reads the existing index so the page stays
+files inside the project folder, are not shown there. Tag counts use the same boundary. Library reads the existing index so the page stays
 responsive; use Import or Organize to discover and index new files before browsing them.
 The results table shows the file name and its folder relative to the User Library; the full
 path is available only in Sound details.
@@ -130,10 +130,10 @@ counts, collection totals, and the overall indexed-library total load from the i
 Library in the background so collection navigation stays responsive.
 Import and Organize completion (including previews, undo, and nested-folder repairs)
 invalidates the browser's cached results and counts. They reload immediately if the
-browser is visible, or when you next open Sounds & Tags, without another filesystem scan.
+browser is visible, or when you next open Library, without another filesystem scan.
 Your search, collection, and tag filters are preserved, and paging returns to the first page.
 
-After deleting files with another tool, use **Sounds & Tags > Rescan library** to
+After deleting files with another tool, use **Library > Rescan library** to
 update the index and its counts without moving any files. Rescanning discovers new sounds
 and removes records and tags for confirmed-missing files inside the selected library.
 Completed Import and Organize operations also remove missing records in their destination
@@ -191,12 +191,12 @@ python build_app.py
 
 ## 🎨 GUI usability notes
 
-The application shell is sized for the wider Sounds & Tags and Rules views and remains resizable.
+The application shell is sized for the Library and Rules views and remains resizable.
 For the safest workflow:
 
 1. Use **Preview only** on the Import tab for unfamiliar packs.
 2. Review destination, confidence, and tags before using Move Mode.
-3. Use the **Sounds & Tags** tab to search by filename or exact tag and curate user tags.
+3. Use the **Library** tab to search by filename or exact tag and curate personal tags.
 4. Use **Rules** to review suggestions, disable questionable rules, and check conflicts.
 
 The GUI intentionally keeps destructive actions explicit while placing inspection and review
@@ -235,7 +235,20 @@ the organizer from scanning its own backup during a later cleanup.
 
 ### Finding sounds and managing tags
 
-The **Sounds & Tags** tab is a searchable browser, not another sorting tool. It reads existing
+The **Library** tab is a searchable browser, not another sorting tool. Drag the dividers
+to resize Collections/Tags, results, and the inspector. Use **Inspector** above the results
+to hide or restore the right panel. Select one sound to audition it and view its
+personal tags inline; double-click still opens the optional details window.
+Select several results with Shift or Ctrl (Command on macOS) to edit them together.
+The selection count is always shown above the results. **Add tag**, **Remove tag**,
+**Favorite selected**, and **Unfavorite** apply only to the selected sounds on the current
+page, not the entire filtered library. The personal-tag list shows tags shared by all
+selected sounds; click one to fill the tag field for removal. A typed tag can also be
+removed from the selection even when only some sounds have it. Generated `name:` and
+`category:` tags are read-only in the inspector. These actions change index tags only;
+they never move or edit sound files. Playback and waveform support are unchanged.
+
+The browser reads existing
 supported files from the User Library index; use Import or Organize to discover and index new
 files before browsing them. Use the **Collections** list
 to switch between all sounds, **Favorites**, Loops, One-shots, and MIDI, or choose a tag from

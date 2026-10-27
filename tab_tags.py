@@ -69,7 +69,7 @@ def _wav_peaks(path, buckets):
 
 
 class TagsTab(ttk.Frame):
-    """Displays indexed assets and permits lightweight user tag maintenance."""
+    """Browses indexed sounds with auditioning and inline tag curation."""
 
     def __init__(self, parent, status_label_ref=None):
         super().__init__(parent)
@@ -86,6 +86,8 @@ class TagsTab(ttk.Frame):
         self._page_index = 0
         self.selected_asset_var = tk.StringVar(value="No sound selected")
         self.selected_tags_var = tk.StringVar(value="")
+        self.selection_count_var = tk.StringVar(value="No sounds selected")
+        self.inspector_visible_var = tk.BooleanVar(value=True)
         self._asset_paths = {}
         self._audio_process = None
         self._audio_path = None
@@ -109,7 +111,7 @@ class TagsTab(ttk.Frame):
         self._build_ui()
 
     def ensure_loaded(self):
-        """Loads the browser when the Sounds & Tags tab is first opened."""
+        """Loads the browser when the Library tab is first opened."""
         if not self._has_loaded:
             self._has_loaded = True
             self._render_results(load_sidebar=False)
@@ -120,12 +122,12 @@ class TagsTab(ttk.Frame):
         header = tk.Frame(self, bg=theme["bg_dark"])
         header.pack(fill="x", padx=15, pady=(14, 4))
         tk.Label(
-            header, text="Find Sounds & Edit Tags", font=("Segoe UI", 12, "bold"),
+            header, text="Library", font=("Segoe UI", 12, "bold"),
             bg=theme["bg_dark"], fg=theme["fg_light"]
         ).pack(anchor="w")
         tk.Label(
             header,
-            text="Search indexed sounds, then double-click a result to edit its tags.",
+            text="Find and audition sounds. Select one or more results to curate their personal tags.",
             font=("Segoe UI", 9), bg=theme["bg_dark"], fg=theme["fg_muted"],
             wraplength=900, justify="left"
         ).pack(anchor="w", pady=(2, 0))
@@ -137,7 +139,7 @@ class TagsTab(ttk.Frame):
         search_controls.pack(fill="x", padx=15, pady=(12, 8), ipady=7)
         tk.Label(search_controls, text="Search:", bg=theme["bg_dark"], fg=theme["fg_light"]).pack(side="left")
         self.search_entry = tk.Entry(
-            search_controls, textvariable=self.search_var, width=34,
+            search_controls, textvariable=self.search_var, width=26,
             bg=theme["bg_panel"], fg=theme["fg_light"],
             relief="solid", bd=1,
             insertbackground=theme["fg_light"]
@@ -197,17 +199,29 @@ class TagsTab(ttk.Frame):
             activebackground=theme["btn_secondary_hover"], bd=1, state="disabled"
         )
         self.next_page_button.pack(side="right")
-        browser = tk.Frame(
-            self, bg=theme["bg_dark"], bd=1, relief="solid",
-            highlightbackground=theme["border"], highlightcolor=theme["border"]
+        self.inspector_toggle = tk.Checkbutton(
+            page_controls, text="Inspector", variable=self.inspector_visible_var,
+            command=self._toggle_inspector, bg=theme["bg_dark"],
+            fg=theme["fg_light"], selectcolor=theme["bg_field"],
+            activebackground=theme["bg_dark"], activeforeground=theme["fg_light"]
         )
+        self.inspector_toggle.pack(side="right", padx=12)
+        tk.Label(
+            self, textvariable=self.selection_count_var, bg=theme["bg_dark"],
+            fg=theme["fg_muted"], anchor="w"
+        ).pack(fill="x", padx=15, pady=(0, 5))
+
+        self.browser_panes = tk.PanedWindow(
+            self, orient="horizontal", bg=theme["bg_dark"], bd=0,
+            sashwidth=7, sashrelief="raised", showhandle=True, opaqueresize=True
+        )
+        browser = self.browser_panes
         browser.pack(fill="both", expand=True, padx=15, pady=(0, 8))
         sidebar = tk.Frame(
-            browser, bg=theme["bg_field"], width=270, bd=1, relief="solid",
+            browser, bg=theme["bg_field"], width=200, bd=1, relief="solid",
             highlightbackground=theme["border"], highlightcolor=theme["border"]
         )
-        sidebar.pack(side="left", fill="y", padx=(0, 8))
-        sidebar.pack_propagate(False)
+        browser.add(sidebar, minsize=150, width=200, stretch="never")
         tk.Label(
             sidebar, text="Collections", bg=theme["bg_field"], fg=theme["fg_muted"],
             font=("Segoe UI", 9, "bold"), anchor="w"
@@ -242,7 +256,7 @@ class TagsTab(ttk.Frame):
             browser, bg=theme["bg_field"], bd=1, relief="solid",
             highlightbackground=theme["border"], highlightcolor=theme["border"]
         )
-        wrapper.pack(side="left", fill="both", expand=True)
+        browser.add(wrapper, minsize=300, width=500, stretch="always")
         vertical_scrollbar = ttk.Scrollbar(wrapper, orient="vertical")
         vertical_scrollbar.pack(side="right", fill="y")
         horizontal_scrollbar = ttk.Scrollbar(wrapper, orient="horizontal")
@@ -258,63 +272,131 @@ class TagsTab(ttk.Frame):
         self.asset_tree.pack(fill="both", expand=True)
         vertical_scrollbar.config(command=self.asset_tree.yview)
         horizontal_scrollbar.config(command=self.asset_tree.xview)
-        for column, width in (("Filename", 420), ("Folder", 360)):
+        for column, width in (("Filename", 280), ("Folder", 220)):
             self.asset_tree.heading(column, text=column)
             self.asset_tree.column(column, width=width, anchor="w")
 
         selected = tk.Frame(
-            self, bg=theme["bg_field"], bd=1, relief="solid",
+            browser, bg=theme["bg_field"], bd=1, relief="solid",
             highlightbackground=theme["border"], highlightcolor=theme["border"]
         )
-        selected.pack(fill="x", padx=15, pady=(0, 10), ipady=14)
+        self.inspector = selected
+        browser.add(selected, minsize=280, width=310, stretch="never")
         selected_header = tk.Frame(selected, bg=theme["bg_field"])
         selected_header.pack(fill="x", padx=10, pady=(7, 0))
         tk.Label(
             selected, textvariable=self.selected_asset_var,
-            font=("Segoe UI", 12, "bold"), bg=theme["bg_field"], fg=theme["accent_neon"]
-        ).pack(in_=selected_header, side="left")
+            font=("Segoe UI", 11, "bold"), bg=theme["bg_field"], fg=theme["accent_neon"],
+            wraplength=275, justify="left", anchor="w"
+        ).pack(in_=selected_header, fill="x")
+        playback_row = tk.Frame(selected, bg=theme["bg_field"])
+        playback_row.pack(fill="x", padx=10, pady=(8, 0))
+        favorite_row = tk.Frame(selected, bg=theme["bg_field"])
+        favorite_row.pack(fill="x", padx=10, pady=(8, 0))
         self.favorite_button = tk.Button(
-            selected_header, text="☆ Favorite", command=self.toggle_selected_favorite,
+            favorite_row, text="Favorite selected", command=self.toggle_selected_favorite,
             bg=theme["tag_enabled"], fg="white",
             activebackground=theme["tag_enabled"], activeforeground="white",
             bd=1, padx=8
         )
-        self.favorite_button.pack(side="right", padx=(0, 6))
+        self.favorite_button.pack(side="left")
+        self.unfavorite_button = tk.Button(
+            favorite_row, text="Unfavorite", command=self.bulk_remove_favorite,
+            bg=theme["btn_secondary"], fg=theme["fg_light"], bd=1
+        )
+        self.unfavorite_button.pack(side="left", padx=(6, 0))
         self.autoplay_check = tk.Checkbutton(
-            selected_header, text="Auto-play on select", variable=self.autoplay_var,
+            selected, text="Auto-play on select", variable=self.autoplay_var,
             bg=theme["bg_field"], fg=theme["fg_light"], selectcolor=theme["bg_dark"],
             activebackground=theme["bg_field"], activeforeground=theme["fg_light"],
             disabledforeground=theme["fg_muted"]
         )
-        self.autoplay_check.pack(side="right", padx=(0, 10))
-        tk.Button(
-            selected_header, text="Play sound", command=self.play_selected_sound,
+        self.autoplay_check.pack(anchor="w", padx=8)
+        self.play_button = tk.Button(
+            playback_row, text="Play sound", command=self.play_selected_sound,
             bg=theme["btn_secondary"], fg=theme["fg_light"],
             activebackground=theme["btn_secondary_hover"],
             activeforeground=theme["fg_light"],
             bd=1, padx=8
-        ).pack(side="right")
+        )
+        self.play_button.pack(side="left")
         tk.Button(
-            selected_header, text="Stop", command=self.stop_sound,
+            playback_row, text="Stop", command=self.stop_sound,
             bg=theme["btn_secondary"], fg=theme["fg_light"],
             activebackground=theme["btn_secondary_hover"], bd=1, padx=8
-        ).pack(side="right", padx=(0, 6))
+        ).pack(side="left", padx=(6, 0))
         tk.Label(
             selected,
             textvariable=self.selected_tags_var,
             font=("Segoe UI", 9), bg=theme["bg_field"], fg=theme["fg_muted"],
-            justify="left", wraplength=900
+            justify="left", wraplength=275, anchor="w"
         ).pack(anchor="w", padx=10, pady=(2, 7))
         self.waveform_canvas = tk.Canvas(
             selected, height=50, bg=theme["bg_dark"], highlightthickness=1,
             highlightbackground=theme["border"]
         )
         self.waveform_canvas.pack(fill="x", padx=10, pady=(0, 6))
+        tk.Label(
+            selected, text="Personal tags", font=("Segoe UI", 9, "bold"),
+            bg=theme["bg_field"], fg=theme["fg_light"], anchor="w"
+        ).pack(fill="x", padx=10, pady=(6, 3))
+        tk.Label(
+            selected, text="For multiple sounds, shows tags shared by all.",
+            bg=theme["bg_field"], fg=theme["fg_muted"], wraplength=275, anchor="w"
+        ).pack(fill="x", padx=10)
+        tag_entry_row = tk.Frame(selected, bg=theme["bg_field"])
+        tag_entry_row.pack(fill="x", padx=10, pady=6)
+        self.personal_tag_entry = tk.Entry(
+            tag_entry_row, textvariable=self.new_tag_var, width=18,
+            bg=theme["bg_dark"], fg=theme["fg_light"],
+            insertbackground=theme["fg_light"]
+        )
+        self.personal_tag_entry.pack(fill="x", expand=True)
+        self.personal_tag_entry.bind("<Return>", lambda _event: self.bulk_add_tag())
+        tag_actions = tk.Frame(selected, bg=theme["bg_field"])
+        tag_actions.pack(fill="x", padx=10, pady=(0, 6))
+        self.add_tag_button = tk.Button(
+            tag_actions, text="Add tag", command=self.bulk_add_tag,
+            bg=theme["btn_primary"], fg=theme["btn_primary_fg"], bd=1
+        )
+        self.add_tag_button.pack(side="left")
+        self.remove_tag_button = tk.Button(
+            tag_actions, text="Remove tag", command=self.bulk_remove_tag,
+            bg=theme["btn_danger"], fg="white", bd=1
+        )
+        self.remove_tag_button.pack(side="left", padx=6)
+        personal_list_frame = tk.Frame(selected, bg=theme["bg_field"])
+        personal_list_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        personal_scroll = ttk.Scrollbar(personal_list_frame, orient="vertical")
+        personal_scroll.pack(side="right", fill="y")
+        self.personal_tag_list = tk.Listbox(
+            personal_list_frame, height=5, exportselection=False,
+            bg=theme["bg_dark"], fg=theme["fg_light"], activestyle="none",
+            selectbackground=theme["tag_enabled"], selectforeground="white",
+            yscrollcommand=personal_scroll.set
+        )
+        self.personal_tag_list.pack(side="left", fill="both", expand=True)
+        personal_scroll.configure(command=self.personal_tag_list.yview)
+        self.personal_tag_list.bind("<<ListboxSelect>>", self._personal_tag_selected)
         self.asset_tree.bind("<<TreeviewSelect>>", lambda _event: self._show_selected_asset())
         self.asset_tree.bind("<Double-1>", lambda _event: self._open_asset_details())
         self.asset_tree.bind("<space>", self._shortcut_play_toggle)
         self.asset_tree.bind("<KeyPress-f>", self._shortcut_favorite)
         self.bind_all("<Control-f>", self._shortcut_focus_search, add="+")
+        self._show_selected_asset()
+
+    def _toggle_inspector(self):
+        if self.inspector_visible_var.get():
+            self.browser_panes.add(
+                self.inspector, minsize=280, width=310, stretch="never"
+            )
+        else:
+            self.browser_panes.forget(self.inspector)
+
+    def _personal_tag_selected(self, _event=None):
+        selection = self.personal_tag_list.curselection()
+        if selection:
+            self.new_tag_var.set(self.personal_tag_list.get(selection[0]))
 
     def _tab_is_visible(self):
         try:
@@ -644,10 +726,10 @@ class TagsTab(ttk.Frame):
         self._render_results(refresh_sidebar=sidebar_data is None)
 
     def _render_results(self, refresh_sidebar=False, load_sidebar=True):
-        selected_path = None
         selection = self.asset_tree.selection()
-        if selection and selection[0] in self._asset_paths:
-            selected_path = self._asset_paths[selection[0]]
+        selected_paths = {
+            self._asset_paths[item] for item in selection if item in self._asset_paths
+        }
         library_root = gui_theme.USER_LIBRARY_PATH
         collection_queries = {
             "Loops": "type:loop",
@@ -726,7 +808,7 @@ class TagsTab(ttk.Frame):
         )
         self.asset_tree.delete(*self.asset_tree.get_children())
         self._asset_paths.clear()
-        selected_item = None
+        selected_items = []
         for record in records:
             folder = os.path.relpath(record["destination"], library_root)
             if folder == ".":
@@ -738,16 +820,16 @@ class TagsTab(ttk.Frame):
                 )
             )
             self._asset_paths[item_id] = record["path"]
-            if record["path"] == selected_path:
-                selected_item = item_id
+            if record["path"] in selected_paths:
+                selected_items.append(item_id)
         if not records:
             self.asset_tree.insert(
                 "", "end",
                 values=("No matching sounds", "Try another filter")
             )
-        elif selected_item:
-            self.asset_tree.selection_set(selected_item)
-            self.asset_tree.focus(selected_item)
+        elif selected_items:
+            self.asset_tree.selection_set(selected_items)
+            self.asset_tree.focus(selected_items[0])
         self._show_selected_asset()
 
     def _previous_page(self):
@@ -896,7 +978,7 @@ class TagsTab(ttk.Frame):
             sorter_engine.sqlite3.Error
         ) as error:
             self._set_status(f"Browser update failed: {error}")
-            messagebox.showerror("Sounds & Tags", str(error))
+            messagebox.showerror("Library", str(error))
 
     def _schedule_filter_refresh(self):
         if self._filter_refresh_after_id is not None:
@@ -913,7 +995,7 @@ class TagsTab(ttk.Frame):
             sorter_engine.sqlite3.Error
         ) as error:
             self._set_status(f"Filter failed: {error}")
-            messagebox.showerror("Sounds & Tags", str(error))
+            messagebox.showerror("Library", str(error))
 
     def _set_status(self, text):
         if self.status_label_ref:
@@ -923,15 +1005,54 @@ class TagsTab(ttk.Frame):
             )
 
     def _show_selected_asset(self):
-        selection = self.asset_tree.selection()
-        if not selection or selection[0] not in self._asset_paths:
+        paths = [
+            self._asset_paths[item] for item in self.asset_tree.selection()
+            if item in self._asset_paths
+        ]
+        self.selection_count_var.set(
+            f"{len(paths):,} sound{'s' if len(paths) != 1 else ''} selected"
+            if paths else "No sounds selected"
+        )
+        self.personal_tag_list.delete(0, "end")
+        state = "normal" if paths else "disabled"
+        for control in (
+            self.favorite_button, self.unfavorite_button, self.add_tag_button,
+            self.remove_tag_button, self.personal_tag_entry
+        ):
+            control.configure(state=state)
+        self.play_button.configure(state="normal" if len(paths) == 1 else "disabled")
+        self.autoplay_check.configure(state="disabled")
+        self._waveform_generation += 1
+        self.waveform_canvas.delete("all")
+        if not paths:
             self.selected_asset_var.set("No sound selected")
             self.selected_tags_var.set(
-                "No matching sound is selected. Use Import or Organize to index new files."
+                "Select a sound to audition it or edit tags. "
+                "Use Shift/Ctrl (Command on Mac) to select several sounds."
             )
-            self.favorite_button.configure(text="☆ Favorite")
+            self.favorite_button.configure(text="Favorite selected")
             return
-        path = self._asset_paths[selection[0]]
+        if len(paths) > 1:
+            self.stop_sound()
+            personal_tags = []
+            for path in paths:
+                record = sorter_engine.get_indexed_asset(path)
+                if record is None:
+                    self.selected_asset_var.set("Selection is out of date")
+                    self.selected_tags_var.set("Refresh the Library before editing this selection.")
+                    return
+                personal_tags.append(set(record["personal_tags"]))
+            shared_tags = set.intersection(*personal_tags)
+            for tag in sorted(shared_tags):
+                self.personal_tag_list.insert("end", tag)
+            self.selected_asset_var.set(f"{len(paths):,} sounds selected")
+            self.selected_tags_var.set(
+                "Tag and favorite actions apply to every selected sound. "
+                "Playback is available for a single sound."
+            )
+            self.favorite_button.configure(text="Favorite selected")
+            return
+        path = paths[0]
         record = sorter_engine.get_indexed_asset(path)
         if record is None:
             self.selected_asset_var.set("No sound selected")
@@ -939,9 +1060,14 @@ class TagsTab(ttk.Frame):
             self.favorite_button.configure(text="☆ Favorite")
             return
         self.selected_asset_var.set(record["filename"])
+        for tag in record["personal_tags"]:
+            self.personal_tag_list.insert("end", tag)
+        generated_tags = sorted(set(record["tags"]) - set(record["personal_tags"]))
+        folder = os.path.relpath(os.path.dirname(path), gui_theme.USER_LIBRARY_PATH)
         self.selected_tags_var.set(
-            "Tags: " + (", ".join(record["tags"]) if record["tags"] else "No tags yet")
-            + f"\nLocation: {record['path']}"
+            f"Folder: {'User Library' if folder == '.' else folder}"
+            + ("\nGenerated tags: " + ", ".join(generated_tags[:6]) if generated_tags else "")
+            + (f" (+{len(generated_tags) - 6} more)" if len(generated_tags) > 6 else "")
         )
         self.favorite_button.configure(
             text="★ Favorite" if "favorite" in record["tags"] else "☆ Favorite"
@@ -949,7 +1075,7 @@ class TagsTab(ttk.Frame):
         self._draw_waveform(path)
         is_midi = os.path.splitext(path)[1].lower() in (".mid", ".midi")
         self.autoplay_check.configure(state="disabled" if is_midi else "normal")
-        if self.autoplay_var.get() and len(selection) == 1 and not is_midi:
+        if self.autoplay_var.get() and not is_midi:
             try:
                 self._play_sound(path)
             except (OSError, ValueError):
@@ -996,8 +1122,14 @@ class TagsTab(ttk.Frame):
 
     def toggle_selected_favorite(self):
         try:
+            paths = self._selected_paths()
+            if len(paths) > 1:
+                self._update_selected_tag("favorite")
+                return
             path = self._selected_path()
             record = sorter_engine.get_indexed_asset(path)
+            if record is None:
+                raise ValueError("The selected sound is no longer indexed.")
             if "favorite" in record["tags"]:
                 sorter_engine.remove_asset_tag(path, "favorite")
             else:
@@ -1031,18 +1163,35 @@ class TagsTab(ttk.Frame):
 
     def bulk_add_tag(self):
         try:
-            paths = self._selected_paths()
-            tag = self.new_tag_var.get().strip()
-            sorter_engine.bulk_update_asset_tags(paths, tag)
+            self._update_selected_tag(self.new_tag_var.get())
             self.new_tag_var.set("")
-            self._render_results(refresh_sidebar=True)
-            if self.status_label_ref:
-                self.status_label_ref.config(
-                    text=f" Application Status: Tag applied to {len(paths)} sounds.",
-                    fg=gui_theme.THEME["accent_neon"]
-                )
         except (OSError, ValueError, sorter_engine.sqlite3.Error) as error:
             messagebox.showerror("Bulk Tag Update Failed", str(error))
+
+    def bulk_remove_tag(self):
+        try:
+            self._update_selected_tag(self.new_tag_var.get(), remove=True)
+            self.new_tag_var.set("")
+        except (OSError, ValueError, sorter_engine.sqlite3.Error) as error:
+            messagebox.showerror("Bulk Tag Update Failed", str(error))
+
+    def bulk_remove_favorite(self):
+        try:
+            self._update_selected_tag("favorite", remove=True)
+        except (OSError, ValueError, sorter_engine.sqlite3.Error) as error:
+            messagebox.showerror("Favorite Update Failed", str(error))
+
+    def _update_selected_tag(self, tag, remove=False):
+        paths = self._selected_paths()
+        normalized_tag = tag.strip().lower()
+        if normalized_tag.startswith(("category:", "name:")):
+            raise ValueError("Generated tags are read-only here. Enter a personal tag.")
+        sorter_engine.bulk_update_asset_tags(paths, normalized_tag, remove=remove)
+        self._render_results(refresh_sidebar=True)
+        self._set_status(
+            f"Tag '{normalized_tag}' {'removed from' if remove else 'applied to'} "
+            f"{len(paths):,} sound{'s' if len(paths) != 1 else ''}."
+        )
 
     def play_selected_sound(self):
         try:

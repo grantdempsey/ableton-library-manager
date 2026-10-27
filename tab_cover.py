@@ -50,7 +50,7 @@ def build(parent_frame):
         f_info_card,
         text="1. Open Import and choose Preview only to see what will happen.\n"
              "2. Review the suggested folders, then run the organizer when you are ready.\n"
-             "3. Use Sounds & Tags to search later and edit tags, or Rules to review suggestions.",
+             "3. Use Library to search later and edit tags, or Rules to review suggestions.",
         font=("Segoe UI", 11), bg=t["bg_field"], fg=t["fg_muted"],
         justify="left", wraplength=760
     )

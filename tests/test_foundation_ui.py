@@ -1,5 +1,6 @@
 import importlib.machinery
 import importlib.util
+import gc
 import os
 import tempfile
 import tkinter as tk
@@ -67,7 +68,11 @@ class FoundationUiTests(unittest.TestCase):
             root = factory()
         except tk.TclError as error:
             self.skipTest(f"Tk display is unavailable: {error}")
-        self.addCleanup(root.destroy)
+        def close_root():
+            root.destroy()
+            gc.collect()
+
+        self.addCleanup(close_root)
         return root
 
     def test_integrations_opens_existing_builder(self):
@@ -109,6 +114,9 @@ class FoundationUiTests(unittest.TestCase):
                 app.tab_notebook.tab(tab, "text").strip()
                 for tab in app.tab_notebook.tabs()
             ])
+            self.assertTrue(
+                app.tab_notebook.tab(app.tags_panel, "text").strip().endswith("Library")
+            )
             app.tags_panel._static_counts["old"] = {"All sounds": 100}
             app.tags_panel._page_index = 5
             with mock.patch.object(
