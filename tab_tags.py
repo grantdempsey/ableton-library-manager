@@ -476,7 +476,7 @@ class TagsTab(ttk.Frame):
         except (
             OSError, ValueError, KeyError, TypeError, sorter_engine.sqlite3.Error
         ) as error:
-            self.after(0, lambda: self._finish_refresh(0, error))
+            self.after(0, lambda error=error: self._finish_refresh(0, error))
             return
         self.after(0, lambda: self._finish_refresh(discovered, None))
 
@@ -549,6 +549,7 @@ class TagsTab(ttk.Frame):
         self._cached_tag_scope = sidebar_data["tag_scope"]
         self._sidebar_loaded = True
         self._sidebar_loading = False
+        self._rendered_tag_scope = None
         self._safe_render_results()
 
     def _load_sidebar_data(
@@ -632,7 +633,8 @@ class TagsTab(ttk.Frame):
             self._cached_tags = sidebar_data["tags"]
             self._cached_tag_scope = sidebar_data["tag_scope"]
             self._sidebar_loaded = True
-        self._render_results()
+        self._page_index = 0
+        self._render_results(refresh_sidebar=sidebar_data is None)
 
     def _render_results(self, refresh_sidebar=False, load_sidebar=True):
         selected_path = None

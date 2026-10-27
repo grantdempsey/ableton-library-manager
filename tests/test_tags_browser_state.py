@@ -5,6 +5,59 @@ from tab_tags import TagsTab
 
 
 class TagsBrowserStateTests(unittest.TestCase):
+    def test_sidebar_reload_redraws_counts_even_when_scope_is_unchanged(self):
+        tab = object.__new__(TagsTab)
+        tab._sidebar_generation = 1
+        tab._active_collection = "All sounds"
+        tab.favorites_only = False
+        tab.search_var = mock.Mock()
+        tab.search_var.get.return_value = ""
+        tab._rendered_tag_scope = ("", False, "")
+        tab._safe_render_results = mock.Mock()
+        data = {
+            "total_count": 1,
+            "collection_counts": {"All sounds": 1},
+            "tags": [("favorite", 1)],
+            "tag_scope": ("", False, ""),
+        }
+
+        tab._finish_sidebar_load(data, None, 1)
+
+        self.assertIsNone(tab._rendered_tag_scope)
+        self.assertEqual(1, tab._cached_total_count)
+        self.assertEqual({"All sounds": 1}, tab._collection_counts)
+        tab._safe_render_results.assert_called_once_with()
+
+    def test_rescan_refreshes_sidebar_counts_and_resets_paging(self):
+        tab = object.__new__(TagsTab)
+        tab.rescan_button = mock.Mock()
+        tab.filter_button = mock.Mock()
+        tab._set_status = mock.Mock()
+        tab._render_results = mock.Mock()
+        tab._page_index = 10
+        tab._static_counts = {"All sounds": 100}
+
+        tab._finish_refresh(1, None)
+
+        self.assertEqual(0, tab._page_index)
+        self.assertEqual({}, tab._static_counts)
+        tab._render_results.assert_called_once_with(refresh_sidebar=True)
+
+    def test_rescan_error_is_retained_for_deferred_ui_callback(self):
+        tab = object.__new__(TagsTab)
+        tab._finish_refresh = mock.Mock()
+        callbacks = []
+        tab.after = lambda _delay, callback: callbacks.append(callback)
+        error = PermissionError("Library is inaccessible")
+
+        with mock.patch(
+            "tab_tags.sorter_engine.index_existing_library", side_effect=error
+        ):
+            tab._discover_then_refresh("library")
+
+        callbacks[0]()
+        tab._finish_refresh.assert_called_once_with(0, error)
+
     def test_programmatic_filter_selection_is_guarded(self):
         tab = object.__new__(TagsTab)
         tab._updating_browser_filters = True

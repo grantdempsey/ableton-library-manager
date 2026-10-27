@@ -128,6 +128,13 @@ summary shows the visible results for the active search, collection, and tag fil
 counts, collection totals, and the overall indexed-library total load from the indexed User
 Library in the background so collection navigation stays responsive.
 
+After deleting files with another tool, use **Sounds & Tags > Rescan library** to
+update the index and its counts without moving any files. Rescanning discovers new sounds
+and removes records and tags for confirmed-missing files inside the selected library.
+Completed Import and Organize operations also remove missing records in their destination
+library. Existing files retain their personal tags. Unavailable libraries or access errors
+are reported rather than treated as deleted files.
+
 Generated filename tags use the `name:` namespace and remain separate from routing rules. For
 example, `dark_kick_v2.wav` produces `name:dark` and `name:kick`; these tags improve discovery
 without causing unexpected reclassification.

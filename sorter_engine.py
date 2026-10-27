@@ -542,11 +542,33 @@ def index_asset(
         if _connection is None:
             connection.close()
 
-def index_existing_library(library_root):
-    """Indexes supported files already present in a User Library without moving them."""
+def _prune_missing_assets(connection, library_root):
+    """Removes only confirmed-missing records within an accessible library."""
     root = os.path.normpath(library_root)
-    if not os.path.isdir(root):
-        return 0
+    if not stat.S_ISDIR(os.stat(root).st_mode):
+        raise NotADirectoryError(root)
+    root_clause, parameters = _library_root_clause(root)
+    paths = connection.execute(
+        f"SELECT a.path FROM assets a WHERE {root_clause}", parameters
+    ).fetchall()
+    missing = []
+    for (path,) in paths:
+        try:
+            os.stat(path)
+        except (FileNotFoundError, NotADirectoryError):
+            missing.append((path,))
+    connection.executemany(
+        "DELETE FROM asset_tags WHERE asset_path = ?", missing
+    )
+    connection.executemany("DELETE FROM assets WHERE path = ?", missing)
+    return len(missing)
+
+
+def index_existing_library(library_root):
+    """Synchronizes supported library files and removes confirmed-missing records."""
+    root = os.path.normpath(library_root)
+    if not stat.S_ISDIR(os.stat(root).st_mode):
+        raise NotADirectoryError(root)
     indexed_count = 0
     stack = [root]
     visited = set()
@@ -564,10 +586,7 @@ def index_existing_library(library_root):
             if normalized_current in visited:
                 continue
             visited.add(normalized_current)
-            try:
-                entries = os.scandir(normalized_current)
-            except OSError:
-                continue
+            entries = os.scandir(normalized_current)
             with entries:
                 for entry in entries:
                     if entry.is_symlink():
@@ -597,6 +616,7 @@ def index_existing_library(library_root):
                         entry.path, destination, "existing_library", 1.0,
                         sorted(set(tags)), _connection=connection
                     )
+        _prune_missing_assets(connection, root)
         connection.commit()
         return indexed_count
     finally:
@@ -690,9 +710,11 @@ def _library_root_clause(root_path, column="a.path"):
     if not root_path:
         return "", []
     normalized_root = os.path.normcase(os.path.normpath(root_path))
+    prefix = os.path.join(normalized_root, "")
+    escaped_prefix = prefix.replace("!", "!!").replace("%", "!%").replace("_", "!_")
     return (
-        f"(LOWER({column}) = LOWER(?) OR LOWER({column}) LIKE LOWER(?))",
-        [normalized_root, f"{normalized_root}{os.sep}%"],
+        f"(LOWER({column}) = LOWER(?) OR LOWER({column}) LIKE LOWER(?) ESCAPE '!')",
+        [normalized_root, f"{escaped_prefix}%"],
     )
 
 def _asset_rows_with_tags(connection, rows):
@@ -1832,13 +1854,6 @@ class ParallelLibrarySorter:
 
                 self.total_files = len(execution_manifest)
                 
-                if self.total_files == 0 and self.stats["Native Live Racks (.adg, .amxd, .alc, .adv)"] == 0:
-                    self.window.after(0, lambda: self.update_status("Scan complete. Library folders match rule taxonomies."))
-                    if not callback_triggered:
-                        callback_triggered = True
-                        self.window.after(0, lambda: self.done_callback(self.stats, self.copy_mode))
-                    return
-
                 if self.total_files > 0:
                     with ThreadPoolExecutor(max_workers=4) as executor:
                         batch_size = 256
@@ -1881,6 +1896,25 @@ class ParallelLibrarySorter:
                 if not self.copy_mode and not self.preview_only:
                     self.window.after(0, lambda: self.update_status("Scrubbing empty leftover directories..."))
                     force_delete_empty_folders(self.src)
+
+                if not self.preview_only and not self.cancel_event.is_set():
+                    try:
+                        connection = _asset_index_connection()
+                        try:
+                            _prune_missing_assets(connection, self.dest)
+                            connection.commit()
+                        finally:
+                            connection.close()
+                    except (OSError, sqlite3.Error) as index_error:
+                        self.record_operation_error(
+                            self.dest, "", "index reconciliation", index_error
+                        )
+                        self.increment_stat_safe("Errors/Skipped Files")
+                        self.window.after(
+                            0, lambda error=index_error: self.update_status(
+                                f"Asset index could not be reconciled: {error}"
+                            )
+                        )
                     
                 if self.cancel_event.is_set():
                     self.window.after(0, lambda: self.update_status("Operation cancelled. No new files will be processed."))

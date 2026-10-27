@@ -106,6 +106,24 @@ class LibraryWorkflowIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(sorter_engine.get_indexed_asset(destination_path))
         self.assertEqual([], sorter.operation_errors)
 
+    def test_organize_removes_externally_deleted_index_records(self):
+        library = os.path.join(self.temp_dir.name, "library")
+        os.makedirs(library)
+        path = os.path.join(library, "deleted.wav")
+        with open(path, "wb") as handle:
+            handle.write(b"sample")
+        sorter_engine.index_asset(path, library, "test", 1.0, ["favorite"])
+        os.remove(path)
+
+        sorter, (stats, _mode) = self._run_sorter(
+            library, library, copy_mode=False
+        )
+
+        self.assertEqual(0, stats["Errors/Skipped Files"])
+        self.assertEqual([], sorter.operation_errors)
+        self.assertEqual(0, sorter_engine.count_indexed_assets(library))
+        self.assertEqual([], sorter_engine.get_asset_tags(path))
+
 
 if __name__ == "__main__":
     unittest.main()
