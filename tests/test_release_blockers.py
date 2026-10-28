@@ -128,6 +128,27 @@ class RecoverySafetyTests(unittest.TestCase):
             self.assertTrue(any(record["source"] == str(deep) for record in records))
         self.assertFalse(hasattr(sorter, "nuclear_powershell_flatten"))
 
+    @unittest.skipIf(os.name == "nt", "POSIX mode bits require a native POSIX filesystem")
+    def test_move_preserves_posix_read_permissions(self):
+        source = self.library / "kick.wav"
+        source.write_bytes(b"audio")
+        source.chmod(0o640)
+        destination = self.root / "output"
+        done = threading.Event()
+        sorter = sorter_engine.ParallelLibrarySorter(
+            str(self.library), str(destination),
+            SimpleNamespace(after=lambda delay, callback: callback()),
+            lambda message: None, lambda *args: done.set(), copy_mode=False,
+            smart_learning_enabled=False,
+        )
+        sorter.start_parallel_sort()
+        self.assertTrue(done.wait(5))
+        sorter.worker_thread.join(5)
+        self.assertEqual([], sorter.operation_errors)
+        output = next(destination.rglob("kick.wav"))
+        self.assertEqual(b"audio", output.read_bytes())
+        self.assertEqual(0o640, output.stat().st_mode & 0o777)
+
     def test_pipeline_scan_failure_reports_error_and_moves_nothing(self):
         sample = self.library / "kick.wav"
         sample.write_bytes(b"audio")

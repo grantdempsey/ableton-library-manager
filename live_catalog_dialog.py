@@ -148,7 +148,7 @@ class _CatalogBrowser:
         self.sounds.configure(xscrollcommand=horizontal.set)
         detail_frame = ttk.Frame(self)
         self.detail_frame = detail_frame
-        detail_frame.pack(fill="x", padx=12, pady=8)
+        detail_frame.pack(side="bottom", fill="x", padx=12, pady=8, before=panes)
         ttk.Label(detail_frame, text="ITEM DETAILS", foreground=theme["accent_neon"],
                   font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 4))
         detail_scroll = ttk.Scrollbar(detail_frame)
@@ -165,7 +165,7 @@ class _CatalogBrowser:
         self.details.tag_configure("matched", foreground=theme["accent_neon"])
         status_label = ttk.Label(self, textvariable=self.status, wraplength=700)
         self.status_label = status_label
-        status_label.pack(fill="x", padx=12)
+        status_label.pack(side="bottom", fill="x", padx=12, before=detail_frame)
         status_label.bind("<Configure>", lambda event: status_label.configure(wraplength=max(200, event.width)))
         self.loading_banner = tk.Frame(
             panes, bg="#181b20", highlightthickness=2,

@@ -2607,8 +2607,11 @@ class ParallelLibrarySorter:
             if os.path.normpath(root) == target_dir: return
 
             os.makedirs(target_dir, exist_ok=True)
-            try: os.chmod(s_path, stat.S_IWRITE)
-            except Exception: pass
+            if os.name == "nt":
+                try:
+                    os.chmod(s_path, stat.S_IWRITE)
+                except OSError:
+                    pass
             
             if os.path.exists(d_path):
                 s_crc = calculate_crc32(s_path)
@@ -2836,7 +2839,8 @@ def force_delete_empty_folders(root_dir):
         for d in dirs:
             dir_path = os.path.join(root, d)
             try:
-                os.chmod(dir_path, stat.S_IWRITE)
+                if os.name == "nt":
+                    os.chmod(dir_path, stat.S_IWRITE)
                 if not os.listdir(dir_path):
                     os.rmdir(dir_path)
                     count += 1

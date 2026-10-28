@@ -13,6 +13,16 @@ recommending release; the earlier local-only workflow status below is historical
 The source launcher's executable bit is now included in the release commit,
 with LF line endings. Earlier notes about its unset tracked bit are superseded.
 
+The first native Apple Silicon run (40619005212) exposed a genuine POSIX
+permission bug: applying Windows `S_IWRITE` removed read permission before
+copy/move. The permission adjustment is now Windows-only, with a native POSIX
+mode-preservation regression. Native Mac tag-list sizing also failed the
+existing 70px minimum; the collection header/search padding is more compact
+without weakening that requirement. The legacy, inactive catalog dialog now
+reserves footer/details space before expanding its panes. Windows validation:
+348 tests, one POSIX-only skip, passed in 61.971 seconds. Native revalidation is
+required; the earlier Windows candidate predates these fixes and is superseded.
+
 ## Latest verified Windows candidate
 
 H1-H8 source remediation is implemented. **347 source tests passed in 53.242

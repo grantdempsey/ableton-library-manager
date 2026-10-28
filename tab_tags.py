@@ -181,7 +181,7 @@ class TagsTab(ttk.Frame):
             bg=theme["bg_panel"], bd=1, relief="solid",
             highlightbackground=theme["border"], highlightcolor=theme["border"]
         )
-        search_controls.pack(fill="x", padx=15, pady=(8, 6), ipady=7)
+        search_controls.pack(fill="x", padx=15, pady=(8, 6), ipady=3)
         tk.Label(search_controls, text="Search", bg=theme["bg_panel"], fg=theme["fg_muted"]).pack(side="left", padx=(10, 0))
         self.search_entry = tk.Entry(
             search_controls, textvariable=self.search_var, width=26,
@@ -283,7 +283,7 @@ class TagsTab(ttk.Frame):
         collection_tabs.add(collections_panel, text="Collections")
         collection_tabs.add(saved_panel, text="Saved")
         self.collection_list = tk.Listbox(
-            collections_panel, height=5, bg=theme["bg_field"], fg=theme["fg_light"],
+            collections_panel, height=3, bg=theme["bg_field"], fg=theme["fg_light"],
             selectbackground=theme["tag_enabled"], selectforeground="white",
             relief="flat", highlightthickness=0, activestyle="none",
             exportselection=False
@@ -318,7 +318,7 @@ class TagsTab(ttk.Frame):
         tk.Label(
             sidebar, text="Tags", bg=theme["bg_field"], fg=theme["fg_muted"],
             font=("Segoe UI", 9, "bold"), anchor="w"
-        ).pack(fill="x", padx=10, pady=(12, 4))
+        ).pack(fill="x", padx=10, pady=(6, 4))
         tag_navigation = tk.Frame(sidebar, bg=theme["bg_field"])
         tag_navigation.pack(fill="x", padx=5)
         self.tag_source_picker = ttk.Combobox(
