@@ -287,6 +287,27 @@ class RecoveryUiTests(unittest.TestCase):
     close_app = app_fixture.WindowsReleaseAcceptanceTests.close_app
     wait = app_fixture.WindowsReleaseAcceptanceTests.wait
 
+    def test_cleanup_button_keeps_requested_size_with_long_backup_path_on_resize(self):
+        page = self.app.organize_panel
+        self.app.tab_notebook.select(page)
+        page.backup_location_var.set("Backup folder: " + str(self.library / ("long-folder-name-" * 12)))
+        for width, height in ((1180, 760), (1020, 700), (1400, 800), (1020, 700)):
+            self.app.geometry(f"{width}x{height}")
+            self.app.update()
+            button = page.btn_execute
+            with self.subTest(width=width, height=height):
+                self.assertTrue(button.winfo_ismapped())
+                self.assertGreaterEqual(button.winfo_width(), button.winfo_reqwidth())
+                self.assertGreaterEqual(button.winfo_height(), button.winfo_reqheight())
+                self.assertLessEqual(
+                    button.winfo_rootx() + button.winfo_width(),
+                    button.master.winfo_rootx() + button.master.winfo_width(),
+                )
+                self.assertGreaterEqual(
+                    page.lbl_backup_location.winfo_rooty(),
+                    button.winfo_rooty() + button.winfo_height(),
+                )
+
     def test_shutdown_waits_for_blocked_undo_and_does_not_interrupt_recovery(self):
         entered, release = threading.Event(), threading.Event()
         def undo():

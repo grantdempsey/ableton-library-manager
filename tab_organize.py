@@ -147,6 +147,7 @@ class OrganizeTab(ttk.Frame):
         # 4. UNIFIED DESKTOP ACTION CONTROL ROW
         f_actions_row = tk.Frame(safety_group, bg=t["bg_field"])
         f_actions_row.pack(fill="x", padx=12, pady=(4, 10))
+        f_actions_row.columnconfigure(0, weight=1)
 
         try:
             style = ttk.Style(self.master)
@@ -156,7 +157,7 @@ class OrganizeTab(ttk.Frame):
             pass
 
         cb_wrapper = tk.Frame(f_actions_row, bg=t["bg_field"])
-        cb_wrapper.pack(side="left", fill="y")
+        cb_wrapper.grid(row=0, column=0, sticky="w")
 
         self.cb_backup = ttk.Checkbutton(
             cb_wrapper, 
@@ -171,7 +172,11 @@ class OrganizeTab(ttk.Frame):
             font=("Segoe UI", 8), bg=t["bg_field"], fg=t["fg_muted"],
             anchor="w", justify="left", wraplength=620
         )
-        self.lbl_backup_location.pack(side="left", padx=(12, 6), fill="x", expand=True)
+        self.lbl_backup_location.grid(row=1, column=0, columnspan=2, sticky="ew", padx=5, pady=(4, 0))
+        self.lbl_backup_location.bind(
+            "<Configure>",
+            lambda event: self.lbl_backup_location.configure(wraplength=max(1, event.width)),
+        )
 
         self.btn_execute = tk.Button(
             f_actions_row, text="⚡ Start cleanup", font=("Segoe UI", 9, "bold"),
@@ -179,7 +184,7 @@ class OrganizeTab(ttk.Frame):
             activebackground=t["btn_primary_hover"], activeforeground=t["btn_primary_fg"],
             bd=0, padx=20, pady=6, command=self.confirm_and_start
         )
-        self.btn_execute.pack(side="right", padx=5)
+        self.btn_execute.grid(row=0, column=1, sticky="e", padx=5)
 
         f_tools_row = tk.Frame(safety_group, bg=t["bg_field"])
         f_tools_row.pack(fill="x", padx=12, pady=(0, 10))

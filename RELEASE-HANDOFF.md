@@ -4,6 +4,13 @@ Updated: October 27, 2026, release recovery and macOS validation preparation.
 
 ## Final acceptance preparation
 
+Organize's cleanup action now reserves its own column; the backup path wraps
+on a separate row instead of squeezing the button during resizing. A regression
+reproduced the button shrinking to 119px against its requested 139px at 1020x700.
+Repeated wide/narrow resizing with a long path now preserves its full dimensions.
+The updated Windows suite passes 354 tests in 54.324s, one POSIX-only skip.
+Earlier packaged candidates do not contain this layout fix.
+
 The user has no signing credentials available and requested guided Live testing
 on this Windows PC. No security controls will be bypassed and signing/trust
 remains an explicit public-distribution gate.
@@ -15,12 +22,15 @@ remains an explicit public-distribution gate.
   isolated Options location and no personal catalog database discovery.
   It does not launch Live or edit personal content. Four new tests cover the
   fixture, changed-audio/neighbor detection and launcher isolation.
-- Current Windows suite: 353 tests passed in 54.691s, one POSIX-only skip.
+- Before the layout fix, Windows suite: 353 tests passed in 54.691s,
+  one POSIX-only skip.
 - With the user's authorization, Mac CI now packages each architecture using
   `ditto`, checks ZIP integrity/extracted content, reruns native smoke on the
   extraction, and retains unsigned test ZIPs/checksums/source SHA/guide for
   14 days in Actions artifacts. This is not a GitHub Release or notarization.
-  Verify the new CI run before directing testers to download artifacts.
+  Run [40621547528](https://github.com/grantdempsey/ableton-library-manager/actions/runs/40621547528)
+  passed both native jobs for `18e6240`, before the layout fix. That run does
+  not establish native validation of the newer layout.
 
 The human Live test remains pending; do not infer acceptance from the generated
 fixture's automated round trip. Signing credentials/services still need a user
