@@ -23,6 +23,31 @@ class LiveTagBatchDialog(tk.Toplevel):
         self.busy = False
         self.saving = False
         self.results = queue.Queue()
+        theme = gui_theme.THEME
+        font_family = "Helvetica" if self.tk.call("tk", "windowingsystem") == "aqua" else "Segoe UI"
+        self.surface = "#30343b"
+        self.field = "#191c21"
+        self.edge = "#7b8594"
+        style = ttk.Style(self)
+        style.configure(
+            "LiveEditor.Treeview", background=self.field, fieldbackground=self.field,
+            foreground=theme["fg_light"], bordercolor=self.edge,
+        )
+        style.map(
+            "LiveEditor.Treeview", background=[("selected", theme["tag_enabled"])],
+            foreground=[("selected", "#ffffff")],
+        )
+        for suffix in ("TCombobox", "TEntry"):
+            name = f"LiveEditor.{suffix}"
+            style.configure(
+                name, fieldbackground=self.field, foreground=theme["fg_light"],
+                bordercolor=self.edge, insertcolor=theme["fg_light"],
+            )
+            style.map(
+                name, fieldbackground=[("disabled", theme["bg_panel"]), ("!disabled", self.field)],
+                foreground=[("disabled", theme["fg_muted"]), ("!disabled", theme["fg_light"])],
+                bordercolor=[("focus", theme["accent_neon"]), ("!focus", self.edge)],
+            )
         self.title("Edit Live tags")
         self.minsize(680, 620)
         browser._place_dialog(self, 760, 700)
@@ -36,7 +61,7 @@ class LiveTagBatchDialog(tk.Toplevel):
         self.status_var = tk.StringVar(self, value="Choose an edit, then preview changes. No files have been changed.")
         self.selection_label = ttk.Label(
             self, text=f"Editing {len(paths):,} selected {'sound' if len(paths) == 1 else 'sounds'} "
-                       f"({self.off_page:,} off page)"
+                       f"({self.off_page:,} off page)", font=(font_family, 11, "bold")
         )
         self.selection_label.pack(anchor="w", padx=12, pady=(12, 4))
         ttk.Label(
@@ -44,13 +69,17 @@ class LiveTagBatchDialog(tk.Toplevel):
             text="1. Choose an edit below.  2. Preview the changes.  3. Save when ready.\n"
                  "This selection stays fixed, even if you change the Library selection."
         ).pack(fill="x", padx=12)
-        assigned_frame = ttk.LabelFrame(self, text="Assigned Live tags — select a row to remove or rename it")
+        assigned_frame = tk.LabelFrame(
+            self, text=" Assigned Live tags ", bg=self.surface, fg=theme["fg_light"],
+            font=(font_family, 10, "bold"), bd=1, relief="solid",
+            padx=6, pady=4,
+        )
         assigned_frame.pack(fill="x", padx=12, pady=(8, 0))
         assigned_scroll = ttk.Scrollbar(assigned_frame)
         assigned_scroll.pack(side="right", fill="y")
         self.assigned_tree = ttk.Treeview(
-            assigned_frame, columns=("tag", "count"), show="headings", height=3,
-            selectmode="browse", yscrollcommand=assigned_scroll.set
+            assigned_frame, columns=("tag", "count"), show="headings", height=2,
+            selectmode="browse", yscrollcommand=assigned_scroll.set, style="LiveEditor.Treeview"
         )
         self.assigned_tree.heading("tag", text="Group | tag")
         self.assigned_tree.heading("count", text="Selected sounds")
@@ -68,34 +97,41 @@ class LiveTagBatchDialog(tk.Toplevel):
         )
         self.vocabulary_button.pack(side="right")
         ttk.Label(self, textvariable=browser.tag_suggestions_status, wraplength=640).pack(fill="x", padx=12)
-        controls = ttk.Frame(self)
-        controls.pack(fill="x", padx=12, pady=8)
+        controls = tk.LabelFrame(
+            self, text=" Edit tags ", bg=self.surface, fg=theme["fg_light"],
+            font=(font_family, 10, "bold"), bd=1, relief="solid", padx=8, pady=2,
+        )
+        controls.pack(fill="x", padx=12, pady=4)
         self.action_entry = ttk.Combobox(
             controls, textvariable=self.action_var, values=("add", "remove", "rename"),
-            state="readonly", width=9
+            state="readonly", width=9, style="LiveEditor.TCombobox"
         )
         self.action_entry.grid(row=1, column=0, sticky="w")
-        self.tag_entry = ttk.Combobox(controls, textvariable=self.tag_var, width=24)
+        self.tag_entry = ttk.Combobox(
+            controls, textvariable=self.tag_var, width=24, style="LiveEditor.TCombobox"
+        )
         self.tag_entry.grid(row=1, column=2, sticky="ew", padx=(6, 0))
-        self.replacement_label = ttk.Label(controls, text="Rename to:")
+        self.replacement_label = tk.Label(
+            controls, text="Rename to:", bg=self.surface, fg=theme["fg_light"]
+        )
         self.replacement_label.grid(row=2, column=0, pady=5)
-        self.replacement_entry = ttk.Entry(controls, textvariable=self.replacement_var)
+        self.replacement_entry = ttk.Entry(
+            controls, textvariable=self.replacement_var, style="LiveEditor.TEntry"
+        )
         self.replacement_entry.grid(row=2, column=1, columnspan=2, sticky="ew", padx=(6, 0))
         controls.columnconfigure(2, weight=1)
         self.group_entry = ttk.Combobox(
             controls, textvariable=self.group_var, values=ableton_tags.TAG_GROUPS, width=16,
-            postcommand=self.load_suggestions
+            postcommand=self.load_suggestions, style="LiveEditor.TCombobox"
         )
         self.group_entry.grid(row=1, column=1, sticky="ew", padx=6)
-        ttk.Label(controls, text="Action:").grid(row=0, column=0, sticky="w")
-        ttk.Label(controls, text="Group:").grid(row=0, column=1, sticky="w", padx=6)
-        ttk.Label(controls, text="Tag name:").grid(row=0, column=2, sticky="w", padx=6)
-        ttk.Label(
-            controls, text="Example: Genres + Ambient. Full hierarchies such as Genres|Ambient|Drone also work."
-        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(5, 0))
-        theme = gui_theme.THEME
+        for column, label in enumerate(("Action", "Group", "Tag name")):
+            tk.Label(
+                controls, text=label, bg=self.surface, fg=theme["fg_light"],
+                font=(font_family, 9, "bold"),
+            ).grid(row=0, column=column, sticky="w", padx=6 if column else 0, pady=(0, 3))
         self.listing = tk.Listbox(
-            self, height=3, exportselection=False,
+            self, height=2, exportselection=False,
             bg=theme["bg_field"], fg=theme["fg_light"],
             selectbackground=theme["tag_enabled"], selectforeground=theme["fg_light"],
             highlightbackground=theme["border"], highlightcolor=theme["accent_neon"],
@@ -107,35 +143,53 @@ class LiveTagBatchDialog(tk.Toplevel):
         self.queue_button = ttk.Button(actions, text="Add another change", command=self.enqueue)
         self.queue_button.pack(side="left")
         self.remove_button = ttk.Button(actions, text="Remove extra change", command=self.remove)
-        self.review_button = ttk.Button(actions, text="Preview changes", command=self.review)
+        self.review_button = tk.Button(
+            actions, text="Preview changes", command=self.review,
+            bg=theme["btn_secondary_hover"], fg=theme["fg_light"],
+            activebackground=theme["hover_dark"], activeforeground="#ffffff",
+            disabledforeground=theme["fg_muted"], bd=0, padx=14, pady=5,
+            font=(font_family, 9, "bold"),
+        )
         self.review_button.pack(side="right")
         ttk.Label(self, textvariable=self.status_var, wraplength=640).pack(fill="x", padx=12, pady=4)
         preview_frame = ttk.Frame(self)
         preview_frame.pack(fill="both", expand=True, padx=12)
-        ttk.Label(preview_frame, text="Changes to save (+ add, - remove)").pack(anchor="w", pady=(0, 3))
+        ttk.Label(
+            preview_frame, text="Review changes   + add   /   - remove",
+            font=(font_family, 10, "bold"),
+        ).pack(anchor="w", pady=(0, 3))
         scroll = ttk.Scrollbar(preview_frame)
         scroll.pack(side="right", fill="y")
         self.preview = tk.Text(
             preview_frame, height=8, wrap="word", state="disabled",
-            yscrollcommand=scroll.set, bg=theme["bg_field"], fg=theme["fg_light"],
+            yscrollcommand=scroll.set, bg=self.field, fg=theme["fg_light"],
             insertbackground=theme["fg_light"], selectbackground=theme["tag_enabled"],
-            selectforeground=theme["fg_light"], highlightbackground=theme["border"],
+            selectforeground=theme["fg_light"], highlightbackground=self.edge,
             highlightcolor=theme["accent_neon"], highlightthickness=1, bd=0,
             font=("Segoe UI", 9), padx=10, pady=8
         )
         self.preview.pack(fill="both", expand=True)
         scroll.configure(command=self.preview.yview)
         footer = ttk.Frame(self)
-        footer.pack(side="bottom", fill="x", padx=12, pady=12, before=preview_frame)
+        footer.pack(side="bottom", fill="x", padx=12, pady=8, before=preview_frame)
         ttk.Label(
-            footer, wraplength=620, justify="left",
-            text="Close Ableton Live before saving. Save writes only the previewed sidecar changes; "
-                 "audio is unchanged. Existing sidecars receive backups. Concurrent edits abort saving; "
-                 "rollback is best effort, not crash-safe."
+            footer, text="Close Ableton Live before saving.",
+            foreground=theme["accent_gold"], font=(font_family, 9, "bold"),
+        ).pack(fill="x", pady=(0, 3))
+        ttk.Label(
+            footer, wraplength=640, justify="left",
+            text="Audio unchanged. Sidecars backed up. Concurrent edits abort saving.\n"
+                 "Rollback is best effort, not crash-safe."
         ).pack(fill="x", pady=(0, 6))
         self.close_button = ttk.Button(footer, text="Close / discard", command=self.close)
         self.close_button.pack(side="left")
-        self.save_button = ttk.Button(footer, text="Save changes", command=self.save, state="disabled")
+        self.save_button = tk.Button(
+            footer, text="Save changes", command=self.save, state="disabled",
+            bg=theme["btn_primary"], fg=theme["btn_primary_fg"],
+            activebackground=theme["btn_primary_hover"], activeforeground=theme["btn_primary_fg"],
+            disabledforeground="#4a5637", bd=0, padx=18, pady=5,
+            font=(font_family, 9, "bold"),
+        )
         self.save_button.pack(side="right")
         self.edit_controls = (
             self.tag_entry, self.replacement_entry, self.queue_button,
@@ -148,7 +202,7 @@ class LiveTagBatchDialog(tk.Toplevel):
         self.group_var.trace_add("write", self.invalidate)
         self.tag_entry.configure(postcommand=self.load_suggestions)
         self._show_rename_fields()
-        self.after_idle(self.refresh_assignments)
+        self._initial_refresh_id = self.after_idle(self.refresh_assignments)
 
     def load_suggestions(self):
         self.browser._load_live_tag_suggestions()
@@ -166,6 +220,9 @@ class LiveTagBatchDialog(tk.Toplevel):
                 self.action_var.set("remove")
 
     def refresh_assignments(self):
+        if self._initial_refresh_id is not None:
+            self.after_cancel(self._initial_refresh_id)
+            self._initial_refresh_id = None
         if self.busy:
             return
         self.invalidate()
@@ -285,6 +342,9 @@ class LiveTagBatchDialog(tk.Toplevel):
         if not operations:
             show_notice(self, "Edit Live tags", "Enter a tag to preview.")
             return
+        if self._initial_refresh_id is not None:
+            self.after_cancel(self._initial_refresh_id)
+            self._initial_refresh_id = None
         self.invalidate()
         self.set_busy(True)
         operations = tuple(operations)

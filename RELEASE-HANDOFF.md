@@ -18,7 +18,13 @@ This supersedes the earlier hidden-panel and preview-button work below.
 - Recovery snapshots retain complete stored rows separately from visible tags.
   Duplicate undo preserves enabled/disabled legacy data and still refuses changed
   metadata; historical snapshots without the new raw-row field remain supported.
-- Windows source suite: 356 tests passed in 49.692s, one POSIX-only skip.
+- Live editor polish uses scoped higher-contrast fields, raised sections, clearer
+  headings, an emphasized Save action and a separate close-Live warning.
+  Contrast ratios and minimum-size multi-edit/rename layout have regression tests.
+- Native run 40626941834 exposed an initial idle assignment-read race that could
+  invalidate a completed inline preview. Reproduced deterministically on Windows;
+  starting a preview now cancels the pending initial read.
+- Windows source suite: 358 tests passed, one POSIX-only skip.
   Full-app themed editor geometry and preview were also checked at 680x620.
   The new dormant-tag fixtures are included in bundled-code validation.
 - Native Mac validation must run on this new source; prior CI runs and Windows

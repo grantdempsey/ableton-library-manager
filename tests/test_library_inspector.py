@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import tkinter as tk
+from tkinter import ttk
 import unittest
 from unittest import mock
 
@@ -94,7 +95,7 @@ class LibraryInspectorTests(unittest.TestCase):
         self.assertEqual("disabled", self.tab.assigned_tags_text.cget("state"))
         self.assertFalse(hasattr(self.tab, "selection_notebook"))
         for control in (self.tab.edit_live_tags_button,):
-            self.assertTrue(control.winfo_ismapped())
+            self.assertTrue(control.winfo_ismapped(), str(control))
             self.assertEqual("normal", control.cget("state"))
         self.select([])
         self.assertIn("Select sounds", self.tab.assigned_tags_text.get("1.0", "end"))
@@ -412,6 +413,23 @@ class LibraryInspectorTests(unittest.TestCase):
         self.assertFalse(hasattr(self.tab, "recommendation_text"))
         self.assertTrue(os.path.isfile(self.paths[0]))
 
+
+    def test_inline_preview_survives_initial_idle_assignment_read(self):
+        self.select(self.paths[:1])
+        self.tab._edit_live_tags(self.paths[:1], "Sounds|Custom label", "add")
+        dialog = self.tab._live_batch_dialog
+        deadline = time.monotonic() + 4
+        while dialog.results.empty() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertFalse(dialog.results.empty())
+        dialog.finish()
+        self.assertIsNotNone(dialog.plan)
+        self.root.update_idletasks()
+        self.assertFalse(dialog.busy)
+        self.assertIsNotNone(dialog.plan)
+        self.assertEqual("normal", str(dialog.save_button.cget("state")))
+        self.finish_inline_change()
+        self.assertIn("Sounds|Custom label", ableton_tags.sample_tags(self.paths[0]))
 
     def test_inline_custom_tags_round_trip_in_every_verified_group(self):
         self.select(self.paths[:1])
@@ -837,7 +855,10 @@ class LibraryInspectorTests(unittest.TestCase):
                     ("selectbackground", "tag_enabled"), ("selectforeground", "fg_light"),
                     ("highlightbackground", "border"), ("highlightcolor", "accent_neon")
                 ):
-                    self.assertEqual(gui_theme.THEME[color], widget.cget(option))
+                    expected = gui_theme.THEME[color]
+                    if widget is dialog.preview:
+                        expected = {"background": dialog.field, "highlightbackground": dialog.edge}.get(option, expected)
+                    self.assertEqual(expected, widget.cget(option))
             self.assertEqual("disabled", dialog.preview.cget("state"))
         check_surfaces()
         dialog.tag_var.set("Sounds|Snare")
@@ -850,6 +871,28 @@ class LibraryInspectorTests(unittest.TestCase):
         check_surfaces()
         self.assertIn("Preview changes", dialog.preview.get("1.0", "end"))
         self.assertNotIn("+ Sounds|Snare", dialog.preview.get("1.0", "end"))
+
+    def test_live_editor_contrast_and_styles_do_not_change_other_pages(self):
+        style = ttk.Style(self.root)
+        default_entry = style.lookup("TCombobox", "fieldbackground")
+        dialog = self.open_batch()
+        def luminance(color):
+            channels = [int(color[index:index + 2], 16) / 255 for index in (1, 3, 5)]
+            linear = [value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4 for value in channels]
+            return sum(value * weight for value, weight in zip(linear, (0.2126, 0.7152, 0.0722)))
+        def contrast(first, second):
+            light, dark = sorted((luminance(first), luminance(second)), reverse=True)
+            return (light + 0.05) / (dark + 0.05)
+        self.assertGreaterEqual(contrast(gui_theme.THEME["fg_light"], dialog.surface), 4.5)
+        self.assertGreaterEqual(contrast(gui_theme.THEME["fg_light"], dialog.field), 4.5)
+        self.assertGreaterEqual(contrast(dialog.edge, dialog.surface), 3)
+        self.assertGreaterEqual(contrast(dialog.edge, dialog.field), 3)
+        self.assertGreaterEqual(
+            contrast(dialog.save_button.cget("foreground"), dialog.save_button.cget("background")), 4.5
+        )
+        self.assertEqual("LiveEditor.TCombobox", dialog.tag_entry.cget("style"))
+        self.assertEqual(default_entry, style.lookup("TCombobox", "fieldbackground"))
+        self.assertNotEqual(dialog.review_button.cget("background"), gui_theme.THEME["bg_dark"])
 
     def test_batch_captures_selection_reviews_and_saves_combined_changes_once(self):
         dialog = self.open_batch()
