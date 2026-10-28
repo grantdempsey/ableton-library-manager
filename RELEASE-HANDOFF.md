@@ -24,12 +24,29 @@ This supersedes the earlier hidden-panel and preview-button work below.
 - Native run 40626941834 exposed an initial idle assignment-read race that could
   invalidate a completed inline preview. Reproduced deterministically on Windows;
   starting a preview now cancels the pending initial read.
-- Windows source suite: 358 tests passed, one POSIX-only skip.
-  Full-app themed editor geometry and preview were also checked at 680x620.
-  The new dormant-tag fixtures are included in bundled-code validation.
-- Native Mac validation must run on this new source; prior CI runs and Windows
-  candidates below do not validate this redesign. No release is published.
-  Human Live acceptance and trusted signing/download validation remain open.
+- Final production source: `2e76076` (contrast/race fix `26740ce`, followed by
+  minimum-size preview refinement). Windows source suite: 358 tests passed in
+  48.699s, one POSIX-only skip. Themed expanded multi-edit/rename preview remains
+  64px high at 680x620 after repeated resizing, with no callback errors.
+- Final Windows candidate: `release_builds/candidate-hz8sv07x`.
+  Bundled-code fixtures: 224 tests passed in 40.688s, one POSIX-only skip,
+  exercising 19 production modules. All 33 ZIP-extracted files match their
+  original SHA-256 hashes, with no private/runtime files found.
+  Final native launch was blocked by Windows Application Control; testing stopped
+  without bypassing protection. Earlier successful native smoke on `26740ce`
+  does not validate this final executable.
+  Unsigned ZIP: `tester-download/AbletonLibraryManager-2e76076-windows-unsigned-test.zip`.
+  SHA-256: `21c06ab7dcb28ea3037ff981ea05808bc6136352c408e21bd63d560308a33722`.
+- Native Mac final-source run
+  [40628597415](https://github.com/grantdempsey/ableton-library-manager/actions/runs/40628597415)
+  passed on `2e76076` for Apple Silicon and Intel: disposable-home source tests,
+  native builds, bundled-code fixtures, fresh/legacy-profile native smoke,
+  ZIP integrity/extracted-app smoke and unsigned artifact uploads.
+  Both `unsigned-macos-15` and `unsigned-macos-15-intel` tester artifacts are
+  retained for 14 days with checksums and the acceptance guide.
+  This does not establish downloaded-app Gatekeeper trust or Live visibility.
+- No release is published. Human Live acceptance, final Windows native package
+  acceptance and trusted signing/download validation remain open.
 
 ## Final acceptance preparation
 
