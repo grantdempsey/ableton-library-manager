@@ -241,7 +241,7 @@ class _CatalogBrowser:
         self.results = None
         self.loading_progress.stop()
         self.loading_banner.place_forget()
-        self.detail_frame.pack(before=self.status_label, fill="x", padx=12, pady=8)
+        self.detail_frame.pack(side="bottom", before=self.status_label, fill="x", padx=12, pady=8)
         self.reload_button.configure(state="normal")
         self.database_picker.configure(state="readonly")
         if isinstance(result, Exception):
@@ -466,5 +466,7 @@ class LiveCatalogDialog(_CatalogBrowser, tk.Toplevel):
         self.geometry("960x680")
         self.minsize(760, 560)
         self._build_catalog()
-        ttk.Button(self, text="Close", command=self.destroy).pack(anchor="e", padx=12, pady=8)
+        ttk.Button(self, text="Close", command=self.destroy).pack(
+            side="bottom", anchor="e", padx=12, pady=8, before=self.pack_slaves()[0]
+        )
         self.bind("<Escape>", lambda _event: self.destroy())
