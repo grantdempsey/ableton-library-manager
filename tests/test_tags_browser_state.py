@@ -1,4 +1,5 @@
 import unittest
+import queue
 from unittest import mock
 
 from tab_tags import TagsTab
@@ -21,6 +22,7 @@ class TagsBrowserStateTests(unittest.TestCase):
         tab.search_var.get.return_value = "kick"
         tab._tab_is_visible = mock.Mock(return_value=False)
         tab.ensure_loaded = mock.Mock()
+        tab._clear_selection = mock.Mock()
 
         tab.invalidate_library()
 
@@ -36,6 +38,7 @@ class TagsBrowserStateTests(unittest.TestCase):
         self.assertEqual("favorite", tab.active_tag_filter)
         tab.search_var.set.assert_not_called()
         tab.ensure_loaded.assert_not_called()
+        tab._clear_selection.assert_called_once_with()
 
         tab._tab_is_visible.return_value = True
         tab.invalidate_library()
@@ -67,6 +70,7 @@ class TagsBrowserStateTests(unittest.TestCase):
     def test_rescan_refreshes_sidebar_counts_and_resets_paging(self):
         tab = object.__new__(TagsTab)
         tab.rescan_button = mock.Mock()
+        tab._set_freshness = mock.Mock()
         tab.filter_button = mock.Mock()
         tab._set_status = mock.Mock()
         tab._render_results = mock.Mock()
@@ -82,6 +86,7 @@ class TagsBrowserStateTests(unittest.TestCase):
     def test_rescan_error_is_retained_for_deferred_ui_callback(self):
         tab = object.__new__(TagsTab)
         tab._finish_refresh = mock.Mock()
+        tab._library_work_results = queue.Queue()
         callbacks = []
         tab.after = lambda _delay, callback: callbacks.append(callback)
         error = PermissionError("Library is inaccessible")
@@ -91,7 +96,7 @@ class TagsBrowserStateTests(unittest.TestCase):
         ):
             tab._discover_then_refresh("library")
 
-        callbacks[0]()
+        tab._finish_library_work()
         tab._finish_refresh.assert_called_once_with(0, error)
 
     def test_programmatic_filter_selection_is_guarded(self):
@@ -119,6 +124,9 @@ class TagsBrowserStateTests(unittest.TestCase):
         tab._cached_total_count = 0
         tab._collection_counts = {}
         tab._asset_paths = {}
+        tab._selection_paths = set()
+        tab._selection_scope = None
+        tab._selection_revision = 0
         tab._page_index = 0
         tab._page_size = 250
         tab.active_tag_filter = ""
@@ -134,6 +142,7 @@ class TagsBrowserStateTests(unittest.TestCase):
         tab.collection_list = mock.Mock()
         tab.tag_list = mock.Mock()
         tab._refresh_collections = mock.Mock()
+        tab._refresh_filter_chips = mock.Mock()
         tab._show_selected_asset = mock.Mock()
 
         with mock.patch("tab_tags.sorter_engine.list_indexed_tags") as list_tags:
@@ -198,6 +207,7 @@ class TagsBrowserStateTests(unittest.TestCase):
         tab.collection_list.curselection.return_value = []
         tab.tag_list.curselection.return_value = [0]
         tab.tag_list.get.return_value = "category:kick  (12)"
+        tab._tag_browser_rows = [("category:kick", 12, "category:kick")]
         tab._page_index = 3
         tab.favorites_only = True
         tab.active_tag_filter = ""
@@ -233,13 +243,14 @@ class TagsBrowserStateTests(unittest.TestCase):
         tab.tag_list.nearest.return_value = 4
         tab.tag_list.size.return_value = 10
         tab.tag_list.get.return_value = "category:kick  (12)"
+        tab._tag_browser_rows = [("category:kick", 12, "category:kick")] * 10
         tab._apply_tag_filter = mock.Mock()
 
         tab._tag_released(mock.Mock(y=25))
 
         tab.tag_list.selection_clear.assert_called_once_with(0, "end")
         tab.tag_list.selection_set.assert_called_once_with(4)
-        tab._apply_tag_filter.assert_called_once_with("category:kick  (12)")
+        tab._apply_tag_filter.assert_called_once_with("category:kick", exact=True)
         self.assertFalse(tab._updating_browser_filters)
 
 

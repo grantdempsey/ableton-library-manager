@@ -4,19 +4,33 @@ import sys
 import json
 import re
 import zlib
+import hashlib
 import stat
 import shutil
 import subprocess
 import threading
+import tempfile
+from functools import wraps
 import sqlite3
 import datetime
 import xml.etree.ElementTree as ET
 from collections import Counter
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import ableton_tags
+import tag_evidence
 
 # Core Shared Platform State Configuration Mapping
-CONFIG_FILE = "library_config.json"
-ASSET_INDEX_FILE = "library_assets.db"
+def _runtime_file(name):
+    if sys.platform == "darwin" and getattr(sys, "frozen", False):
+        directory = os.path.expanduser("~/Library/Application Support/AbletonLibraryManager")
+        os.makedirs(directory, exist_ok=True)
+        return os.path.join(directory, name)
+    return name
+
+
+CONFIG_FILE = _runtime_file("library_config.json")
+ASSET_INDEX_FILE = _runtime_file("library_assets.db")
 AUDIO_EXTS = {
     ".wav", ".aif", ".aiff", ".flac", ".mp3", ".ogg", ".oga", ".m4a",
     ".aac", ".wma", ".opus", ".caf", ".au", ".snd"
@@ -32,12 +46,23 @@ NATIVE_EXTS = {}
 IGNORED_DIRECTORIES = ["Ableton Folder Info", "Backup", "Crash Recovery", "Factory Packages"]
 RULE_METADATA = {}
 SMART_LEARNING_ENABLED = True
+MIN_RULE_EVIDENCE = 20
 LEARNING_COUNTS = {}
 LEARNED_RULE_CANDIDATES = []
 LOOP_LEVELS = ("bpm", "key")
 LOOP_LAYOUT = list(LOOP_LEVELS)
 _ASSET_SCHEMA_READY = set()
 _ASSET_SCHEMA_LOCK = threading.Lock()
+_CONFIG_LOCK = threading.RLock()
+_UNSPECIFIED_CONFIG = object()
+
+
+def serialized_config(function):
+    @wraps(function)
+    def synchronized(*args, **kwargs):
+        with _CONFIG_LOCK:
+            return function(*args, **kwargs)
+    return synchronized
 
 ROUTING_TAG_FOLDERS = {
     "role:kick": "Kicks",
@@ -123,6 +148,7 @@ def _validate_config(data):
         raise ValueError("LOOP_LAYOUT must list each of 'bpm' and 'key' at most once.")
     return data
 
+@serialized_config
 def load_external_config():
     """Reads configuration matrices directly from disk to keep UI settings synced."""
     global BPM_RANGES, DRUM_KEYWORDS, SYNTH_EXTS, NATIVE_EXTS, IGNORED_DIRECTORIES
@@ -162,16 +188,45 @@ def load_external_config():
         })
     return user_rules
 
-def _write_config(data, create_backup=True):
+@serialized_config
+def _write_config(data, create_backup=True, *, expected_content=_UNSPECIFIED_CONFIG):
     """Writes configuration through a temporary file so interrupted writes do not corrupt it."""
     _validate_config(data)
-    temporary_path = f"{CONFIG_FILE}.tmp"
-    with open(temporary_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=4)
-    if create_backup and os.path.exists(CONFIG_FILE):
-        shutil.copy2(CONFIG_FILE, f"{CONFIG_FILE}.bak")
-        backup_config()
-    os.replace(temporary_path, CONFIG_FILE)
+    directory = os.path.dirname(os.path.abspath(CONFIG_FILE))
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=directory,
+            prefix=".library-config-", suffix=".tmp", delete=False
+        ) as handle:
+            temporary_path = handle.name
+            json.dump(data, handle, indent=4)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if expected_content is not _UNSPECIFIED_CONFIG:
+            current = None
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE, "rb") as handle:
+                    current = handle.read()
+            if current != expected_content:
+                raise ValueError("Rules or profile changed during review. Retry with current settings.")
+        if create_backup and os.path.exists(CONFIG_FILE):
+            shutil.copy2(CONFIG_FILE, f"{CONFIG_FILE}.bak")
+            backup_config()
+        os.replace(temporary_path, CONFIG_FILE)
+    finally:
+        if temporary_path is not None and os.path.exists(temporary_path):
+            os.unlink(temporary_path)
+
+
+@serialized_config
+def save_ignored_directories(directories):
+    """Persist exclusions before publishing them to the shared in-memory state."""
+    with open(CONFIG_FILE, "r", encoding="utf-8") as handle:
+        data = _validate_config(json.load(handle))
+    data["IGNORED_DIRECTORIES"] = sorted(set(directories) | {"No Key Info"})
+    _write_config(data)
+    load_external_config()
 
 CONFIG_BACKUP_DIR = "config_backups"
 CONFIG_BACKUP_LIMIT = 10
@@ -221,6 +276,7 @@ def list_config_backups():
         reverse=True
     )
 
+@serialized_config
 def restore_config_backup(path):
     """Restores a backup, first saving the current rules so the restore itself can be reverted."""
     with open(path, 'r', encoding='utf-8') as f:
@@ -268,7 +324,7 @@ def library_status_summary():
         1 for pattern in DRUM_KEYWORDS if RULE_METADATA.get(pattern, {}).get("enabled", True)
     )
     summary["suggestions"] = sum(
-        1 for candidate in LEARNED_RULE_CANDIDATES if candidate.get("status", "pending") == "pending"
+        1 for candidate in LEARNED_RULE_CANDIDATES if is_reviewable_learning_candidate(candidate)
     )
     if os.path.exists(ASSET_INDEX_FILE):
         try:
@@ -283,7 +339,19 @@ def library_status_summary():
 def _new_move_log_path():
     os.makedirs(_move_log_dir(), exist_ok=True)
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    return os.path.join(_move_log_dir(), f"moves_{stamp}.jsonl")
+    descriptor, path = tempfile.mkstemp(prefix=f"moves_{stamp}_", suffix=".jsonl", dir=_move_log_dir())
+    os.close(descriptor)
+    return path
+
+
+def _append_move_record(log_path, source, destination, **details):
+    with open(log_path, "a", encoding="utf-8") as log:
+        log.write(json.dumps({
+            "source": os.path.normpath(source),
+            "destination": os.path.normpath(destination), **details,
+        }) + "\n")
+        log.flush()
+        os.fsync(log.fileno())
 
 def latest_move_log():
     """Newest move log that still has something to undo, or None."""
@@ -314,8 +382,9 @@ def undo_move_log(log_path, progress=None):
     connection = None
     try:
         connection = _asset_index_connection()
-    except (OSError, sqlite3.Error):
+    except (OSError, sqlite3.Error) as error:
         connection = None
+        results["errors"].append(f"Undo index could not be opened: {error}")
     touched_dirs = set()
     for index, record in enumerate(reversed(records)):
         source, destination = record["source"], record["destination"]
@@ -323,25 +392,85 @@ def undo_move_log(log_path, progress=None):
             if not os.path.exists(destination) or os.path.exists(source):
                 results["skipped"] += 1
                 continue
+            if record.get("operation") == "duplicate":
+                if connection is not None and "expected_destination_personal" in record:
+                    actual = dict(connection.execute(
+                        "SELECT tag, enabled FROM asset_tags WHERE asset_path = ? AND source = 'personal'",
+                        (destination,),
+                    ))
+                    if actual != record["expected_destination_personal"]:
+                        raise ValueError("Duplicate destination app tags changed; recovery was retained.")
+                ableton_tags.restore_duplicate(
+                    source, destination, record["recovery"],
+                    record["source_live_tags"], record["destination_live_tags"],
+                    record["merged_live_tags"],
+                )
+                results["restored"] += 1
+                if connection is not None:
+                    for path, snapshot in (
+                        (source, record.get("source_index")),
+                        (destination, record.get("destination_index")),
+                    ):
+                        connection.execute("DELETE FROM asset_tags WHERE asset_path = ?", (path,))
+                        connection.execute("DELETE FROM assets WHERE path = ?", (path,))
+                        if snapshot is not None:
+                            index_asset(
+                                path, snapshot["destination"], snapshot["reason"],
+                                snapshot["confidence"], snapshot["tags"] + snapshot["disabled_tags"],
+                                _connection=connection,
+                            )
+                            for tag in snapshot["disabled_tags"]:
+                                connection.execute(
+                                    "UPDATE asset_tags SET enabled = 0 WHERE asset_path = ? AND tag = ?",
+                                    (path, tag),
+                                )
+                            _cache_ableton_tags(connection, path, {
+                                os.path.normcase(os.path.abspath(path)): ableton_tags.sample_tags(path)
+                            })
+                continue
+            expected = record.get("destination_identity")
+            if expected is None:
+                results["errors"].append(
+                    f"Legacy undo entry has no destination identity; review and restore manually: {destination}"
+                )
+                results["skipped"] += 1
+                continue
+            if os.path.islink(destination) or _file_identity(destination) != expected:
+                results["skipped"] += 1
+                results["errors"].append(f"Destination changed since cleanup; left in place: {destination}")
+                continue
             os.makedirs(os.path.dirname(source), exist_ok=True)
-            os.replace(destination, source)
+            ableton_tags.transfer_sample(destination, source)
             touched_dirs.add(os.path.dirname(destination))
             results["restored"] += 1
             if connection is not None:
+                connection.execute("SAVEPOINT undo_asset")
                 try:
-                    connection.execute("UPDATE assets SET path = ? WHERE path = ?", (source, destination))
+                    connection.execute(
+                        "UPDATE assets SET path = ?, filename = ?, destination = ? WHERE path = ?",
+                        (source, os.path.basename(source), os.path.dirname(source), destination)
+                    )
                     connection.execute(
                         "DELETE FROM asset_tags WHERE asset_path = ? AND tag LIKE 'category:%'", (destination,))
                     connection.execute("UPDATE asset_tags SET asset_path = ? WHERE asset_path = ?", (source, destination))
-                except sqlite3.Error:
-                    pass
-        except OSError as error:
+                    _cache_ableton_tags(
+                        connection, source,
+                        {os.path.normcase(os.path.abspath(source)): ableton_tags.sample_tags(source)}
+                    )
+                    connection.execute("RELEASE SAVEPOINT undo_asset")
+                except (sqlite3.Error, OSError, ValueError) as error:
+                    connection.execute("ROLLBACK TO SAVEPOINT undo_asset")
+                    connection.execute("RELEASE SAVEPOINT undo_asset")
+                    results["errors"].append(f"File restored but index update failed for {source}: {error}")
+        except (OSError, ValueError, sqlite3.Error) as error:
             results["errors"].append(f"{destination}: {error}")
         if progress and index % 200 == 0:
             progress(index + 1, len(records))
     if connection is not None:
         try:
             connection.commit()
+        except sqlite3.Error as error:
+            results["errors"].append(f"Files restored but index changes could not be saved: {error}")
         finally:
             connection.close()
     for folder in sorted(touched_dirs, key=len, reverse=True):
@@ -482,8 +611,9 @@ def index_asset(
                     (normalized_path, normalized_previous_path)
                 )
                 connection.execute(
-                    "INSERT OR IGNORE INTO asset_tags (asset_path, tag) "
-                    "SELECT ?, tag FROM asset_tags WHERE asset_path = ?",
+                    "INSERT OR IGNORE INTO asset_tags (asset_path, tag, enabled, source) "
+                    "SELECT ?, tag, enabled, source FROM asset_tags WHERE asset_path = ? "
+                    "AND source != 'ableton'",
                     (normalized_path, normalized_previous_path)
                 )
                 connection.execute(
@@ -533,7 +663,8 @@ def index_asset(
             "(asset_path, tag, enabled, source) VALUES (?, ?, 1, ?)",
             [
                 (normalized_path, tag, "generated" if tag.startswith(("category:", "name:")) else "personal")
-                for tag in sorted(set(tags)) if tag and not tag.startswith("user:")
+                for tag in sorted(set(tags))
+                if tag and not tag.startswith(("user:", ableton_tags.CACHE_PREFIX))
             ]
         )
         if _connection is None:
@@ -543,7 +674,7 @@ def index_asset(
             connection.close()
 
 def _prune_missing_assets(connection, library_root):
-    """Removes only confirmed-missing records within an accessible library."""
+    """Removes confirmed-missing and AppleDouble metadata records within scope."""
     root = os.path.normpath(library_root)
     if not stat.S_ISDIR(os.stat(root).st_mode):
         raise NotADirectoryError(root)
@@ -553,6 +684,9 @@ def _prune_missing_assets(connection, library_root):
     ).fetchall()
     missing = []
     for (path,) in paths:
+        if ableton_tags.is_metadata_stub(path):
+            missing.append((path,))
+            continue
         try:
             os.stat(path)
         except (FileNotFoundError, NotADirectoryError):
@@ -570,10 +704,15 @@ def index_existing_library(library_root):
     if not stat.S_ISDIR(os.stat(root).st_mode):
         raise NotADirectoryError(root)
     indexed_count = 0
+    scanned_paths = []
+    live_assignments = {}
     stack = [root]
     visited = set()
     connection = _asset_index_connection()
     try:
+        for ancestor in Path(os.path.abspath(root)).parents:
+            for path, tags in ableton_tags.read_folder_tags(str(ancestor)).items():
+                live_assignments.setdefault(path, set()).update(tags)
         existing_assets = {
             row[0]: (row[1], row[2])
             for row in connection.execute(
@@ -586,9 +725,14 @@ def index_existing_library(library_root):
             if normalized_current in visited:
                 continue
             visited.add(normalized_current)
+            folder_tags = ableton_tags.read_folder_tags(normalized_current)
+            for path, tags in folder_tags.items():
+                live_assignments.setdefault(path, set()).update(tags)
             entries = os.scandir(normalized_current)
             with entries:
                 for entry in entries:
+                    if ableton_tags.is_metadata_stub(entry.name):
+                        continue
                     if entry.is_symlink():
                         continue
                     if entry.is_dir(follow_symlinks=False):
@@ -605,6 +749,7 @@ def index_existing_library(library_root):
                     file_stat = entry.stat()
                     normalized_path = os.path.normpath(entry.path)
                     indexed_count += 1
+                    scanned_paths.append(normalized_path)
                     if existing_assets.get(normalized_path) == (
                         file_stat.st_size, file_stat.st_mtime
                     ):
@@ -616,9 +761,42 @@ def index_existing_library(library_root):
                         entry.path, destination, "existing_library", 1.0,
                         sorted(set(tags)), _connection=connection
                     )
+        for path in scanned_paths:
+            _cache_ableton_tags(connection, path, live_assignments)
         _prune_missing_assets(connection, root)
         connection.commit()
         return indexed_count
+    finally:
+        connection.close()
+
+def _cache_ableton_tags(connection, path, assignments):
+    """Replaces Live-derived cache rows only; sidecars remain authoritative."""
+    connection.execute(
+        "DELETE FROM asset_tags WHERE asset_path = ? AND source = 'ableton'", (path,)
+    )
+    tags = assignments.get(os.path.normcase(os.path.abspath(path)), [])
+    connection.executemany(
+        "INSERT INTO asset_tags (asset_path, tag, enabled, source) "
+        "VALUES (?, ?, 1, 'ableton')",
+        [(path, ableton_tags.CACHE_PREFIX + tag) for tag in tags]
+    )
+
+
+def refresh_live_tag_cache(paths):
+    """Refreshes only Live-derived rows after an explicit sidecar operation."""
+    assignments = {
+        os.path.normcase(os.path.abspath(path)): ableton_tags.sample_tags(path)
+        for path in paths
+    }
+    connection = _asset_index_connection()
+    try:
+        for path in paths:
+            if connection.execute(
+                "SELECT 1 FROM assets WHERE path = ?", (os.path.normpath(path),)
+            ).fetchone() is None:
+                raise ValueError(f"Sound is no longer indexed: {path}")
+            _cache_ableton_tags(connection, os.path.normpath(path), assignments)
+        connection.commit()
     finally:
         connection.close()
 
@@ -650,7 +828,11 @@ def get_indexed_asset(path):
             "modified_time": asset[3], "destination": asset[4],
             "reason": asset[5], "confidence": asset[6],
             "updated_at": asset[7], "tags": tags, "disabled_tags": disabled_tags,
-            "personal_tags": [row[0] for row in tag_rows if row[1] and row[2] == "personal"]
+            "personal_tags": [row[0] for row in tag_rows if row[1] and row[2] == "personal"],
+            "ableton_tags": [
+                row[0][len(ableton_tags.CACHE_PREFIX):] for row in tag_rows
+                if row[1] and row[2] == "ableton"
+            ]
         }
     finally:
         connection.close()
@@ -685,7 +867,8 @@ def get_all_indexed_asset_tags():
 def _parse_asset_search(search_text):
     """Splits simple browser syntax into positive and negative search constraints."""
     parsed = {"terms": [], "excluded_terms": [], "tags": [], "excluded_tags": [],
-              "types": [], "bpms": [], "keys": [], "reasons": []}
+              "types": [], "bpms": [], "keys": [], "reasons": [],
+              "any_tags": [], "live_states": [], "missing_groups": []}
     for raw_token in re.findall(r'"[^"]+"|\S+', search_text.lower()):
         token = raw_token.strip('"')
         excluded = token.startswith("-")
@@ -695,6 +878,13 @@ def _parse_asset_search(search_text):
             continue
         name, separator, value = token.partition(":")
         target = None
+        if separator and name in {"anytag", "live", "missing-group"}:
+            if excluded or not value:
+                raise ValueError(f"Invalid discovery filter: {raw_token}")
+            if name == "live" and value not in {"none", "tagged"}:
+                raise ValueError("Use live:none or live:tagged.")
+            parsed[{"anytag": "any_tags", "live": "live_states", "missing-group": "missing_groups"}[name]].append(value)
+            continue
         if separator and name in {"tag", "type", "bpm", "key", "reason"}:
             target = {
                 "tag": "tags", "type": "types", "bpm": "bpms",
@@ -705,6 +895,35 @@ def _parse_asset_search(search_text):
         else:
             parsed["excluded_terms" if excluded else "terms"].append(token)
     return parsed
+
+
+def _discovery_clauses(parsed):
+    """Shared predicates for results, counts, selection snapshots, and tag facets."""
+    clauses, parameters = [], []
+    if parsed["any_tags"]:
+        clauses.append(
+            "EXISTS (SELECT 1 FROM asset_tags sd WHERE sd.asset_path = a.path "
+            "AND sd.enabled = 1 AND LOWER(sd.tag) IN ("
+            + ",".join("?" for _tag in parsed["any_tags"]) + "))"
+        )
+        parameters.extend(parsed["any_tags"])
+    for state in parsed["live_states"]:
+        clauses.append(
+            ("NOT " if state == "none" else "")
+            + "EXISTS (SELECT 1 FROM asset_tags sl WHERE sl.asset_path = a.path "
+            "AND sl.enabled = 1 AND sl.source = 'ableton')"
+        )
+    for group in parsed["missing_groups"]:
+        if "|" in group or not group.strip():
+            raise ValueError("Missing-group filters require a single Live group name.")
+        clauses.append(
+            "NOT EXISTS (SELECT 1 FROM asset_tags sg WHERE sg.asset_path = a.path "
+            "AND sg.enabled = 1 AND sg.source = 'ableton' "
+            "AND LOWER(SUBSTR(sg.tag, 1, ?)) = ?)"
+        )
+        prefix = ableton_tags.CACHE_PREFIX + group + "|"
+        parameters.extend([len(prefix), prefix])
+    return clauses, parameters
 
 def _library_root_clause(root_path, column="a.path"):
     """Returns a parameterized clause restricting paths to one directory tree."""
@@ -718,7 +937,9 @@ def _library_root_clause(root_path, column="a.path"):
         [normalized_root, f"{escaped_prefix}%"],
     )
 
-def _asset_rows_with_tags(connection, rows):
+def _asset_rows_with_tags(connection, rows, paths_only=False):
+    if paths_only:
+        return list(dict.fromkeys(row[0] for row in rows))
     paths = [row[0] for row in rows]
     tags_by_path = {path: [] for path in paths}
     if paths:
@@ -741,7 +962,7 @@ def _asset_rows_with_tags(connection, rows):
 
 def list_indexed_assets(
     search_text="", tag_filter="", favorites_only=False, limit=250, offset=0,
-    library_root=None, count_only=False
+    library_root=None, count_only=False, paths_only=False
 ):
     """Returns indexed assets using terms, exclusions, and structured browser filters."""
     connection = _asset_index_connection()
@@ -758,7 +979,12 @@ def list_indexed_assets(
         clauses.append(f"({extension_clauses})")
         parameters.extend(f"%{extension}" for extension in INDEXABLE_SOUND_SUFFIXES)
         parsed = _parse_asset_search(search_text)
+        discovery_clauses, discovery_parameters = _discovery_clauses(parsed)
+        clauses.extend(discovery_clauses)
+        parameters.extend(discovery_parameters)
         simple_collection = (
+            not discovery_clauses
+            and
             not parsed["terms"] and not parsed["excluded_terms"]
             and not parsed["tags"] and not parsed["excluded_tags"]
             and not parsed["bpms"] and not parsed["keys"]
@@ -807,8 +1033,10 @@ def list_indexed_assets(
                     """,
                     query_parameters + [limit, offset]
                 ).fetchall()
-                return _asset_rows_with_tags(connection, rows)
+                return _asset_rows_with_tags(connection, rows, paths_only)
         combined_collection_tag = (
+            not discovery_clauses
+            and
             bool(tag_filter.strip())
             and not favorites_only
             and not parsed["terms"] and not parsed["excluded_terms"]
@@ -866,7 +1094,7 @@ def list_indexed_assets(
                     """,
                     query_parameters + [limit, offset]
                 ).fetchall()
-                return _asset_rows_with_tags(connection, rows)
+                return _asset_rows_with_tags(connection, rows, paths_only)
         simple_tag_filter = (
             not search_text.strip() and bool(tag_filter.strip())
             and not favorites_only
@@ -906,7 +1134,7 @@ def list_indexed_assets(
                 query_parameters
                 + [limit, offset]
             ).fetchall()
-            return _asset_rows_with_tags(connection, rows)
+            return _asset_rows_with_tags(connection, rows, paths_only)
         simple_favorites_filter = (
             not search_text.strip() and not tag_filter.strip()
             and favorites_only
@@ -945,12 +1173,12 @@ def list_indexed_assets(
                 query_parameters
                 + [limit, offset]
             ).fetchall()
-            return _asset_rows_with_tags(connection, rows)
+            return _asset_rows_with_tags(connection, rows, paths_only)
         simple_browser_query = not (
             parsed["terms"] or parsed["excluded_terms"] or parsed["tags"]
             or parsed["excluded_tags"] or parsed["types"] or parsed["bpms"]
             or parsed["keys"] or parsed["reasons"] or tag_filter.strip()
-            or favorites_only
+            or favorites_only or discovery_clauses
         )
         if simple_browser_query:
             rows = connection.execute(
@@ -967,7 +1195,7 @@ def list_indexed_assets(
                 + [f"%{extension}" for extension in INDEXABLE_SOUND_SUFFIXES]
                 + [limit, offset]
             ).fetchall()
-            return _asset_rows_with_tags(connection, rows)
+            return _asset_rows_with_tags(connection, rows, paths_only)
         for term in parsed["terms"]:
             pattern = f"%{term}%"
             clauses.append(
@@ -1040,9 +1268,52 @@ def list_indexed_assets(
             """,
             tag_join_parameters + parameters + [limit, offset]
         ).fetchall()
-        return _asset_rows_with_tags(connection, rows)
+        return _asset_rows_with_tags(connection, rows, paths_only)
     finally:
         connection.close()
+
+def summarize_asset_selection(paths):
+    """Aggregates cached assignments in bounded queries, rejecting stale selections."""
+    paths = list(dict.fromkeys(os.path.normpath(path) for path in paths))
+    live_counts = Counter()
+    personal_counts = Counter()
+    generated_counts = Counter()
+    connection = _asset_index_connection()
+    try:
+        connection.execute("BEGIN")
+        for start in range(0, len(paths), 500):
+            batch = paths[start:start + 500]
+            placeholders = ",".join("?" for _path in batch)
+            indexed = {
+                row[0] for row in connection.execute(
+                    f"SELECT path FROM assets WHERE path IN ({placeholders})", batch
+                )
+            }
+            missing = set(batch) - indexed
+            if missing:
+                raise ValueError(f"Selection is out of date; sound no longer indexed: {sorted(missing)[0]}")
+            for tag, source, count in connection.execute(
+                f"SELECT tag, source, COUNT(*) FROM asset_tags "
+                f"WHERE enabled = 1 AND asset_path IN ({placeholders}) GROUP BY tag, source",
+                batch
+            ):
+                if source == "ableton":
+                    live_counts[tag[len(ableton_tags.CACHE_PREFIX):]] += count
+                elif source == "personal":
+                    personal_counts[tag] += count
+                else:
+                    generated_counts[tag] += count
+        return {
+            "live_counts": dict(live_counts),
+            "personal_counts": dict(personal_counts),
+            "generated_counts": dict(generated_counts),
+            "shared_personal_tags": sorted(
+                tag for tag, count in personal_counts.items() if count == len(paths)
+            )
+        }
+    finally:
+        connection.close()
+
 
 def list_indexed_tags(library_root=None, search_text="", favorites_only=False):
     """Returns distinct user-visible tags and their asset counts."""
@@ -1058,6 +1329,9 @@ def list_indexed_tags(library_root=None, search_text="", favorites_only=False):
         ]
         parameters = []
         parsed = _parse_asset_search(search_text)
+        discovery_clauses, discovery_parameters = _discovery_clauses(parsed)
+        clauses.extend(discovery_clauses)
+        parameters.extend(discovery_parameters)
         for term in parsed["terms"]:
             pattern = f"%{term}%"
             clauses.append(
@@ -1143,6 +1417,8 @@ def count_indexed_assets(
 def add_asset_tag(path, tag):
     """Adds one normalized user tag to an indexed asset."""
     normalized_tag = tag.strip().lower()
+    if normalized_tag.startswith(ableton_tags.CACHE_PREFIX):
+        raise ValueError("Ableton tags are read-only here. Use Live tags... or edit in Live and rescan.")
     if not normalized_tag:
         raise ValueError("Tag cannot be empty.")
     if len(normalized_tag) > 80 or "\n" in normalized_tag:
@@ -1164,6 +1440,8 @@ def add_asset_tag(path, tag):
 
 def remove_asset_tag(path, tag):
     """Removes one user-visible tag from an indexed asset."""
+    if tag.strip().lower().startswith(ableton_tags.CACHE_PREFIX):
+        raise ValueError("Ableton tags are read-only here. Use Live tags... or edit in Live and rescan.")
     connection = _asset_index_connection()
     try:
         connection.execute(
@@ -1177,6 +1455,8 @@ def remove_asset_tag(path, tag):
 def bulk_update_asset_tags(paths, tag, enabled=True, remove=False):
     """Applies one personal tag change to several indexed assets atomically."""
     normalized_tag = tag.strip().lower()
+    if normalized_tag.startswith(ableton_tags.CACHE_PREFIX):
+        raise ValueError("Ableton tags are read-only here. Use Live tags... or edit in Live and rescan.")
     if not normalized_tag:
         raise ValueError("Tag cannot be empty.")
     if len(normalized_tag) > 80 or "\n" in normalized_tag:
@@ -1187,31 +1467,34 @@ def bulk_update_asset_tags(paths, tag, enabled=True, remove=False):
     connection = _asset_index_connection()
     try:
         connection.execute("BEGIN")
-        placeholders = ",".join("?" for _path in normalized_paths)
-        indexed_count = connection.execute(
-            f"SELECT COUNT(*) FROM assets WHERE path IN ({placeholders})",
-            normalized_paths
-        ).fetchone()[0]
-        if indexed_count != len(normalized_paths):
-            raise ValueError("One or more selected sounds are no longer indexed. Refresh the Library.")
-        if remove:
-            connection.execute(
-                f"DELETE FROM asset_tags WHERE tag = ? AND asset_path IN ({placeholders})",
-                [normalized_tag, *normalized_paths]
-            )
-        else:
-            connection.executemany(
-                "INSERT INTO asset_tags (asset_path, tag, enabled, source) "
-                "VALUES (?, ?, ?, 'personal') "
-                "ON CONFLICT(asset_path, tag) DO UPDATE SET enabled = excluded.enabled",
-                [(path, normalized_tag, 1 if enabled else 0) for path in normalized_paths]
-            )
+        for start in range(0, len(normalized_paths), 500):
+            batch = normalized_paths[start:start + 500]
+            placeholders = ",".join("?" for _path in batch)
+            indexed_count = connection.execute(
+                f"SELECT COUNT(*) FROM assets WHERE path IN ({placeholders})", batch
+            ).fetchone()[0]
+            if indexed_count != len(batch):
+                raise ValueError("One or more selected sounds are no longer indexed. Refresh the Library.")
+            if remove:
+                connection.execute(
+                    f"DELETE FROM asset_tags WHERE tag = ? AND asset_path IN ({placeholders})",
+                    [normalized_tag, *batch]
+                )
+            else:
+                connection.executemany(
+                    "INSERT INTO asset_tags (asset_path, tag, enabled, source) "
+                    "VALUES (?, ?, ?, 'personal') "
+                    "ON CONFLICT(asset_path, tag) DO UPDATE SET enabled = excluded.enabled",
+                    [(path, normalized_tag, 1 if enabled else 0) for path in batch]
+                )
         connection.commit()
     finally:
         connection.close()
 
 def set_asset_tag_enabled(path, tag, enabled):
     """Enables or disables an existing tag without deleting its assignment."""
+    if tag.strip().lower().startswith(ableton_tags.CACHE_PREFIX):
+        raise ValueError("Ableton tags are read-only here. Use Live tags... or edit in Live and rescan.")
     connection = _asset_index_connection()
     try:
         result = connection.execute(
@@ -1262,6 +1545,8 @@ def find_nested_folder_repairs(root_path):
         except OSError:
             continue
         for entry in entries:
+            if ableton_tags.is_metadata_stub(entry.name):
+                continue
             if entry.is_symlink():
                 continue
             if entry.is_dir(follow_symlinks=False):
@@ -1302,6 +1587,7 @@ def find_nested_folder_repairs(root_path):
 def repair_nested_folder_files(suggestions):
     """Moves approved repair suggestions without overwriting existing files."""
     results = {"moved": 0, "skipped": 0, "errors": []}
+    log_path = None
     for suggestion in suggestions:
         source = os.path.normpath(suggestion["source"])
         destination = os.path.normpath(suggestion["destination"])
@@ -1310,12 +1596,24 @@ def repair_nested_folder_files(suggestions):
             continue
         try:
             os.makedirs(os.path.dirname(destination), exist_ok=True)
-            shutil.move(source, destination)
+            identity = _file_identity(source)
+            if log_path is None:
+                log_path = _new_move_log_path()
+            _append_move_record(log_path, source, destination, destination_identity=identity)
+            ableton_tags.transfer_sample(source, destination)
+            previous = get_indexed_asset(source)
+            if previous is not None:
+                index_asset(
+                    destination, os.path.dirname(destination), previous["reason"],
+                    previous["confidence"], previous["tags"], previous_path=source
+                )
+                refresh_live_tag_cache([destination])
             results["moved"] += 1
-        except OSError as error:
+        except (OSError, ValueError, sqlite3.Error) as error:
             results["errors"].append(f"{source}: {error}")
     return results
 
+@serialized_config
 def set_smart_learning_enabled(enabled):
     """Persists the user's learning preference without changing active sorting rules."""
     global SMART_LEARNING_ENABLED
@@ -1516,6 +1814,7 @@ def suggest_rule_priority(pattern, folder):
     total = len([p for p in DRUM_KEYWORDS if p != pattern]) + 1
     return {"position": index + 1, "total": total, "above": broader, "below": narrower}
 
+@serialized_config
 def add_rule_with_smart_priority(pattern, folder):
     """Adds a rule, ranks it using plan_rule_placement, and persists the change."""
     re.compile(pattern)
@@ -1536,6 +1835,7 @@ def add_rule_with_smart_priority(pattern, folder):
     return {"position": index + 1, "total": len(ordered),
             "above": broader, "below": narrower}
 
+@serialized_config
 def move_rule(pattern, direction):
     """Moves a rule one step up (-1) or down (+1) in priority and persists it."""
     if pattern not in DRUM_KEYWORDS:
@@ -1596,6 +1896,7 @@ def find_shadowed_rules():
 def find_rule_conflicts():
     """Finds enabled rules that can match the same filename."""
     return [item[:4] for item in find_rule_competitions()]
+@serialized_config
 def set_rule_metadata(pattern, *, enabled=None, priority=None, exclude=None):
     """Updates lifecycle metadata for an existing rule and persists it."""
     if pattern not in DRUM_KEYWORDS:
@@ -1617,7 +1918,18 @@ def set_rule_metadata(pattern, *, enabled=None, priority=None, exclude=None):
     _write_config(data)
     load_external_config()
 
-def record_learning_evidence(evidence, minimum_count=5):
+def is_reviewable_learning_candidate(candidate):
+    """Keep retained historical candidates below today's support floor out of review."""
+    count = candidate.get("count", 0)
+    return (
+        candidate.get("status", "pending") == "pending"
+        and isinstance(count, int) and not isinstance(count, bool)
+        and count >= MIN_RULE_EVIDENCE
+    )
+
+
+@serialized_config
+def record_learning_evidence(evidence, minimum_count=MIN_RULE_EVIDENCE):
     """Accumulates evidence and returns newly created review candidates."""
     global LEARNING_COUNTS, LEARNED_RULE_CANDIDATES
     if not SMART_LEARNING_ENABLED:
@@ -1635,17 +1947,23 @@ def record_learning_evidence(evidence, minimum_count=5):
         key = f"{token}|{target}"
         entry = counts.setdefault(key, {"token": token, "target": target, "count": 0})
         entry["count"] += count
-        if entry["count"] < minimum_count:
+        pending = next((
+            c for c in candidates if c.get("token") == token and c.get("target") == target
+            and c.get("status", "pending") == "pending"
+        ), None)
+        if pending is not None:
+            if pending.get("evidence_source") not in {"live_manual", "filename_vocabulary"}:
+                pending["count"] = entry["count"]
             continue
-        if any(c.get("token") == token and c.get("target") == target
-               and c.get("status", "pending") == "pending" for c in candidates):
+        if entry["count"] < minimum_count:
             continue
         candidate = {
             "token": token,
             "target": target,
             "count": entry["count"],
             "pattern": build_learned_rule_pattern(token),
-            "status": "pending"
+            "status": "pending",
+            "evidence_source": "historical_observations",
         }
         candidates.append(candidate)
         created.append(candidate)
@@ -1659,36 +1977,68 @@ def record_learning_evidence(evidence, minimum_count=5):
 
 def review_learning_candidate(token, target, decision):
     """Approves or rejects one pending candidate and persists the decision."""
+    review_learning_candidates(((token, target),), decision)
+
+
+def review_learning_candidates(selections, decision):
+    """Validate all selected candidates before persisting any rule or decision."""
     if decision not in {"approved", "rejected"}:
         raise ValueError("Candidate decision must be approved or rejected.")
-
+    selections = tuple(dict.fromkeys(selections))
+    if not selections:
+        raise ValueError("Select at least one pending learning candidate.")
     data = {}
+    original = None
     if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        with open(CONFIG_FILE, 'rb') as f:
+            original = f.read()
+        data = json.loads(original)
     candidates = data.setdefault("LEARNED_RULE_CANDIDATES", [])
-    matching = [
-        candidate for candidate in candidates
-        if candidate.get("token") == token and candidate.get("target") == target
-        and candidate.get("status", "pending") == "pending"
-    ]
-    if not matching:
-        raise ValueError("Pending learning candidate was not found.")
-
-    candidate = matching[0]
-    candidate["status"] = decision
+    matching = []
+    for token, target in selections:
+        candidate = next((
+            item for item in candidates
+            if item.get("token") == token and item.get("target") == target
+            and item.get("status", "pending") == "pending"
+        ), None)
+        if candidate is None:
+            raise ValueError("Pending learning candidate was not found.")
+        matching.append(candidate)
     if decision == "approved":
-        data.setdefault("DRUM_KEYWORDS", {})[candidate["pattern"]] = target
-        data.setdefault("RULE_METADATA", {})[candidate["pattern"]] = {
-            "enabled": True, "exclude": []
-        }
-        data["DRUM_KEYWORDS"] = {**DRUM_KEYWORDS, **data["DRUM_KEYWORDS"]}
-        data["RULE_METADATA"] = {**RULE_METADATA, **data["RULE_METADATA"]}
-        index, _, _ = plan_rule_placement(candidate["pattern"], target, data)
-        ordered = [p for p in _ordered_rule_patterns(data) if p != candidate["pattern"]]
-        ordered.insert(index, candidate["pattern"])
-        _apply_rule_order(data, ordered)
-    _write_config(data)
+        if not all(is_reviewable_learning_candidate(candidate) for candidate in matching):
+            raise ValueError(
+                f"Suggestions require at least {MIN_RULE_EVIDENCE} supporting observations. "
+                "Below-threshold historical suggestions cannot be approved."
+            )
+        import rule_suggester
+        refreshed = rule_suggester.revalidate_candidates(matching)
+        if not all(is_reviewable_learning_candidate(candidate) for candidate in refreshed):
+            raise ValueError(
+                f"Current evidence falls below {MIN_RULE_EVIDENCE} supporters. "
+                "No selected suggestions were approved."
+            )
+        for candidate, current in zip(matching, refreshed):
+            candidate.update(current)
+            target = candidate["target"]
+            data.setdefault("DRUM_KEYWORDS", {})[candidate["pattern"]] = target
+            data.setdefault("RULE_METADATA", {})[candidate["pattern"]] = {
+                "enabled": True, "exclude": []
+            }
+            data["DRUM_KEYWORDS"] = {**DRUM_KEYWORDS, **data["DRUM_KEYWORDS"]}
+            data["RULE_METADATA"] = {**RULE_METADATA, **data["RULE_METADATA"]}
+            index, _, _ = plan_rule_placement(candidate["pattern"], target, data)
+            ordered = [p for p in _ordered_rule_patterns(data) if p != candidate["pattern"]]
+            ordered.insert(index, candidate["pattern"])
+            _apply_rule_order(data, ordered)
+    for candidate in matching:
+        candidate["status"] = decision
+    current = None
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'rb') as f:
+            current = f.read()
+    if current != original:
+        raise ValueError("Rules or profile changed during review. No selected suggestions were approved; retry.")
+    _write_config(data, expected_content=original)
     load_external_config()
 
 # Force load on module call so imports immediately populate global configuration states
@@ -1712,6 +2062,7 @@ class ParallelLibrarySorter:
         self.processed_files = 0
         self.raw_unmatched_tokens = []
         self.harvested_metadata = {}
+        self.manual_live_assignments = {}
         self.preview_records = []
         self.move_log_path = None
         self.lock = threading.Lock()
@@ -1740,57 +2091,6 @@ class ParallelLibrarySorter:
             callback_triggered = False
             
             try:
-                if not self.copy_mode and not self.preview_only:
-                    self.window.after(0, lambda: self.update_status("Executing background system sanity check..."))
-                    ghost_presets = os.path.normpath(os.path.join(self.dest, "Presets", "Instruments", "Presets", "Instruments"))
-                    one_shots_root = os.path.normpath(os.path.join(self.dest, "Samples", "One-Shots"))
-                    
-                    if os.path.exists(ghost_presets):
-                        repair_script = f"""
-                        if (Test-Path -LiteralPath '{ghost_presets}') {{
-                            $Files = Get-ChildItem -LiteralPath '{ghost_presets}' -File -ErrorAction SilentlyContinue
-                            foreach ($File in $Files) {{
-                                Set-ItemProperty -LiteralPath $File.FullName -Name IsReadOnly -Value $false -ErrorAction SilentlyContinue
-                                Move-Item -LiteralPath $File.FullName -Destination '{os.path.normpath(os.path.join(self.dest, "Live Instrument Racks"))}' -Force -Confirm:$false
-                            }}
-                            Remove-Item -LiteralPath '{ghost_presets}' -Recurse -Force -ErrorAction SilentlyContinue
-                        }}
-                        """
-                        try:
-                            subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", repair_script],
-                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                        except Exception: pass
-
-                    if os.path.exists(one_shots_root):
-                        try:
-                            for folder in os.listdir(one_shots_root):
-                                cat_path = os.path.join(one_shots_root, folder)
-                                if os.path.isdir(cat_path):
-                                    for target_ghost in ["Samples", "Loops"]:
-                                        ghost_target_path = os.path.normpath(os.path.join(cat_path, target_ghost))
-                                        if os.path.exists(ghost_target_path):
-                                            dynamic_repair = f"""
-                                            $GhostPath = '{ghost_target_path}'
-                                            $FlatRoot = '{cat_path}'
-                                            if (Test-Path -LiteralPath $GhostPath) {{
-                                                $Files = Get-ChildItem -LiteralPath $GhostPath -Recurse -File -ErrorAction SilentlyContinue
-                                                foreach ($File in $Files) {{
-                                                    Set-ItemProperty -LiteralPath $File.FullName -Name IsReadOnly -Value $false -ErrorAction SilentlyContinue
-                                                    Move-Item -LiteralPath $File.FullName -Destination $FlatRoot -Force -Confirm:$false
-                                                }}
-                                                Remove-Item -LiteralPath $GhostPath -Recurse -Force -ErrorAction SilentlyContinue
-                                            }}
-                                            """
-                                            subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", dynamic_repair],
-                                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                        except Exception: pass
-
-                    try:
-                        extracted_count = self.nuclear_powershell_flatten(self.src)
-                        if extracted_count > 0:
-                            self.stats["Native Live Racks (.adg, .amxd, .alc, .adv)"] += extracted_count
-                    except Exception: pass
-
                 self.window.after(0, lambda: self.update_status("Extracting Ableton browser tagging metadata..."))
                 
                 try: self.harvested_metadata = harvest_ableton_metadata(self.src)
@@ -1798,9 +2098,8 @@ class ParallelLibrarySorter:
                 try:
                     self.indexed_tags_by_path = get_all_indexed_asset_tags()
                     self.indexed_tags_cache_loaded = True
-                except sqlite3.Error:
-                    self.indexed_tags_by_path = {}
-                    self.indexed_tags_cache_loaded = True
+                except sqlite3.Error as error:
+                    raise OSError(f"Cannot read saved routing/index tags; no files were moved: {error}") from error
 
                 self.window.after(0, lambda: self.update_status("Scanning directory layout safely..."))
 
@@ -1832,6 +2131,8 @@ class ParallelLibrarySorter:
 
                     try:
                         for entry in os.scandir(current_norm):
+                            if ableton_tags.is_metadata_stub(entry.name):
+                                continue
                             if entry.is_symlink():
                                 continue
                                 
@@ -1857,10 +2158,24 @@ class ParallelLibrarySorter:
                                             f"{count:,} files found"
                                         )
                                     )
-                    except Exception:
-                        pass
+                    except OSError as error:
+                        raise OSError(f"Could not scan {current_norm}; no files were moved: {error}") from error
 
                 self.total_files = len(execution_manifest)
+                try:
+                    self.manual_live_assignments = ableton_tags.read_sample_assignments(
+                        os.path.join(folder, name) for folder, name in execution_manifest
+                        if os.path.splitext(name)[1].lower() in AUDIO_EXTS
+                    )
+                except (OSError, ValueError) as error:
+                    self.record_operation_error(self.src, self.dest, "read_manual_live_tags", error)
+                    self.increment_stat_safe("Errors/Skipped Files")
+                    self.window.after(0, lambda error=error: self.update_status(
+                        f"Manual Live metadata could not be read; operation aborted: {error}"
+                    ))
+                    callback_triggered = True
+                    self.window.after(0, lambda: self.done_callback(self.stats, self.copy_mode))
+                    return
                 
                 if self.total_files > 0:
                     with ThreadPoolExecutor(max_workers=4) as executor:
@@ -1937,7 +2252,9 @@ class ParallelLibrarySorter:
                 return
             
             except Exception as pipeline_err:
-                self.window.after(0, lambda: self.update_status(f"Error: {str(pipeline_err)}"))
+                self.record_operation_error(self.src, self.dest, "pipeline", pipeline_err)
+                self.increment_stat_safe("Errors/Skipped Files")
+                self.window.after(0, lambda error=pipeline_err: self.update_status(f"Error: {error}"))
                 if not callback_triggered:
                     callback_triggered = True
                     self.window.after(0, lambda: self.done_callback(self.stats, self.copy_mode))
@@ -1978,14 +2295,45 @@ class ParallelLibrarySorter:
                     return folder_name, target_key
         return None, None
 
-    def log_move(self, source, destination):
+    def log_move(self, source, destination, **details):
         """Appends one move to the run's undo log as soon as it happens, so a crash still leaves a usable log."""
         with self.lock:
             if self.move_log_path is None:
                 self.move_log_path = _new_move_log_path()
-            with open(self.move_log_path, 'a', encoding='utf-8') as log:
-                log.write(json.dumps({"source": os.path.normpath(source),
-                                      "destination": os.path.normpath(destination)}) + "\n")
+            if not details:
+                details["destination_identity"] = _file_identity(destination)
+            _append_move_record(self.move_log_path, source, destination, **details)
+
+    def retain_duplicate_for_undo(self, source, destination, tags):
+        os.makedirs(_move_log_dir(), exist_ok=True)
+        descriptor, recovery = tempfile.mkstemp(prefix="duplicate-", suffix=".audio", dir=_move_log_dir())
+        os.close(descriptor)
+        try:
+            shutil.copy2(source, recovery)
+            source_tags = ableton_tags.sample_tags(source)
+            destination_tags = ableton_tags.sample_tags(destination)
+            source_index = get_indexed_asset(source)
+            destination_index = get_indexed_asset(destination)
+            expected_personal = {}
+            for snapshot in (source_index, destination_index):
+                if snapshot is not None:
+                    for enabled, values in ((1, snapshot["tags"]), (0, snapshot["disabled_tags"])):
+                        for tag in values:
+                            if not tag.startswith(("category:", "name:", ableton_tags.CACHE_PREFIX)):
+                                expected_personal[tag] = enabled
+            for tag in tags:
+                if not tag.startswith(("category:", "name:", ableton_tags.CACHE_PREFIX, "user:")):
+                    expected_personal.setdefault(tag, 1)
+            self.log_move(
+                source, destination, operation="duplicate", recovery=recovery,
+                source_live_tags=source_tags, destination_live_tags=destination_tags,
+                merged_live_tags=sorted(set(source_tags + destination_tags)),
+                source_index=source_index, destination_index=destination_index,
+                expected_destination_personal=expected_personal,
+            )
+        except (OSError, ValueError, sqlite3.Error):
+            os.remove(recovery)
+            raise
 
     def increment_stat_safe(self, key):
         """Thread-safe counter increments for runtime statistics logging."""
@@ -2031,7 +2379,10 @@ class ParallelLibrarySorter:
                     indexed_tags = get_asset_tags(s_path)
                 except sqlite3.Error:
                     indexed_tags = []
-            tags = list(self.harvested_metadata.get(f_lower, [])) + indexed_tags
+            tags = [
+                tag for tag in list(self.harvested_metadata.get(f_lower, [])) + indexed_tags
+                if not tag.startswith(("category:", "name:"))
+            ]
             routing_type, routing_folder = resolve_routing_tags(indexed_tags)
             force_loop = routing_type == "loop"
             force_one_shot = routing_type == "one-shot"
@@ -2185,13 +2536,49 @@ class ParallelLibrarySorter:
                     return
 
             target_dir = os.path.normpath(target_dir)
-            if os.path.normpath(root) == target_dir:
+            manual = tag_evidence.interpret_manual_tags(
+                self.manual_live_assignments.get(os.path.normcase(os.path.abspath(s_path)), ())
+            )
+            if os.path.normpath(root) == target_dir and (
+                not self.preview_only or not manual.assignments
+            ):
                 return
             tags = sorted(set(
                 tags + derive_filename_tags(f) +
                 [f"category:{os.path.basename(target_dir)}"]
             ))
             if self.preview_only:
+                tag_suggestion = None
+                if manual.assignments:
+                    suggested = (
+                        os.path.normpath(os.path.join(self.dest, *tag_evidence.suggested_folder(manual.sound_type)))
+                        if manual.sound_type and not manual.is_loop and manual.one_shot_eligible and ext in AUDIO_EXTS else None
+                    )
+                    if ext not in AUDIO_EXTS:
+                        status = "non-audio item; no audio one-shot destination suggested"
+                    elif not manual.one_shot_eligible:
+                        status = "manual kit, multisample or impulse-response role; no one-shot suggestion"
+                    elif not manual.alternatives:
+                        status = "manual role only; no sound type inferred"
+                    elif not manual.sound_type:
+                        status = "conflicting manual sound types: " + ", ".join(manual.alternatives)
+                    elif routing_type is not None or routing_folder is not None:
+                        status = "explicit routing retained"
+                    elif manual.is_loop or stat_key == "Loops Separated by BPM & Key":
+                        status = "loop routing retained; one-shot suggestion not applicable"
+                        if manual.is_loop and stat_key != "Loops Separated by BPM & Key":
+                            status = "manual loop assignment conflicts with one-shot plan; review required"
+                        suggested = None
+                    elif suggested == target_dir:
+                        status = "supports existing classification"
+                    elif classification_reason == "audio_fallback":
+                        status = "suggested alternative to catch-all"
+                    else:
+                        status = "conflicts with existing classification; review required"
+                    tag_suggestion = {
+                        "source": "live_manual", "assignments": list(manual.assignments),
+                        "sound_type": manual.sound_type, "destination": suggested, "status": status,
+                    }
                 try:
                     with self.lock:
                         index_asset(s_path, target_dir, classification_reason,
@@ -2206,7 +2593,8 @@ class ParallelLibrarySorter:
                         "destination": target_dir,
                         "reason": classification_reason,
                         "confidence": classification_confidence,
-                        "tags": tags
+                        "tags": tags,
+                        "tag_suggestion": tag_suggestion,
                     })
                     self.processed_files += 1
                 return
@@ -2226,10 +2614,18 @@ class ParallelLibrarySorter:
                 s_crc = calculate_crc32(s_path)
                 d_crc = calculate_crc32(d_path)
                 if s_crc is not None and s_crc == d_crc:
+                    if not self.copy_mode:
+                        self.retain_duplicate_for_undo(s_path, d_path, tags)
                     self.increment_stat_safe("Skipped Duplicate Items")
-                    if not self.copy_mode and not self.preview_only:
-                        try: os.remove(s_path)
-                        except Exception: pass
+                    ableton_tags.transfer_sample(
+                        s_path, d_path, copy=self.copy_mode, duplicate=True
+                    )
+                    index_asset(
+                        d_path, target_dir, classification_reason,
+                        classification_confidence, tags,
+                        previous_path=s_path if not self.copy_mode else None
+                    )
+                    refresh_live_tag_cache([d_path])
                     return
                 else:
                     counter = 1
@@ -2243,10 +2639,10 @@ class ParallelLibrarySorter:
                 self.window.after(0, lambda: self.update_status(f"Filing Asset ({current_processed}/{self.total_files}) -> {f}"))
             
             if not self.copy_mode and not self.preview_only:
-                os.replace(s_path, d_path)
-                self.log_move(s_path, d_path)
+                self.log_move(s_path, d_path, destination_identity=_file_identity(s_path))
+                ableton_tags.transfer_sample(s_path, d_path)
             else:
-                shutil.copy2(s_path, d_path)
+                ableton_tags.transfer_sample(s_path, d_path, copy=True)
             try:
                 with self.lock:
                     index_asset(
@@ -2254,6 +2650,7 @@ class ParallelLibrarySorter:
                         classification_confidence, tags,
                         previous_path=s_path if not self.copy_mode else None
                     )
+                    refresh_live_tag_cache([d_path])
             except (OSError, sqlite3.Error) as index_error:
                 self.window.after(0, lambda: self.update_status(
                     f"Asset index could not be updated: {index_error}"))
@@ -2273,39 +2670,6 @@ class ParallelLibrarySorter:
                 self.processed_files += 1
 
 # sorter_engine.py - Piece 7: Low-Level Data Validation & XML Tag Harvesters
-    def nuclear_powershell_flatten(self, user_library_path):
-        """Bypasses deep Windows directory ceilings by flattening nested items via PowerShell."""
-        user_library_path = os.path.normpath(user_library_path)
-        nested_target = os.path.join(user_library_path, "Presets", "Instruments", "Presets", "Instruments")
-        target_root = os.path.join(user_library_path, "Live Instrument Racks")
-        prune_target = os.path.join(user_library_path, "Presets", "Instruments", "Presets")
-        
-        if not os.path.exists(nested_target): return 0
-
-        ps_script = f"""
-        $NestedPath = '{nested_target}'
-        $TargetRoot = '{target_root}'
-        $PruneTarget = '{prune_target}'
-        if (-not (Test-Path -LiteralPath $TargetRoot)) {{
-            New-Item -ItemType Directory -Path $TargetRoot -Force | Out-Null
-        }}
-        if (Test-Path -LiteralPath $NestedPath) {{
-            $Files = Get-ChildItem -LiteralPath $NestedPath -File -ErrorAction SilentlyContinue
-            foreach ($File in $Files) {{
-                Set-ItemProperty -LiteralPath $File.FullName -Name IsReadOnly -Value $false -ErrorAction SilentlyContinue
-                Move-Item -LiteralPath $File.FullName -Destination $TargetRoot -Force -Confirm:$false
-            }}
-        }}
-        if (Test-Path -LiteralPath $PruneTarget) {{
-            Remove-Item -LiteralPath $PruneTarget -Recurse -Force -ErrorAction SilentlyContinue
-        }}
-        """
-        try:
-            subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            return len(os.listdir(target_root)) if os.path.exists(target_root) else 0
-        except Exception: return 0
-
     def force_delete_empty_folders(self, target_path):
         """Class method wrapper hook that allows test runners to cleanly trigger 
         the structural folder scrub utility across targeted path strings.
@@ -2316,6 +2680,16 @@ class ParallelLibrarySorter:
 # ---------------------------------------------------------------------------------
 # Low-Level Disk IO System Utilities (Sitting cleanly outside class scope)
 # ---------------------------------------------------------------------------------
+
+def _file_identity(filepath):
+    with open(filepath, "rb") as handle:
+        before = os.fstat(handle.fileno())
+        digest = hashlib.file_digest(handle, "sha256").hexdigest()
+        after = os.fstat(handle.fileno())
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise ValueError(f"File changed while checking identity: {filepath}")
+    return {"size": after.st_size, "sha256": digest, "modified_ns": after.st_mtime_ns}
+
 
 def calculate_crc32(filepath):
     """Calculates data checksums to prevent filing duplicate audio assets."""
@@ -2369,31 +2743,82 @@ def is_generated_loop_folder(segments):
 
 
 def recommend_loop_layout(library_root, should_cancel=None):
-    """Suggests a loop folder order: levels most files can fill, fewest folders (broadest) first."""
+    """Recommend executable filename layout and audit independent manual tag evidence."""
+    if not os.path.isdir(library_root):
+        raise OSError("The configured User Library is unavailable. Check its location before scanning.")
     totals = {"loops": 0}
     found = {level: 0 for level in LOOP_LEVELS}
     distinct = {level: set() for level in LOOP_LEVELS}
+    paths = []
     for dirpath, dirnames, filenames in os.walk(library_root):
         if should_cancel and should_cancel():
-            break
+            raise ValueError("Loop layout recommendation was cancelled.")
         dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRECTORIES]
         for filename in filenames:
+            if ableton_tags.is_metadata_stub(filename):
+                continue
             if os.path.splitext(filename)[1].lower() not in AUDIO_EXTS:
                 continue
-            f_lower = filename.lower()
-            f_normalized = re.sub(r'[_#\-]', ' ', f_lower)
-            has_bpm = re.search(r'\b\d{2,3}\s*(bpm|BPM)\b', f_normalized)
-            if not (has_bpm or any(k in f_normalized for k in ('loop', 'fill', 'roll', 'groove'))):
-                continue
-            totals["loops"] += 1
-            bpm = loop_bpm_folder(f_normalized, f_lower)
-            if bpm != "Unsorted Tempos":
-                found["bpm"] += 1
-                distinct["bpm"].add(bpm)
-            key = loop_key_folder(f_normalized)
-            if key != "No Key Info":
-                found["key"] += 1
-                distinct["key"].add(key)
+            paths.append(os.path.normpath(os.path.join(dirpath, filename)))
+    manual = ableton_tags.read_sample_assignments(paths)
+    audit = {
+        "manual_loops": 0, "tag_only_loops": 0, "role_conflicts": 0,
+        "complete_keys": 0, "ambiguous_keys": 0, "incomplete_keys": 0,
+        "key_conflicts": 0, "keys_missing_from_filenames": 0, "examples": [],
+    }
+    for path in paths:
+        if should_cancel and should_cancel():
+            raise ValueError("Loop layout recommendation was cancelled.")
+        filename = os.path.basename(path)
+        f_lower = filename.lower()
+        f_normalized = re.sub(r'[_#\-]', ' ', f_lower)
+        has_bpm = re.search(r'\b\d{2,3}\s*(bpm|BPM)\b', f_normalized)
+        filename_loop = bool(has_bpm or any(k in f_normalized for k in ('loop', 'fill', 'roll', 'groove')))
+        assignments = manual.get(os.path.normcase(os.path.abspath(path)), ())
+        evidence = tag_evidence.interpret_manual_tags(assignments)
+        manual_key = tag_evidence.interpret_manual_key(assignments)
+        notes = []
+        if evidence.is_loop:
+            audit["manual_loops"] += 1
+            if not filename_loop:
+                audit["tag_only_loops"] += 1
+                notes.append("manual loop role without a filename loop hint")
+        one_shot = any(tag.casefold() == "type|one shot" for tag in assignments)
+        if (filename_loop or evidence.is_loop) and (one_shot or not evidence.one_shot_eligible):
+            audit["role_conflicts"] += 1
+            notes.append("manual role conflicts with a loop/one-shot interpretation")
+        if filename_loop or evidence.is_loop:
+            filename_key = loop_key_folder(f_normalized)
+            if manual_key.ambiguous:
+                audit["ambiguous_keys"] += 1
+                notes.append("multiple manual roots or modes; no key inferred")
+            elif manual_key.key:
+                audit["complete_keys"] += 1
+                if filename_key == "No Key Info":
+                    audit["keys_missing_from_filenames"] += 1
+                    notes.append("manual key is absent from the filename routing plan")
+                elif tag_evidence.key_identity(filename_key) not in (None, manual_key.key):
+                    audit["key_conflicts"] += 1
+                    notes.append("manual key disagrees with the filename key")
+            elif manual_key.assignments:
+                audit["incomplete_keys"] += 1
+                notes.append("manual key needs both one root and one mode")
+        if notes and len(audit["examples"]) < 10:
+            audit["examples"].append({
+                "path": path, "assignments": list(evidence.assignments + manual_key.assignments),
+                "manual_key": manual_key.key, "notes": notes,
+            })
+        if not filename_loop:
+            continue
+        totals["loops"] += 1
+        bpm = loop_bpm_folder(f_normalized, f_lower)
+        if bpm != "Unsorted Tempos":
+            found["bpm"] += 1
+            distinct["bpm"].add(bpm)
+        key = loop_key_folder(f_normalized)
+        if key != "No Key Info":
+            found["key"] += 1
+            distinct["key"].add(key)
     loops = totals["loops"]
     stats = {level: {"coverage": (found[level] / loops if loops else 0.0),
                      "folders": len(distinct[level])} for level in LOOP_LEVELS}
@@ -2401,7 +2826,7 @@ def recommend_loop_layout(library_root, should_cancel=None):
     usable.sort(key=lambda level: (stats[level]["folders"], LOOP_LEVELS.index(level)))
     if not loops:
         usable = list(LOOP_LEVELS)
-    return {"layout": usable, "loops": loops, "stats": stats}
+    return {"layout": usable, "loops": loops, "stats": stats, "tag_evidence": audit}
 
 
 def force_delete_empty_folders(root_dir):

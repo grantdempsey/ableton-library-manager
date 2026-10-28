@@ -8,6 +8,7 @@ __pycache__/
 # 📦 PyInstaller Compilation Footprints
 build/
 dist/
+release_builds/
 
 # 🛰️ Local Ableton App/System Backups (Safety Override)
 Options.txt

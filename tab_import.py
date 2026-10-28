@@ -6,6 +6,7 @@ import tab_matrix
 import os
 import platform
 import gui_theme
+import tag_evidence
 from sorter_engine import ParallelLibrarySorter
 
 class ImportTab(ttk.Frame):
@@ -173,6 +174,8 @@ class ImportTab(ttk.Frame):
             self.status_lbl.config(text=f" Ingestion Flow: {text_line}", fg=gui_theme.THEME["accent_gold"])
 
     def kickoff_pipeline_sorting(self):
+        if getattr(self.winfo_toplevel(), "_closing", False) is True:
+            return
         """Initializes parameter matrices and launches ParallelLibrarySorter thread workers."""
         src_path = self.src_dir_var.get().strip()
         dest_path = self.dest_dir_var.get().strip()
@@ -184,7 +187,15 @@ class ImportTab(ttk.Frame):
             messagebox.showwarning("Missing Source Folder", "Please select a valid source folder containing your raw samples before starting.")
             return
 
-        os.makedirs(dest_path, exist_ok=True)
+        if not dest_path:
+            messagebox.showwarning("Missing Destination Folder", "Choose a destination before starting.")
+            return
+        if not self.preview_only_var.get():
+            try:
+                os.makedirs(dest_path, exist_ok=True)
+            except OSError as error:
+                messagebox.showerror("Could not create destination", str(error))
+                return
 
         self.run_btn.config(state="disabled")
         self.copy_radio.config(state="disabled")
@@ -210,6 +221,8 @@ class ImportTab(ttk.Frame):
 
     def handle_pipeline_completion(self, execution_analytics, was_copied):
         """Callback engine interface triggered automatically upon sorting group completion."""
+        if getattr(self.winfo_toplevel(), "_closing", False) is True:
+            return
         self.event_generate("<<LibraryChanged>>", when="tail")
         tab_matrix.rescan_suggestions()
         self.write_console_message("=" * 65)
@@ -232,6 +245,9 @@ class ImportTab(ttk.Frame):
                     f"{record['reason']} | confidence {record['confidence']:.0%} | "
                     f"tags: {', '.join(record['tags']) or 'none'}"
                 )
+                evidence = tag_evidence.describe_preview_evidence(record)
+                if evidence:
+                    self.write_console_message(f"    {evidence}")
             if len(records) > 100:
                 self.write_console_message(
                     f" -> ... {len(records) - 100} additional preview records omitted."

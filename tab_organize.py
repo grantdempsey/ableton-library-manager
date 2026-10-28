@@ -5,17 +5,17 @@ from tab_matrix import messagebox, themed_dialog, ask_confirm, show_notice
 import tab_matrix
 import os
 import re
-import stat
 import platform
 import threading
+import queue
 import zipfile
-import datetime
 import json
-import subprocess
-from concurrent.futures import ThreadPoolExecutor
+import tempfile
+import hashlib
 
 import gui_theme
 import sorter_engine
+import tag_evidence
 
 class OrganizeTab(ttk.Frame):
     def __init__(self, parent, status_label_ref):
@@ -29,8 +29,15 @@ class OrganizeTab(ttk.Frame):
         self.nested_repair_suggestions = []
         self.active_sorter = None
         self.preview_running = False
+        self._volume_results = queue.Queue()
+        self._volume_thread = None
+        self._job_results = queue.Queue()
+        self._job_pending = False
+        self._sort_pending = False
+        self._console_messages = queue.Queue()
         
         self.setup_ui_layout()
+        self.after(30, self._poll_job_results)
         self.after(50, self.prepopulate_user_library_path)
 
         # 🌟 FIXED INTERCEPT BIND: Checks event targets cleanly to suppress recursive sub-widget event bubbling
@@ -275,6 +282,8 @@ class OrganizeTab(ttk.Frame):
         self.console_log.config(state="disabled")
 
     def scan_nested_folders(self):
+        if self.has_pending_job() or getattr(self.winfo_toplevel(), "_closing", False):
+            return
         target_path = self.library_dir_var.get().strip()
         if not target_path or not os.path.isdir(target_path):
             messagebox.showerror("Folder Required", "Choose a valid library folder before scanning.")
@@ -283,11 +292,71 @@ class OrganizeTab(ttk.Frame):
         self.repair_nested_btn.config(state="disabled", bg=gui_theme.THEME["btn_secondary"], fg=gui_theme.THEME["fg_muted"])
         self.nested_status_lbl.config(text="Scanning for repeated folders...")
 
-        def worker():
-            suggestions = sorter_engine.find_nested_folder_repairs(target_path)
-            self.after(0, lambda: self.show_nested_suggestions(suggestions))
+        self._start_job("nested", lambda: sorter_engine.find_nested_folder_repairs(target_path))
 
-        threading.Thread(target=worker, daemon=True).start()
+    def has_pending_job(self):
+        return self._job_pending or self._sort_pending or self.preview_running
+
+    def _start_job(self, kind, work):
+        if self.has_pending_job() or getattr(self.winfo_toplevel(), "_closing", False):
+            return False
+        self._job_pending = True
+        self._job_target = self.library_dir_var.get().strip()
+        def worker():
+            try:
+                result = work()
+            except (OSError, ValueError, zipfile.BadZipFile, zipfile.LargeZipFile, sorter_engine.sqlite3.Error) as error:
+                self._job_results.put((kind, None, error))
+            else:
+                self._job_results.put((kind, result, None))
+        if gui_theme.start_background_job(self, worker) is None:
+            self._job_pending = False
+            return False
+        return True
+
+    def _poll_job_results(self):
+        try:
+            while True:
+                message = self._console_messages.get_nowait()
+                self.console_log.config(state="normal")
+                self.console_log.insert(tk.END, f"{message}\n")
+                self.console_log.see(tk.END)
+                self.console_log.config(state="disabled")
+                self.update_progress_from_message(message)
+        except queue.Empty:
+            pass
+        try:
+            kind, result, error = self._job_results.get_nowait()
+        except queue.Empty:
+            pass
+        else:
+            self._job_pending = False
+            closing = getattr(self.winfo_toplevel(), "_closing", False)
+            if error is not None:
+                if kind == "backup":
+                    self.handle_backup_fault(self._job_target, str(error))
+                else:
+                    self._restore_job_controls()
+                    if closing:
+                        self.write_console_message(f"Library operation failed: {error}")
+                    else:
+                        messagebox.showerror("Library operation failed", str(error), parent=self)
+            elif kind == "backup":
+                if not closing:
+                    self.write_backup_success_log(*result)
+            elif kind == "undo":
+                if not closing:
+                    self.finish_undo(result)
+            elif kind == "nested":
+                if not closing:
+                    self.show_nested_suggestions(result)
+        self.after(30, self._poll_job_results)
+
+    def _restore_job_controls(self):
+        for button in (self.btn_execute, self.btn_preview, self.btn_undo, self.scan_nested_btn):
+            button.config(state="normal")
+        self.cb_backup.config(state="normal")
+        self.btn_cancel.config(state="disabled")
 
     def show_nested_suggestions(self, suggestions):
         self.nested_repair_suggestions = suggestions
@@ -314,6 +383,8 @@ class OrganizeTab(ttk.Frame):
         )
 
     def repair_nested_folders(self):
+        if self.has_pending_job() or getattr(self.winfo_toplevel(), "_closing", False):
+            return
         if not self.nested_repair_suggestions:
             return
         approved = messagebox.askyesno(
@@ -335,13 +406,7 @@ class OrganizeTab(ttk.Frame):
         self.scan_nested_folders()
 
     def write_console_message(self, feedback_string):
-        def append_operation():
-            self.console_log.config(state="normal")
-            self.console_log.insert(tk.END, f"{feedback_string}\n")
-            self.console_log.see(tk.END)
-            self.console_log.config(state="disabled")
-            self.update_progress_from_message(feedback_string)
-        self.after(0, append_operation)
+        self._console_messages.put(feedback_string)
 
     def update_progress_from_message(self, message):
         match = re.search(r"\((\d+)/(\d+)\)", str(message))
@@ -361,7 +426,33 @@ class OrganizeTab(ttk.Frame):
         if not target_path or not os.path.exists(target_path):
             return
         if self.backup_required_var.get():
-            threading.Thread(target=self.evaluate_folder_mass_asynchronously, args=(target_path,), daemon=True).start()
+            if self._volume_thread is not None and self._volume_thread.is_alive():
+                return
+            self._volume_thread = threading.Thread(
+                target=self.evaluate_folder_mass_asynchronously, args=(target_path,), daemon=True,
+            )
+            self._volume_thread.start()
+            self.after(50, self._finish_volume_check)
+
+    def _finish_volume_check(self):
+        try:
+            target, result, error = self._volume_results.get_nowait()
+        except queue.Empty:
+            self.after(50, self._finish_volume_check)
+            return
+        self._volume_thread = None
+        if target != self.library_dir_var.get().strip():
+            self.trigger_instant_volume_safeguard_check()
+            return
+        if error is not None:
+            self.lbl_alert.config(
+                text=f"Library size could not be checked completely: {error}",
+                fg=gui_theme.THEME["accent_gold"],
+            )
+        elif result[2]:
+            self.render_high_volume_warning_modal(*result)
+        else:
+            self.lbl_alert.config(text="")
 
     def strip_text_highlights(self):
         try:
@@ -394,6 +485,8 @@ class OrganizeTab(ttk.Frame):
 
 # tab_organize.py - Piece 3: Thread-Safe Zip Archivers & Storage Mass Calculators
     def preview_cleanup(self):
+        if self.has_pending_job() or getattr(self.winfo_toplevel(), "_closing", False):
+            return
         target_path = self.library_dir_var.get().strip()
         if not target_path or not os.path.exists(target_path):
             messagebox.showerror("Routing Fault", "Please select a valid user library path first.")
@@ -414,6 +507,9 @@ class OrganizeTab(ttk.Frame):
         self.preview_sorter.start_parallel_sort()
 
     def show_preview_results(self, _stats, _copy_mode):
+        if getattr(self.winfo_toplevel(), "_closing", False) is True:
+            self.preview_running = False
+            return
         self.event_generate("<<LibraryChanged>>", when="tail")
         self.btn_cancel.config(state="disabled")
         self.preview_running = False
@@ -427,12 +523,30 @@ class OrganizeTab(ttk.Frame):
             f"Checked {len(records):,} sound and instrument files; other files "
             "(such as .asd analysis files) are left alone, so this is lower than the total file count shown above. "
         )
+        evidence_records = [
+            record
+            for record in records if record.get("tag_suggestion")
+        ]
+        for record in evidence_records[:100]:
+            self.write_console_message(
+                f"{record['source']}\n    {tag_evidence.describe_preview_evidence(record)}"
+            )
+        if len(evidence_records) > 100:
+            self.write_console_message(
+                f"Showing the first 100 of {len(evidence_records):,} manual Live-tag recommendations."
+            )
+        evidence_cards = [(
+            f"{len(evidence_records):,} manual Live-tag recommendations",
+            "Exact tags, alternatives and conflicts are shown in the activity log below "
+            "(first 100). These are review-only; they do not change this cleanup plan."
+        )] if evidence_records else []
         if not moves:
             show_notice(
                 self.winfo_toplevel(), "Preview",
                 f"All {len(records):,} sound and instrument files already sit in the right folders. "
-                "Other files (such as .asd analysis files) are not counted.",
-                heading="Nothing to move"
+                "Other files (such as .asd analysis files) are not counted. "
+                "Any tag recommendations are review-only and do not change the routing plan.",
+                heading="No planned moves", cards=evidence_cards
             )
             return
         library_root = os.path.normpath(self.library_dir_var.get().strip())
@@ -452,6 +566,7 @@ class OrganizeTab(ttk.Frame):
         if len(ordered) > 8:
             rest = sum(len(names) for _label, names in ordered[8:])
             cards.append((f"{len(ordered) - 8} more folders  -  {rest:,} files", ""))
+        cards.extend(evidence_cards)
         start = themed_dialog(
             self.winfo_toplevel(), "Preview of cleanup",
             f"{len(moves):,} files would move; {in_place:,} are already in place. " + scope_note +
@@ -463,6 +578,8 @@ class OrganizeTab(ttk.Frame):
             self.execute_library_restructure()
 
     def undo_last_cleanup(self):
+        if self.has_pending_job() or getattr(self.winfo_toplevel(), "_closing", False):
+            return
         log_path = sorter_engine.latest_move_log()
         if not log_path:
             show_notice(self.winfo_toplevel(), "Undo", "There is no cleanup to undo.", heading="Nothing to undo")
@@ -479,10 +596,7 @@ class OrganizeTab(ttk.Frame):
             button.config(state="disabled")
         self.write_console_message(f"Undoing {count:,} moves...")
 
-        def worker():
-            result = sorter_engine.undo_move_log(log_path)
-            self.after(0, lambda: self.finish_undo(result))
-        threading.Thread(target=worker, daemon=True).start()
+        self._start_job("undo", lambda: sorter_engine.undo_move_log(log_path))
 
     def finish_undo(self, result):
         self.event_generate("<<LibraryChanged>>", when="tail")
@@ -508,6 +622,8 @@ class OrganizeTab(ttk.Frame):
             self.execute_library_restructure()
 
     def execute_library_restructure(self):
+        if self.has_pending_job() or getattr(self.winfo_toplevel(), "_closing", False):
+            return
         target_path = self.library_dir_var.get().strip()
         if not target_path or not os.path.exists(target_path):
             messagebox.showerror("Routing Fault", "Please select a valid user library path before launching execution threads.")
@@ -524,7 +640,7 @@ class OrganizeTab(ttk.Frame):
             self.write_console_message("Initializing pre-sorting environment security snapshots...")
             target_dest = self.get_backup_directory(target_path)
             self.write_console_message(f"Backup Destination Directory Target: {target_dest}")
-            threading.Thread(target=self.run_safeguard_archiver_thread, args=(target_path,), daemon=True).start()
+            self._start_job("backup", lambda: self.run_safeguard_archiver_thread(target_path))
         else:
             self.kickoff_sorting_engine(target_path)
 
@@ -536,25 +652,22 @@ class OrganizeTab(ttk.Frame):
             stack = [os.path.normpath(target_path)]
             while stack:
                 current_dir = stack.pop()
-                if "Ableton Folder Info" in current_dir: continue
-                try: scandir_iterator = os.scandir(current_dir)
-                except Exception: continue
-                try:
+                with os.scandir(current_dir) as scandir_iterator:
                     for entry in scandir_iterator:
-                        if entry.is_dir(follow_symlinks=False): stack.append(os.path.normpath(entry.path))
+                        if entry.is_dir(follow_symlinks=False):
+                            if entry.name != "Ableton Folder Info":
+                                stack.append(os.path.normpath(entry.path))
                         elif entry.is_file(follow_symlinks=False):
                             if not entry.name.startswith("._") and entry.name != "desktop.ini":
                                 total_bytes += entry.stat().st_size
                                 local_files_count += 1
-                except OSError:
-                    continue
-        except Exception: pass
-
-        gigabytes_mass = total_bytes / (1024 ** 3)
-        is_massive_structure = local_files_count > 15000 or total_bytes > (100 * 1024 ** 3)
-        if is_massive_structure:
-            self.after(0, lambda: self.render_high_volume_warning_modal(
-                gigabytes_mass, local_files_count, is_massive_structure
+        except OSError as error:
+            self._volume_results.put((target_path, None, error))
+        else:
+            gigabytes_mass = total_bytes / (1024 ** 3)
+            is_massive_structure = local_files_count > 15000 or total_bytes > (100 * 1024 ** 3)
+            self._volume_results.put((
+                target_path, (gigabytes_mass, local_files_count, is_massive_structure), None,
             ))
 
     def render_high_volume_warning_modal(self, gigabytes_mass, local_files_count, is_massive_structure=False):
@@ -572,67 +685,58 @@ class OrganizeTab(ttk.Frame):
         )
 
     def run_safeguard_archiver_thread(self, target_path):
+        backup_dir = self.get_backup_directory(target_path)
+        if os.path.commonpath((os.path.abspath(target_path), os.path.abspath(backup_dir))) == os.path.abspath(target_path):
+            raise ValueError("Choose a library whose backup directory is outside the library.")
+        os.makedirs(backup_dir, exist_ok=True)
+        descriptor, archive_full_path = tempfile.mkstemp(
+            prefix="User_Library_Backup_", suffix=".zip", dir=backup_dir
+        )
+        os.close(descriptor)
         try:
-            backup_dir = self.get_backup_directory(target_path)
-            os.makedirs(backup_dir, exist_ok=True)
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            archive_name = f"User_Library_Backup_{timestamp}.zip"
-            archive_full_path = os.path.join(backup_dir, archive_name)
-
-            self.write_console_message("Initializing high-velocity concurrent multi-threaded backup allocation...")
+            self.write_console_message("Backing up audio, presets and Live sidecar metadata...")
             local_files_to_pack = []
-            skipped_stubs_count = 0
-            
             stack = [os.path.normpath(target_path)]
             while stack:
                 current_dir = stack.pop()
-                if "Ableton Folder Info" in current_dir: continue
-                try:
-                    for entry in os.scandir(current_dir):
-                        if entry.is_dir(follow_symlinks=False): stack.append(os.path.normpath(entry.path))
+                with os.scandir(current_dir) as entries:
+                    for entry in entries:
+                        if entry.is_symlink():
+                            raise ValueError(f"Backup cannot safely include linked content: {entry.path}")
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(os.path.normpath(entry.path))
                         elif entry.is_file(follow_symlinks=False):
-                            if entry.name.startswith("._") or entry.name == "desktop.ini": continue
-                            full_filepath = os.path.normpath(entry.path)
-                            try:
-                                # 🌟 FIXED ATTRIBUTE SHIELD: Prevents Win32 attribute crashes when executed inside macOS
-                                stat_result = os.stat(full_filepath)
-                                if hasattr(stat_result, 'st_file_attributes'):
-                                    raw_attrs = stat_result.st_file_attributes
-                                    if (raw_attrs & 0x00400000) or (raw_attrs & 0x00001000):
-                                        skipped_stubs_count += 1
-                                        continue
-                            except Exception: pass
-                            local_files_to_pack.append(full_filepath)
-                except Exception: pass
-
-            total_assets_to_pack = len(local_files_to_pack)
-            if total_assets_to_pack == 0:
-                self.write_console_message("ℹ️ No locally cached assets detected in current path. Skipping backup framework.")
-                self.after(0, lambda: self.kickoff_sorting_engine(target_path))
-                return
-
-            self.write_console_message(f" -> Index complete: {total_assets_to_pack} assets queued.")
-            zip_write_lock = threading.Lock()
-            
-            with zipfile.ZipFile(archive_full_path, 'w', zipfile.ZIP_STORED, allowZip64=True) as zipf:
-                stats_tracker = {"packed": 0, "skipped": 0}
-                def process_single_backup_asset_worker(full_filepath):
-                    relative_arcpath = os.path.relpath(full_filepath, target_path)
-                    try:
-                        with zip_write_lock: zipf.write(full_filepath, relative_arcpath)
-                        stats_tracker["packed"] += 1
-                    except Exception: stats_tracker["skipped"] += 1
-                    current_processed = stats_tracker["packed"] + stats_tracker["skipped"]
-                    if current_processed % 5000 == 0 or current_processed == total_assets_to_pack:
-                        pct_complete = int((current_processed / total_assets_to_pack) * 100)
-                        self.write_console_message(f" [Concurrent Backup]: Streamed -> {stats_tracker['packed']}/{total_assets_to_pack} files ({pct_complete}%)")
-
-                with ThreadPoolExecutor(max_workers=4) as worker_pool:
-                    worker_pool.map(process_single_backup_asset_worker, local_files_to_pack)
-
-            self.after(0, lambda: self.write_backup_success_log(target_path, archive_full_path))
-        except Exception as e:
-            self.after(0, lambda: self.handle_backup_fault(target_path, str(e)))
+                            local_files_to_pack.append((entry.path, sorter_engine._file_identity(entry.path)))
+            with zipfile.ZipFile(archive_full_path, "w", zipfile.ZIP_STORED, allowZip64=True) as archive:
+                for index, (path, identity) in enumerate(local_files_to_pack, 1):
+                    if sorter_engine._file_identity(path) != identity:
+                        raise ValueError(f"File changed during backup: {path}")
+                    archive.write(path, os.path.relpath(path, target_path))
+                    if index % 1000 == 0:
+                        self.write_console_message(f"Backup ({index}/{len(local_files_to_pack)})")
+            with zipfile.ZipFile(archive_full_path) as archive:
+                expected_names = {os.path.relpath(path, target_path).replace(os.sep, "/") for path, _identity in local_files_to_pack}
+                if len(archive.infolist()) != len(expected_names) or set(archive.namelist()) != expected_names:
+                    raise OSError("Backup archive does not contain every selected file exactly once.")
+                if archive.testzip() is not None:
+                    raise OSError("Backup archive integrity check failed.")
+                for path, identity in local_files_to_pack:
+                    with archive.open(os.path.relpath(path, target_path).replace(os.sep, "/")) as contents:
+                        if hashlib.file_digest(contents, "sha256").hexdigest() != identity["sha256"]:
+                            raise OSError(f"Backup bytes differ from source: {path}")
+                    if sorter_engine._file_identity(path) != identity:
+                        raise ValueError(f"File changed during backup: {path}")
+            self.write_console_message(f"Verified backup: {len(local_files_to_pack):,} files, including metadata.")
+            return target_path, archive_full_path
+        except (OSError, ValueError, zipfile.BadZipFile) as error:
+            try:
+                os.remove(archive_full_path)
+            except OSError as cleanup_error:
+                raise OSError(
+                    f"Backup failed ({error}); incomplete archive could not be removed: "
+                    f"{archive_full_path}: {cleanup_error}"
+                ) from error
+            raise OSError(f"Backup incomplete; cleanup did not start: {error}") from error
 
     def get_backup_directory(self, target_path):
         """Keep backups beside, not inside, the library for visibility and safe rescans."""
@@ -659,10 +763,19 @@ class OrganizeTab(ttk.Frame):
         self.btn_undo.config(state="normal")
         self.btn_cancel.config(state="disabled")
         self.cb_backup.config(state="normal")
+        if getattr(self.winfo_toplevel(), "_closing", False):
+            self.write_console_message(f"Backup failed; cleanup did not start: {error_string}")
+            return
         proceed_regardless = messagebox.askyesno("Safeguard Fault", f"Archive failed:\n{error_string}\n\nProceed without backup?", icon="warning")
         if proceed_regardless: self.kickoff_sorting_engine(target_path)
 
     def kickoff_sorting_engine(self, target_path):
+        if getattr(self.winfo_toplevel(), "_closing", False):
+            return
+        self._sort_pending = True
+        for button in (self.btn_execute, self.btn_preview, self.btn_undo):
+            button.config(state="disabled")
+        self.cb_backup.config(state="disabled")
         clean_target = os.path.normpath(target_path.strip())
         self.write_console_message("Firing parallel sorting network threads...")
         self.active_sorter = sorter_engine.ParallelLibrarySorter(src_path=clean_target, dest_path=clean_target, window_el=self, update_status_callback=self.write_console_message, done_callback=self.handle_execution_complete, copy_mode=False)
@@ -684,6 +797,9 @@ class OrganizeTab(ttk.Frame):
             self.write_console_message("Stopping...")
 
     def handle_execution_complete(self, tracking_stats, copy_mode_flag):
+        self._sort_pending = False
+        if getattr(self.winfo_toplevel(), "_closing", False) is True:
+            return
         self.event_generate("<<LibraryChanged>>", when="tail")
         self.btn_cancel.config(state="disabled")
         self.btn_execute.config(state="normal")

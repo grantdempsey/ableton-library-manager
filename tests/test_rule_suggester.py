@@ -3,6 +3,7 @@ import os
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 import rule_suggester
 import sorter_engine
@@ -37,12 +38,44 @@ class RuleSuggesterTests(unittest.TestCase):
                 handle.write(b"x")
 
     def test_suggests_reliable_word_with_new_folder(self):
-        self._files([f"Pack - Rain {i}.wav" for i in range(6)])
+        self._files([f"Pack - Rain {i}.wav" for i in range(20)])
         suggestions = rule_suggester.suggest_rules(self.lib)
         rain = [s for s in suggestions if s["token"] == "rain"]
         self.assertEqual(len(rain), 1)
         self.assertEqual(rain[0]["target"], "Nature")
         self.assertTrue(rain[0]["is_new_folder"])
+        self.assertEqual(20, rain[0]["count"])
+        self.assertEqual(20, rain[0]["min_files"])
+        self.assertEqual(0.9, rain[0]["min_share"])
+
+    def test_default_requires_twenty_files_and_explicit_lower_threshold_is_preserved(self):
+        self._files([f"Pack - Rain {i}.wav" for i in range(19)])
+        self.assertEqual([], rule_suggester.suggest_rules(self.lib))
+        suggestions = rule_suggester.suggest_rules(self.lib, min_files=5)
+        self.assertEqual(19, suggestions[0]["count"])
+        self.assertEqual(5, suggestions[0]["min_files"])
+        with self.assertRaisesRegex(ValueError, "no longer supported"):
+            rule_suggester.revalidate_candidates([
+                dict(suggestions[0], evidence_source="filename_vocabulary")
+            ])
+        self._files(["Pack - Rain 19.wav"])
+        refreshed = rule_suggester.revalidate_candidates([
+            dict(suggestions[0], evidence_source="filename_vocabulary")
+        ])
+        self.assertEqual(20, refreshed[0]["min_files"])
+
+    def test_filename_evidence_requires_twenty_supporters_not_just_observations(self):
+        self._files([f"Rain {index}.wav" for index in range(19)])
+        self._files([f"Rain conflict {index}.wav" for index in range(2)])
+        def classify(path, _root):
+            return ("Snares" if "conflict" in path else "Nature", None)
+        with mock.patch("xo_filter.classify", side_effect=classify):
+            self.assertEqual([], rule_suggester.suggest_rules(self.lib))
+            self._files(["Rain 19.wav"])
+            suggestions = rule_suggester.suggest_rules(self.lib)
+            self.assertEqual(20, suggestions[0]["count"])
+            self._files(["Rain conflict 2.wav"])
+            self.assertEqual([], rule_suggester.suggest_rules(self.lib))
 
     def test_ignores_rare_words_and_words_existing_rules_cover(self):
         self._files(["Pack - Rain 1.wav", "Pack - Rain 2.wav"] + [f"Kick {i}.wav" for i in range(8)])
@@ -51,7 +84,7 @@ class RuleSuggesterTests(unittest.TestCase):
         self.assertNotIn("kick", tokens)
 
     def test_priority_preview_matches_actual_placement(self):
-        self._files([f"Pack - Djembe {i}.wav" for i in range(6)])
+        self._files([f"Pack - Djembe {i}.wav" for i in range(20)])
         rule_suggester.add_suggestions_as_candidates(rule_suggester.suggest_rules(self.lib))
         preview = sorter_engine.suggest_rule_priority(r"\bdjembe\w*\b", "Percussion")
         sorter_engine.review_learning_candidate("djembe", "Percussion", "approved")
@@ -72,7 +105,7 @@ class RuleSuggesterTests(unittest.TestCase):
         self.assertIn("quasar", words)
 
     def test_deleted_rule_can_be_suggested_again(self):
-        self._files([f"Pack - Djembe {i}.wav" for i in range(6)])
+        self._files([f"Pack - Djembe {i}.wav" for i in range(20)])
         rule_suggester.add_suggestions_as_candidates(rule_suggester.suggest_rules(self.lib))
         sorter_engine.review_learning_candidate("djembe", "Percussion", "approved")
         self.assertEqual(rule_suggester.suggest_rules(self.lib), [])
@@ -85,7 +118,7 @@ class RuleSuggesterTests(unittest.TestCase):
         self.assertEqual(rule_suggester.add_suggestions_as_candidates(again), 1)
 
     def test_candidates_are_stored_once_as_pending(self):
-        self._files([f"Pack - Djembe {i}.wav" for i in range(6)])
+        self._files([f"Pack - Djembe {i}.wav" for i in range(20)])
         suggestions = rule_suggester.suggest_rules(self.lib)
         self.assertEqual(rule_suggester.add_suggestions_as_candidates(suggestions), 1)
         self.assertEqual(rule_suggester.add_suggestions_as_candidates(suggestions), 0)
@@ -94,7 +127,7 @@ class RuleSuggesterTests(unittest.TestCase):
         self.assertEqual(saved["LEARNED_RULE_CANDIDATES"][0]["status"], "pending")
 
     def test_approved_rule_moves_catch_all_files_on_organize(self):
-        self._files([f"Pack - Djembe {i}.wav" for i in range(6)])
+        self._files([f"Pack - Djembe {i}.wav" for i in range(20)])
         suggestions = rule_suggester.suggest_rules(self.lib)
         rule_suggester.add_suggestions_as_candidates(suggestions)
         sorter_engine.review_learning_candidate("djembe", "Percussion", "approved")
@@ -105,7 +138,7 @@ class RuleSuggesterTests(unittest.TestCase):
         sorter.start_parallel_sort()
         self.assertTrue(done.wait(10))
         moved = os.path.join(self.lib, "Percussion", "Shakers")
-        self.assertTrue(os.path.isdir(moved) and len(os.listdir(moved)) == 6)
+        self.assertTrue(os.path.isdir(moved) and len(os.listdir(moved)) == 20)
     def test_loop_layout_applies_to_new_and_existing_loops(self):
         loops = os.path.join(self.lib, "Samples", "Loops", "100-114 BPM", "AMIN")
         custom = os.path.join(self.lib, "Samples", "Loops", "My Favorites")

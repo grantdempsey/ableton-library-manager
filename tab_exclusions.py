@@ -1,8 +1,6 @@
 # tab_exclusions.py - Piece 1: Framework Imports & Configuration Synchronization
 import tkinter as tk
 from tkinter import ttk
-import os
-import json
 import gui_theme
 import sorter_engine
 from tab_matrix import ask_confirm, show_notice, messagebox
@@ -23,11 +21,10 @@ class ExclusionsTab(ttk.Frame):
 
     def synchronize_backend_variables(self):
         """Forces the backend config loader to run and maps IGNORED_DIRECTORIES into UI memory."""
-        if hasattr(sorter_engine, 'load_external_config'):
-            try:
-                sorter_engine.load_external_config()
-            except Exception:
-                pass
+        try:
+            sorter_engine.load_external_config()
+        except (OSError, ValueError) as error:
+            messagebox.showerror("Could not load skipped folders", str(error))
 
         if hasattr(sorter_engine, 'IGNORED_DIRECTORIES'):
             raw_val = sorter_engine.IGNORED_DIRECTORIES
@@ -39,28 +36,15 @@ class ExclusionsTab(ttk.Frame):
         if "No Key Info" not in self.active_exclusions_set:
             self.active_exclusions_set.add("No Key Info")
 
-        self.flush_changes_to_backend_memory()
-
     def flush_changes_to_backend_memory(self):
-        """Mirrors UI sets back into engine arrays and flushes parameters onto local disk configuration JSON layers."""
-        setattr(sorter_engine, 'IGNORED_DIRECTORIES', sorted(list(self.active_exclusions_set)))
-
-        config_path = getattr(sorter_engine, 'CONFIG_FILE', 'library_config.json')
+        """Publish the new selection only after the profile was saved successfully."""
         try:
-            disk_data = {}
-            if os.path.exists(config_path):
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    disk_data = json.load(f)
-            
-            disk_data['IGNORED_DIRECTORIES'] = sorted(list(self.active_exclusions_set))
-            
-            with open(config_path, 'w', encoding='utf-8') as f:
-                json.dump(disk_data, f, indent=4)
-                
-            if hasattr(sorter_engine, 'load_external_config'):
-                sorter_engine.load_external_config()
-        except Exception:
-            pass
+            sorter_engine.save_ignored_directories(self.active_exclusions_set)
+        except (OSError, ValueError) as error:
+            self.active_exclusions_set = set(sorter_engine.IGNORED_DIRECTORIES) | {"No Key Info"}
+            messagebox.showerror("Could not save skipped folders", str(error))
+            return False
+        return True
 
     def setup_ui_layout(self):
         """Draws the simplified high-fidelity exclusion panels with all headers stripped down."""
@@ -163,7 +147,8 @@ class ExclusionsTab(ttk.Frame):
             return
             
         self.active_exclusions_set.add(token)
-        self.flush_changes_to_backend_memory()
+        if not self.flush_changes_to_backend_memory():
+            return
         self.refresh_exclusion_list()
         self.ent_pattern.delete(0, tk.END)
 

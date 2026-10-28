@@ -1,16 +1,24 @@
 import json
 import os
 import platform
+import queue
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
+import datetime
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog
 from tab_matrix import messagebox, ask_confirm, ask_fields, show_notice
 
 import gui_theme
 import sorter_engine
+import ableton_tags
+import tag_evidence
+import live_catalog
+from live_tag_batch import LiveTagBatchDialog
+import live_tag_sync
 
 
 SUPPORTED_AUDIO_EXTENSIONS = {
@@ -76,6 +84,34 @@ class TagsTab(ttk.Frame):
         self.status_label_ref = status_label_ref
         self.search_var = tk.StringVar()
         self.new_tag_var = tk.StringVar()
+        self.live_tag_var = tk.StringVar()
+        self.live_group_var = tk.StringVar(value="Sounds")
+        self.tag_source_var = tk.StringVar(value="All tags")
+        self.tag_group_var = tk.StringVar(value="All groups")
+        self.tag_search_var = tk.StringVar()
+        self._tag_browser_rows = []
+        self._tag_browser_after_id = None
+        self._live_refresh_queue = None
+        self._live_batch_dialog = None
+        self._live_vocabulary = ()
+        self._live_vocabulary_database = None
+        self._selected_vocabulary_database = None
+        self._live_vocabulary_queue = None
+        self._tag_suggestions_queue = None
+        self._tag_suggestions_scope = None
+        self._indexed_live_suggestions = ()
+        self._rename_suggestion_entries = None
+        self._tag_suggestions_revision = 0
+        self.tag_suggestions_status = tk.StringVar(value="")
+        self.monitor_live_var = tk.BooleanVar(value=True)
+        self.freshness_var = tk.StringVar(value="Live metadata: not checked this session. Audio discovery requires Rescan.")
+        self._metadata_baseline = None
+        self._metadata_candidate = None
+        self._metadata_root = None
+        self._metadata_queue = None
+        self._metadata_after_id = None
+        self._last_metadata_sync = None
+        self._last_full_scan = None
         self.favorites_only = False
         self.autoplay_var = tk.BooleanVar(value=False)
         self._waveform_generation = 0
@@ -89,6 +125,10 @@ class TagsTab(ttk.Frame):
         self.selection_count_var = tk.StringVar(value="No sounds selected")
         self.inspector_visible_var = tk.BooleanVar(value=True)
         self._asset_paths = {}
+        self._selection_paths = set()
+        self._selection_scope = None
+        self._selection_revision = 0
+        self._select_all_queue = None
         self._audio_process = None
         self._audio_path = None
         self.bind("<Unmap>", lambda e: self.stop_sound() if e.widget is self else None)
@@ -108,7 +148,12 @@ class TagsTab(ttk.Frame):
         self._tag_selection_generation = 0
         self._tag_render_after_id = None
         self._has_loaded = False
+        self._saved_collections = []
         self._build_ui()
+        self._library_work_results = queue.Queue()
+        self._library_work_after_id = self.after(30, self._finish_library_work)
+        self._selection_summary_queue = None
+        self._metadata_after_id = self.after(5000, self._poll_live_metadata)
 
     def ensure_loaded(self):
         """Loads the browser when the Library tab is first opened."""
@@ -124,27 +169,27 @@ class TagsTab(ttk.Frame):
         tk.Label(
             header, text="Library", font=("Segoe UI", 12, "bold"),
             bg=theme["bg_dark"], fg=theme["fg_light"]
-        ).pack(anchor="w")
+        ).pack(side="left")
         tk.Label(
-            header,
-            text="Find and audition sounds. Select one or more results to curate their personal tags.",
-            font=("Segoe UI", 9), bg=theme["bg_dark"], fg=theme["fg_muted"],
-            wraplength=900, justify="left"
-        ).pack(anchor="w", pady=(2, 0))
-        search_controls = tk.Frame(self, bg=theme["bg_dark"])
+            header, text="Find sounds, curate shared Live tags, and review your selection.",
+            font=("Segoe UI", 9), bg=theme["bg_dark"], fg=theme["fg_muted"]
+        ).pack(side="right")
+        self._editable_content = ttk.Frame(self)
+        self._editable_content.pack(fill="both", expand=True)
+        search_controls = tk.Frame(self._editable_content, bg=theme["bg_dark"])
         search_controls.configure(
             bg=theme["bg_panel"], bd=1, relief="solid",
             highlightbackground=theme["border"], highlightcolor=theme["border"]
         )
-        search_controls.pack(fill="x", padx=15, pady=(12, 8), ipady=7)
-        tk.Label(search_controls, text="Search:", bg=theme["bg_dark"], fg=theme["fg_light"]).pack(side="left")
+        search_controls.pack(fill="x", padx=15, pady=(8, 6), ipady=7)
+        tk.Label(search_controls, text="Search", bg=theme["bg_panel"], fg=theme["fg_muted"]).pack(side="left", padx=(10, 0))
         self.search_entry = tk.Entry(
             search_controls, textvariable=self.search_var, width=26,
-            bg=theme["bg_panel"], fg=theme["fg_light"],
+            bg=theme["bg_field"], fg=theme["fg_light"],
             relief="solid", bd=1,
             insertbackground=theme["fg_light"]
         )
-        self.search_entry.pack(side="left", padx=6)
+        self.search_entry.pack(side="left", padx=6, fill="x", expand=True, ipady=2)
         self.search_entry.bind("<Return>", lambda _event: self._apply_filter())
         self.filter_button = tk.Button(
             search_controls, text="Apply filter", command=self._apply_filter,
@@ -160,6 +205,11 @@ class TagsTab(ttk.Frame):
             activeforeground=theme["fg_light"], bd=1
         )
         self.saved_button.pack(side="left", padx=6)
+        self.discovery_button = tk.Button(
+            search_controls, text="Discovery...", command=self._open_discovery_filters,
+            bg=theme["btn_secondary"], fg=theme["fg_light"], bd=1
+        )
+        self.discovery_button.pack(side="left", padx=4)
         self.rescan_button = tk.Button(
             search_controls, text="Rescan library", command=self.rescan_library,
             bg=theme["btn_secondary"], fg=theme["fg_light"],
@@ -167,53 +217,56 @@ class TagsTab(ttk.Frame):
             activeforeground=theme["fg_light"], bd=1
         )
         self.rescan_button.pack(side="left", padx=6)
-        tk.Label(
-            search_controls, text="Ctrl+F search  •  Space play/stop  •  F favorite",
-            font=("Segoe UI", 8), bg=theme["bg_panel"], fg=theme["fg_muted"]
-        ).pack(side="right", padx=8)
 
-        tk.Label(
-            self, text="Sounds",
-            font=("Segoe UI", 10, "bold"),
-            bg=theme["bg_dark"], fg=theme["fg_light"], anchor="w"
-        ).pack(fill="x", padx=15, pady=(0, 5))
-        page_controls = tk.Frame(self, bg=theme["bg_dark"])
-        page_controls.pack(fill="x", padx=15, pady=(0, 5), ipady=2)
-        self.page_label = tk.Label(
-            page_controls, text="", bg=theme["bg_dark"], fg=theme["fg_muted"]
-        )
-        self.page_label.pack(side="left")
+        view_controls = tk.Frame(self._editable_content, bg=theme["bg_dark"])
+        view_controls.pack(fill="x", padx=15, pady=(0, 3))
         self.total_label = tk.Label(
-            page_controls, text="", bg=theme["bg_dark"], fg=theme["fg_muted"]
+            view_controls, text="", bg=theme["bg_dark"], fg=theme["fg_muted"]
         )
-        self.total_label.pack(side="left", padx=(12, 0))
-        self.previous_page_button = tk.Button(
-            page_controls, text="Previous", command=self._previous_page,
-            bg=theme["btn_secondary"], fg=theme["fg_light"],
-            activebackground=theme["btn_secondary_hover"], bd=1, state="disabled"
-        )
-        self.previous_page_button.pack(side="right", padx=(4, 0))
-        self.next_page_button = tk.Button(
-            page_controls, text="Next", command=self._next_page,
-            bg=theme["btn_secondary"], fg=theme["fg_light"],
-            activebackground=theme["btn_secondary_hover"], bd=1, state="disabled"
-        )
-        self.next_page_button.pack(side="right")
+        self.total_label.pack(side="left")
         self.inspector_toggle = tk.Checkbutton(
-            page_controls, text="Inspector", variable=self.inspector_visible_var,
+            view_controls, text="Show selection details (right)", variable=self.inspector_visible_var,
             command=self._toggle_inspector, bg=theme["bg_dark"],
             fg=theme["fg_light"], selectcolor=theme["bg_field"],
             activebackground=theme["bg_dark"], activeforeground=theme["fg_light"]
         )
         self.inspector_toggle.pack(side="right", padx=12)
+        self.filter_chips = tk.Frame(self._editable_content, bg=theme["bg_dark"])
+        self.filter_chips.pack(fill="x", padx=15, pady=(0, 4))
+        freshness = tk.Frame(self._editable_content, bg=theme["bg_dark"])
+        freshness.pack(side="bottom", fill="x", padx=15, pady=(0, 6))
+        self.monitor_live_check = tk.Checkbutton(
+            freshness, text="Auto-refresh Live tags", variable=self.monitor_live_var,
+            command=self._monitor_toggled, bg=theme["bg_dark"], fg=theme["fg_light"],
+            selectcolor=theme["bg_field"], activebackground=theme["bg_dark"],
+            activeforeground=theme["fg_light"]
+        )
+        self.monitor_live_check.pack(side="left", padx=(0, 12))
+        self.freshness_label = tk.Label(
+            freshness, textvariable=self.freshness_var, bg=theme["bg_dark"],
+            fg=theme["fg_muted"], anchor="w", font=("Segoe UI", 8),
+            wraplength=800, justify="left"
+        )
+        self.freshness_label.pack(side="left", fill="x", expand=True)
+        selection_bar = tk.Frame(self._editable_content, bg=theme["bg_dark"])
+        selection_bar.pack(fill="x", padx=15, pady=(0, 5))
         tk.Label(
-            self, textvariable=self.selection_count_var, bg=theme["bg_dark"],
+            selection_bar, textvariable=self.selection_count_var, bg=theme["bg_dark"],
             fg=theme["fg_muted"], anchor="w"
-        ).pack(fill="x", padx=15, pady=(0, 5))
+        ).pack(side="left")
+        for text, command in (
+            ("Select page", self._select_page),
+            ("Select all matching", self._select_all_matching),
+            ("Clear selection", self._clear_selection),
+        ):
+            tk.Button(
+                selection_bar, text=text, command=command,
+                bg=theme["btn_secondary"], fg=theme["fg_light"], bd=1
+            ).pack(side="right", padx=(5, 0))
 
         self.browser_panes = tk.PanedWindow(
-            self, orient="horizontal", bg=theme["bg_dark"], bd=0,
-            sashwidth=7, sashrelief="raised", showhandle=True, opaqueresize=True
+            self._editable_content, orient="horizontal", bg=theme["bg_dark"], bd=0,
+            sashwidth=7, sashrelief="flat", showhandle=False, opaqueresize=True
         )
         browser = self.browser_panes
         browser.pack(fill="both", expand=True, padx=15, pady=(0, 8))
@@ -222,41 +275,128 @@ class TagsTab(ttk.Frame):
             highlightbackground=theme["border"], highlightcolor=theme["border"]
         )
         browser.add(sidebar, minsize=150, width=200, stretch="never")
-        tk.Label(
-            sidebar, text="Collections", bg=theme["bg_field"], fg=theme["fg_muted"],
-            font=("Segoe UI", 9, "bold"), anchor="w"
-        ).pack(fill="x", padx=10, pady=(10, 4))
+        collection_tabs = ttk.Notebook(sidebar)
+        self.collection_tabs = collection_tabs
+        collection_tabs.pack(fill="x", padx=5, pady=(6, 0))
+        collections_panel = tk.Frame(collection_tabs, bg=theme["bg_field"])
+        saved_panel = tk.Frame(collection_tabs, bg=theme["bg_field"])
+        collection_tabs.add(collections_panel, text="Collections")
+        collection_tabs.add(saved_panel, text="Saved")
         self.collection_list = tk.Listbox(
-            sidebar, height=8, bg=theme["bg_field"], fg=theme["fg_light"],
+            collections_panel, height=5, bg=theme["bg_field"], fg=theme["fg_light"],
             selectbackground=theme["tag_enabled"], selectforeground="white",
             relief="flat", highlightthickness=0, activestyle="none",
             exportselection=False
         )
         self.collection_list.pack(fill="x", padx=5)
         self.collection_list.bind("<<ListboxSelect>>", self._collection_selected)
+        saved_frame = tk.Frame(saved_panel, bg=theme["bg_field"])
+        saved_frame.pack(fill="x", padx=5)
+        saved_scroll = ttk.Scrollbar(saved_frame, orient="vertical")
+        saved_scroll.pack(side="right", fill="y")
+        self.saved_collection_list = tk.Listbox(
+            saved_frame, height=3, exportselection=False, activestyle="none",
+            bg=theme["bg_field"], fg=theme["fg_light"], relief="flat",
+            highlightthickness=0, selectbackground=theme["tag_enabled"],
+            selectforeground="white", yscrollcommand=saved_scroll.set
+        )
+        self.saved_collection_list.pack(side="left", fill="x", expand=True)
+        saved_scroll.configure(command=self.saved_collection_list.yview)
+        self.saved_collection_list.bind("<<ListboxSelect>>", self._saved_collection_selected)
+        saved_actions = tk.Frame(saved_panel, bg=theme["bg_field"])
+        saved_actions.pack(fill="x", padx=5, pady=(4, 0))
+        self.save_collection_button = tk.Button(
+            saved_actions, text="Save current...", command=self._save_current_search,
+            bg=theme["btn_secondary"], fg=theme["fg_light"], bd=1
+        )
+        self.save_collection_button.pack(side="left")
+        self.delete_collection_button = tk.Button(
+            saved_actions, text="Delete", command=self._delete_selected_collection,
+            bg=theme["btn_secondary"], fg=theme["fg_light"], bd=1
+        )
+        self.delete_collection_button.pack(side="left", padx=4)
         tk.Label(
             sidebar, text="Tags", bg=theme["bg_field"], fg=theme["fg_muted"],
             font=("Segoe UI", 9, "bold"), anchor="w"
         ).pack(fill="x", padx=10, pady=(12, 4))
+        tag_navigation = tk.Frame(sidebar, bg=theme["bg_field"])
+        tag_navigation.pack(fill="x", padx=5)
+        self.tag_source_picker = ttk.Combobox(
+            tag_navigation, textvariable=self.tag_source_var, state="readonly",
+            values=("All tags", "Live manual tags", "Generated tags"), width=15
+        )
+        self.tag_source_picker.pack(fill="x")
+        self.tag_source_picker.bind("<<ComboboxSelected>>", self._tag_navigation_changed)
+        self.tag_group_picker = ttk.Combobox(
+            tag_navigation, textvariable=self.tag_group_var, state="readonly",
+            values=("All groups",), width=15
+        )
+        self.tag_group_picker.pack(fill="x", pady=3)
+        self.tag_group_picker.bind("<<ComboboxSelected>>", self._tag_navigation_changed)
+        tag_search_row = tk.Frame(tag_navigation, bg=theme["bg_field"])
+        tag_search_row.pack(fill="x")
+        tk.Label(
+            tag_search_row, text="Find:", bg=theme["bg_field"], fg=theme["fg_muted"]
+        ).pack(side="left")
+        self.tag_search_entry = tk.Entry(
+            tag_search_row, textvariable=self.tag_search_var, width=10,
+            bg=theme["bg_dark"], fg=theme["fg_light"], insertbackground=theme["fg_light"]
+        )
+        self.tag_search_entry.pack(side="left", fill="x", expand=True)
+        self.tag_search_var.trace_add("write", self._schedule_tag_navigation)
+        self.tag_browser_status = tk.Label(
+            tag_navigation, text="", bg=theme["bg_field"], fg=theme["fg_muted"],
+            wraplength=175, justify="left", anchor="w", font=("Segoe UI", 8)
+        )
+        self.tag_browser_status.pack(fill="x", pady=(3, 0))
+        tk.Button(
+            tag_navigation, text="Tag sources / help", command=self._explain_tag_sources,
+            bg=theme["btn_secondary"], fg=theme["fg_light"], bd=1
+        ).pack(fill="x", pady=(0, 3))
         tag_list_frame = tk.Frame(sidebar, bg=theme["bg_field"])
         tag_list_frame.pack(fill="both", expand=True, padx=5, pady=(0, 8))
         tag_scrollbar = ttk.Scrollbar(tag_list_frame, orient="vertical")
         tag_scrollbar.pack(side="right", fill="y")
+        tag_horizontal = ttk.Scrollbar(tag_list_frame, orient="horizontal")
+        tag_horizontal.pack(side="bottom", fill="x")
         self.tag_list = tk.Listbox(
             tag_list_frame, bg=theme["bg_field"], fg=theme["fg_light"],
             selectbackground=theme["tag_enabled"], selectforeground="white",
             relief="flat", highlightthickness=0, activestyle="none", exportselection=False,
-            yscrollcommand=tag_scrollbar.set
+            yscrollcommand=tag_scrollbar.set, xscrollcommand=tag_horizontal.set
         )
         self.tag_list.pack(in_=tag_list_frame, side="left", fill="both", expand=True)
+        self.tag_list.bind("<Configure>", self._size_tag_navigation, add="+")
         tag_scrollbar.configure(command=self.tag_list.yview)
-        self.tag_list.bind("<Button-1>", self._stop_tag_batch_render, add="+")
+        tag_horizontal.configure(command=self.tag_list.xview)
         self.tag_list.bind("<ButtonRelease-1>", self._tag_released, add="+")
+        self.tag_list.bind("<KeyRelease-Up>", self._tag_selected, add="+")
+        self.tag_list.bind("<KeyRelease-Down>", self._tag_selected, add="+")
+        self.tag_list.bind("<Return>", self._tag_selected, add="+")
         wrapper = tk.Frame(
             browser, bg=theme["bg_field"], bd=1, relief="solid",
             highlightbackground=theme["border"], highlightcolor=theme["border"]
         )
         browser.add(wrapper, minsize=300, width=500, stretch="always")
+        page_controls = tk.Frame(wrapper, bg=theme["bg_field"])
+        page_controls.pack(side="bottom", fill="x", pady=4)
+        self.previous_page_button = tk.Button(
+            page_controls, text="Previous page", command=self._previous_page,
+            bg=theme["btn_secondary"], fg=theme["fg_light"],
+            activebackground=theme["btn_secondary_hover"], bd=1, state="disabled"
+        )
+        self.previous_page_button.pack(side="left", padx=4)
+        self.next_page_button = tk.Button(
+            page_controls, text="Next page", command=self._next_page,
+            bg=theme["btn_secondary"], fg=theme["fg_light"],
+            activebackground=theme["btn_secondary_hover"], bd=1, state="disabled"
+        )
+        self.next_page_button.pack(side="right", padx=4)
+        self.page_label = tk.Label(
+            page_controls, text="", bg=theme["bg_field"], fg=theme["fg_muted"],
+            justify="center", wraplength=130
+        )
+        self.page_label.pack(side="left", fill="x", expand=True)
         vertical_scrollbar = ttk.Scrollbar(wrapper, orient="vertical")
         vertical_scrollbar.pack(side="right", fill="y")
         horizontal_scrollbar = ttk.Scrollbar(wrapper, orient="horizontal")
@@ -306,12 +446,11 @@ class TagsTab(ttk.Frame):
         )
         self.unfavorite_button.pack(side="left", padx=(6, 0))
         self.autoplay_check = tk.Checkbutton(
-            selected, text="Auto-play on select", variable=self.autoplay_var,
+            playback_row, text="Auto-play", variable=self.autoplay_var,
             bg=theme["bg_field"], fg=theme["fg_light"], selectcolor=theme["bg_dark"],
             activebackground=theme["bg_field"], activeforeground=theme["fg_light"],
             disabledforeground=theme["fg_muted"]
         )
-        self.autoplay_check.pack(anchor="w", padx=8)
         self.play_button = tk.Button(
             playback_row, text="Play sound", command=self.play_selected_sound,
             bg=theme["btn_secondary"], fg=theme["fg_light"],
@@ -325,6 +464,7 @@ class TagsTab(ttk.Frame):
             bg=theme["btn_secondary"], fg=theme["fg_light"],
             activebackground=theme["btn_secondary_hover"], bd=1, padx=8
         ).pack(side="left", padx=(6, 0))
+        self.autoplay_check.pack(side="left", padx=(6, 0))
         tk.Label(
             selected,
             textvariable=self.selected_tags_var,
@@ -332,19 +472,166 @@ class TagsTab(ttk.Frame):
             justify="left", wraplength=275, anchor="w"
         ).pack(anchor="w", padx=10, pady=(2, 7))
         self.waveform_canvas = tk.Canvas(
-            selected, height=50, bg=theme["bg_dark"], highlightthickness=1,
+            selected, height=24, bg=theme["bg_dark"], highlightthickness=1,
             highlightbackground=theme["border"]
         )
         self.waveform_canvas.pack(fill="x", padx=10, pady=(0, 6))
+        editor_actions = tk.Frame(selected, bg=theme["bg_field"])
+        editor_actions.pack(side="bottom", fill="x", padx=10, pady=(0, 8))
+        tag_summary = tk.Frame(selected, bg=theme["bg_field"])
+        tag_summary.pack(fill="both", expand=True, padx=10, pady=(0, 8))
         tk.Label(
-            selected, text="Personal tags", font=("Segoe UI", 9, "bold"),
-            bg=theme["bg_field"], fg=theme["fg_light"], anchor="w"
-        ).pack(fill="x", padx=10, pady=(6, 3))
+            tag_summary, text="TAGS", bg=theme["bg_field"], fg=theme["accent_neon"],
+            font=("Segoe UI", 9, "bold"), anchor="w"
+        ).pack(fill="x", pady=(0, 4))
+        summary_scroll = ttk.Scrollbar(tag_summary)
+        summary_scroll.pack(side="right", fill="y")
+        self.assigned_tags_text = tk.Text(
+            tag_summary, width=25, height=3, wrap="word", state="disabled",
+            bg=theme["bg_dark"], fg=theme["fg_light"], bd=0,
+            yscrollcommand=summary_scroll.set
+        )
+        self.assigned_tags_text.pack(fill="both", expand=True)
+        summary_scroll.configure(command=self.assigned_tags_text.yview)
+        self.edit_live_tags_button = tk.Button(
+            editor_actions, text="Edit Live tags...", command=self._open_tag_editor,
+            bg=theme["btn_primary"], fg=theme["btn_primary_fg"], bd=1
+        )
+        self.edit_live_tags_button.pack(side="left")
+        self.edit_local_tags_button = tk.Button(
+            editor_actions, text="Edit app tags...", command=lambda: self._open_tag_editor(1),
+            bg=theme["btn_secondary"], fg=theme["fg_light"], bd=1
+        )
+        self.tag_editor = tk.Toplevel(self.winfo_toplevel())
+        self.tag_editor.withdraw()
+        self.tag_editor.title("Edit selected sounds' tags")
+        self.tag_editor.configure(bg=theme["bg_dark"])
+        self.tag_editor.minsize(620, 560)
+        self.tag_editor.protocol("WM_DELETE_WINDOW", self.tag_editor.withdraw)
+        self.tag_editor.bind("<Escape>", lambda _event: self.tag_editor.withdraw())
         tk.Label(
-            selected, text="For multiple sounds, shows tags shared by all.",
-            bg=theme["bg_field"], fg=theme["fg_muted"], wraplength=275, anchor="w"
+            self.tag_editor, text="EDIT TAGS", bg=theme["bg_dark"], fg=theme["accent_neon"],
+            font=("Segoe UI", 12, "bold"), anchor="w"
+        ).pack(fill="x", padx=15, pady=(12, 4))
+        tk.Label(
+            self.tag_editor, textvariable=self.selected_asset_var, bg=theme["bg_dark"],
+            fg=theme["fg_light"], anchor="w", wraplength=570
+        ).pack(fill="x", padx=15)
+        tk.Label(
+            self.tag_editor, textvariable=self.selection_count_var,
+            bg=theme["bg_dark"], fg=theme["accent_gold"], anchor="w"
+        ).pack(fill="x", padx=15, pady=(0, 4))
+        tk.Label(
+            self.tag_editor,
+            text="Actions affect the current Library selection, including sounds on other pages. "
+                 "Changing the Library selection updates this editor.",
+            bg=theme["bg_dark"], fg=theme["fg_muted"], wraplength=570, justify="left"
+        ).pack(fill="x", padx=15, pady=(0, 8))
+        tk.Button(
+            self.tag_editor, text="Close editor", command=self.tag_editor.withdraw,
+            bg=theme["btn_secondary"], fg=theme["fg_light"], bd=1
+        ).pack(side="bottom", anchor="e", padx=15, pady=(0, 12))
+        self.tag_notebook = ttk.Notebook(self.tag_editor)
+        self.tag_notebook.pack(fill="both", expand=True, padx=10, pady=(0, 8))
+        live_panel = tk.Frame(self.tag_notebook, bg=theme["bg_field"])
+        local_panel = tk.Frame(self.tag_notebook, bg=theme["bg_field"])
+        self.tag_notebook.add(live_panel, text="Ableton Live tags")
+        self.tag_notebook.add(local_panel, text="App-only tags")
+        self.tag_notebook.hide(local_panel)
+        tk.Label(
+            live_panel, text="Shared with Ableton via .xmp sidecars; audio is unchanged. "
+                             "The list is cached: counts show how many selected sounds have each tag. "
+                             "Use Read tags from disk to refresh without saving.",
+            bg=theme["bg_field"], fg=theme["fg_muted"], justify="left",
+            wraplength=570, anchor="w"
+        ).pack(fill="x", padx=10, pady=(8, 6))
+        live_list_frame = tk.Frame(live_panel, bg=theme["bg_field"])
+        live_scroll = ttk.Scrollbar(live_list_frame, orient="vertical")
+        live_scroll.pack(side="right", fill="y")
+        self.live_tag_tree = ttk.Treeview(
+            live_list_frame, columns=("Tag", "Assigned"), show="headings",
+            selectmode="browse", height=3, yscrollcommand=live_scroll.set
+        )
+        self.live_tag_tree.heading("Tag", text="Assigned Live tag (group | tag | subtag)")
+        self.live_tag_tree.heading("Assigned", text="Selected sounds")
+        self.live_tag_tree.column("Tag", width=165, minwidth=80)
+        self.live_tag_tree.column("Assigned", width=120, minwidth=100, stretch=False)
+        self.live_tag_tree.pack(side="left", fill="both", expand=True)
+        live_scroll.configure(command=self.live_tag_tree.yview)
+        self.live_tag_tree.bind("<<TreeviewSelect>>", self._live_tag_selected)
+        live_entry_row = tk.Frame(live_panel, bg=theme["bg_field"])
+        live_entry_row.columnconfigure(1, weight=1)
+        tk.Label(
+            live_entry_row, text="Group", bg=theme["bg_field"], fg=theme["fg_light"]
+        ).grid(row=0, column=0, sticky="w", padx=(0, 10), pady=3)
+        self.live_group_entry = ttk.Combobox(
+            live_entry_row, textvariable=self.live_group_var, values=ableton_tags.TAG_GROUPS, width=10,
+            postcommand=self._load_live_tag_suggestions
+        )
+        self.live_group_entry.grid(row=0, column=1, sticky="ew", pady=3)
+        tk.Label(
+            live_entry_row, text="Tag / subtag", bg=theme["bg_field"], fg=theme["fg_light"]
+        ).grid(row=1, column=0, sticky="w", padx=(0, 10), pady=3)
+        self.live_tag_entry = ttk.Combobox(
+            live_entry_row, textvariable=self.live_tag_var, width=12,
+            postcommand=self._load_live_tag_suggestions
+        )
+        self.live_tag_entry.grid(row=1, column=1, sticky="ew", pady=3)
+        tk.Label(
+            live_entry_row, text="Example: Group = Genres, Tag = Ambient. "
+                                 "For a full hierarchy use Genres|Ambient|Drone (overrides Group). "
+                                 "Dropdowns are suggestions, not assignments.",
+            bg=theme["bg_field"], fg=theme["fg_muted"], wraplength=550, justify="left"
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=4)
+        tk.Label(
+            live_entry_row, textvariable=self.tag_suggestions_status,
+            bg=theme["bg_field"], fg=theme["accent_gold"], anchor="w"
+        ).grid(row=3, column=0, columnspan=2, sticky="w")
+        live_actions = tk.Frame(live_panel, bg=theme["bg_field"])
+        self.live_apply_button = tk.Button(
+            live_actions, text="Save tag to selected...", command=lambda: self._apply_inline_live_tag("add"),
+            bg=theme["btn_primary"], fg=theme["btn_primary_fg"], bd=1
+        )
+        self.live_apply_button.pack(side="left")
+        self.live_remove_button = tk.Button(
+            live_actions, text="Remove from selected...", command=lambda: self._apply_inline_live_tag("remove"),
+            bg=theme["btn_danger"], fg="white", bd=1
+        )
+        self.live_remove_button.pack(side="left", padx=5)
+        self.live_batch_button = tk.Button(
+            live_actions, text="Batch review...", command=self._open_live_batch,
+            bg=theme["btn_secondary"], fg=theme["fg_light"], bd=1
+        )
+        self.live_batch_button.pack(side="right")
+        live_tools = tk.Frame(live_panel, bg=theme["bg_field"])
+        live_tools.pack(side="bottom", fill="x", padx=10, pady=8)
+        live_actions.pack(side="bottom", fill="x", padx=10)
+        live_entry_row.pack(side="bottom", fill="x", padx=10, pady=5)
+        live_list_frame.pack(fill="both", expand=True, padx=10)
+        self.live_refresh_button = tk.Button(
+            live_tools, text="Read tags from disk", command=self._refresh_selected_live_tags,
+            bg=theme["btn_secondary"], fg=theme["fg_light"], bd=1
+        )
+        self.live_refresh_button.pack(side="left")
+        tk.Button(
+            live_tools, text="Vocabulary source...", command=self._choose_live_vocabulary_database,
+            bg=theme["btn_secondary"], fg=theme["fg_light"], bd=1,
+        ).pack(side="left", padx=5)
+        self.live_tags_button = tk.Button(
+            live_tools, text="Rename assignments...", command=self._open_live_tags,
+            bg=theme["btn_secondary"], fg=theme["fg_light"], bd=1
+        )
+        self.live_tags_button.pack(side="right")
+        tk.Label(
+            local_panel, text="Stored only in this app; these do not appear in Ableton. "
+                              "The list shows tags shared by all selected sounds. "
+                              "Add / remove changes every selected sound immediately.",
+            bg=theme["bg_field"], fg=theme["fg_muted"], wraplength=570, anchor="w", justify="left"
+        ).pack(fill="x", padx=10, pady=(10, 4))
+        tk.Label(
+            local_panel, text="App-only tag", bg=theme["bg_field"], fg=theme["fg_light"], anchor="w"
         ).pack(fill="x", padx=10)
-        tag_entry_row = tk.Frame(selected, bg=theme["bg_field"])
+        tag_entry_row = tk.Frame(local_panel, bg=theme["bg_field"])
         tag_entry_row.pack(fill="x", padx=10, pady=6)
         self.personal_tag_entry = tk.Entry(
             tag_entry_row, textvariable=self.new_tag_var, width=18,
@@ -353,7 +640,7 @@ class TagsTab(ttk.Frame):
         )
         self.personal_tag_entry.pack(fill="x", expand=True)
         self.personal_tag_entry.bind("<Return>", lambda _event: self.bulk_add_tag())
-        tag_actions = tk.Frame(selected, bg=theme["bg_field"])
+        tag_actions = tk.Frame(local_panel, bg=theme["bg_field"])
         tag_actions.pack(fill="x", padx=10, pady=(0, 6))
         self.add_tag_button = tk.Button(
             tag_actions, text="Add tag", command=self.bulk_add_tag,
@@ -365,7 +652,7 @@ class TagsTab(ttk.Frame):
             bg=theme["btn_danger"], fg="white", bd=1
         )
         self.remove_tag_button.pack(side="left", padx=6)
-        personal_list_frame = tk.Frame(selected, bg=theme["bg_field"])
+        personal_list_frame = tk.Frame(local_panel, bg=theme["bg_field"])
         personal_list_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         personal_scroll = ttk.Scrollbar(personal_list_frame, orient="vertical")
         personal_scroll.pack(side="right", fill="y")
@@ -378,12 +665,21 @@ class TagsTab(ttk.Frame):
         self.personal_tag_list.pack(side="left", fill="both", expand=True)
         personal_scroll.configure(command=self.personal_tag_list.yview)
         self.personal_tag_list.bind("<<ListboxSelect>>", self._personal_tag_selected)
-        self.asset_tree.bind("<<TreeviewSelect>>", lambda _event: self._show_selected_asset())
+        self.asset_tree.bind("<<TreeviewSelect>>", self._page_selection_changed)
         self.asset_tree.bind("<Double-1>", lambda _event: self._open_asset_details())
         self.asset_tree.bind("<space>", self._shortcut_play_toggle)
         self.asset_tree.bind("<KeyPress-f>", self._shortcut_favorite)
         self.bind_all("<Control-f>", self._shortcut_focus_search, add="+")
+        self._refresh_saved_collections()
+        self._refresh_filter_chips()
         self._show_selected_asset()
+
+    def _open_tag_editor(self, tab=0):
+        self.tag_notebook.select(0)
+        self._load_live_tag_suggestions()
+        self._place_dialog(self.tag_editor, 700, 640)
+        self.tag_editor.deiconify()
+        self.tag_editor.lift()
 
     def _toggle_inspector(self):
         if self.inspector_visible_var.get():
@@ -397,6 +693,306 @@ class TagsTab(ttk.Frame):
         selection = self.personal_tag_list.curselection()
         if selection:
             self.new_tag_var.set(self.personal_tag_list.get(selection[0]))
+
+    def _live_tag_selected(self, _event=None):
+        selection = self.live_tag_tree.selection()
+        if selection:
+            self.live_tag_var.set(self.live_tag_tree.item(selection[0], "values")[0])
+            self.live_group_var.set(self.live_tag_var.get().split("|")[0])
+
+    def _load_live_tag_suggestions(self):
+        self._request_live_vocabulary()
+        scope = (gui_theme.USER_LIBRARY_PATH, self._tag_suggestions_revision)
+        if self._tag_suggestions_queue is not None or scope == self._tag_suggestions_scope:
+            return
+        results = queue.Queue()
+        self._tag_suggestions_queue = results
+        self.tag_suggestions_status.set("Loading tag choices in the background...")
+        def worker():
+            try:
+                tags = sorter_engine.list_indexed_tags(library_root=scope[0])
+                results.put(tuple(
+                    tag[len(ableton_tags.CACHE_PREFIX):] for tag, _count in tags
+                    if tag.startswith(ableton_tags.CACHE_PREFIX)
+                ))
+            except (OSError, ValueError, sorter_engine.sqlite3.Error) as error:
+                results.put(error)
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(30, lambda: self._finish_tag_suggestions(scope, results))
+
+    def _finish_tag_suggestions(self, scope, results):
+        try:
+            result = results.get_nowait()
+        except queue.Empty:
+            self.after(30, lambda: self._finish_tag_suggestions(scope, results))
+            return
+        self._tag_suggestions_queue = None
+        if scope != (gui_theme.USER_LIBRARY_PATH, self._tag_suggestions_revision):
+            self._load_live_tag_suggestions()
+            return
+        if isinstance(result, Exception):
+            self.tag_suggestions_status.set("Tag choices could not refresh; previous choices retained.")
+            self._set_status(f"Tag suggestions failed; previous suggestions retained: {result}")
+            messagebox.showerror("Live Tag Suggestions Failed", str(result), parent=self.tag_editor)
+            return
+        self._indexed_live_suggestions = result
+        self._tag_suggestions_scope = scope
+        self.tag_suggestions_status.set("")
+        self._update_tag_suggestion_choices()
+
+    def _update_tag_suggestion_choices(self):
+        hierarchies = sorted(set(self._live_vocabulary) | set(self._indexed_live_suggestions), key=str.casefold)
+        groups = sorted(set(ableton_tags.TAG_GROUPS) | {tag.split("|")[0] for tag in hierarchies})
+        self.live_tag_entry.configure(values=hierarchies)
+        self.live_group_entry.configure(values=groups)
+        if self._live_batch_dialog is not None:
+            self._live_batch_dialog.tag_entry.configure(values=hierarchies)
+            self._live_batch_dialog.group_entry.configure(values=groups)
+        if self._rename_suggestion_entries is not None:
+            tag_entry, group_entry = self._rename_suggestion_entries
+            if tag_entry.winfo_exists():
+                tag_entry.configure(values=hierarchies)
+                group_entry.configure(values=groups)
+            else:
+                self._rename_suggestion_entries = None
+
+    def _request_live_vocabulary(self):
+        if self._live_vocabulary_queue is not None:
+            return
+        if self._selected_vocabulary_database is not None:
+            database = self._selected_vocabulary_database
+        else:
+            databases = live_catalog.available_databases()
+            if len(databases) != 1:
+                if databases:
+                    self._set_status("Multiple Live databases found. Use Vocabulary source... in the tag editor to choose one.")
+                return
+            database = str(databases[0])
+        if database == self._live_vocabulary_database:
+            return
+        results = queue.Queue()
+        self._live_vocabulary_queue = results
+        self._set_status("Loading Live tag vocabulary in the background; no assignments are changed.")
+        def worker():
+            try:
+                results.put(live_catalog.read_vocabulary(database))
+            except (OSError, ValueError, live_catalog.sqlite3.Error) as error:
+                results.put(error)
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(30, lambda: self._finish_live_vocabulary(database, results))
+
+    def _finish_live_vocabulary(self, database, results):
+        try:
+            vocabulary = results.get_nowait()
+        except queue.Empty:
+            self.after(30, lambda: self._finish_live_vocabulary(database, results))
+            return
+        self._live_vocabulary_queue = None
+        if self._selected_vocabulary_database is not None and self._selected_vocabulary_database != database:
+            self._request_live_vocabulary()
+            return
+        if isinstance(vocabulary, Exception):
+            self._set_status(f"Live tag vocabulary failed to load; previous suggestions retained: {vocabulary}")
+            messagebox.showerror("Live Tag Vocabulary Failed", str(vocabulary), parent=self)
+            return
+        self._live_vocabulary = tuple(tag for tag in vocabulary if "|" in tag)
+        self._live_vocabulary_database = database
+        self._update_tag_suggestion_choices()
+        self._set_status(f"Loaded {len(self._live_vocabulary):,} Live tag suggestions; assignments unchanged.")
+
+    def _choose_live_vocabulary_database(self):
+        databases = live_catalog.available_databases()
+        selected = filedialog.askopenfilename(
+            parent=self.tag_editor, title="Choose Live tag vocabulary database (read only)",
+            initialdir=os.path.dirname(str(databases[0])) if databases else None,
+            filetypes=(("Live catalog database", "Live-files-*.db"), ("SQLite database", "*.db")),
+        )
+        if selected:
+            self._selected_vocabulary_database = selected
+            self._request_live_vocabulary()
+
+    def _apply_inline_live_tag(self, action):
+        if self._live_refresh_queue is not None or self._live_batch_dialog is not None:
+            return
+        try:
+            paths = tuple(self._selected_paths())
+            tag = ableton_tags.qualify_tag(self.live_tag_var.get(), self.live_group_var.get())
+        except ValueError as error:
+            messagebox.showerror("Live tags", str(error))
+            return
+        self._edit_live_tags(paths, tag, action)
+
+    def _refresh_selected_live_tags(self):
+        if self._metadata_queue is not None or self._live_refresh_queue is not None or self._live_batch_dialog is not None:
+            return
+        try:
+            paths = tuple(self._selected_paths())
+        except ValueError as error:
+            messagebox.showerror("Live tags", str(error))
+            return
+        results = queue.Queue()
+        self._live_refresh_queue = results
+        self._show_selected_asset()
+        self._set_status(f"Reading Live metadata for {len(paths):,} selected sounds...")
+        def worker():
+            try:
+                sorter_engine.refresh_live_tag_cache(paths)
+            except (OSError, ValueError, sorter_engine.sqlite3.Error) as error:
+                results.put(error)
+            else:
+                results.put(None)
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(30, self._finish_selected_live_refresh, len(paths))
+
+    def _finish_selected_live_refresh(self, count):
+        try:
+            error = self._live_refresh_queue.get_nowait()
+        except queue.Empty:
+            self.after(30, self._finish_selected_live_refresh, count)
+            return
+        self._live_refresh_queue = None
+        self._show_selected_asset()
+        if error is not None:
+            self._set_freshness(f"Selected refresh failed: {error}")
+            messagebox.showerror("Live Metadata Refresh Failed", str(error))
+            self._set_status("Live metadata refresh failed; cached assignments were not replaced.")
+            return
+        self._render_results(refresh_sidebar=True)
+        self._set_freshness(f"Selected metadata refreshed ({count:,} sounds); not a full-library check.")
+        self._set_status(f"Read Live metadata for {count:,} sounds. No sidecars or audio changed.")
+
+    def _show_live_tag_summary(self, paths, counts):
+        self.live_tag_tree.delete(*self.live_tag_tree.get_children())
+        for tag, count in sorted(counts.items()):
+            label = f"{count}/{len(paths)}" + (" all" if count == len(paths) else " some")
+            self.live_tag_tree.insert("", "end", values=(tag, label))
+
+    def _open_live_tags(self):
+        if self._live_batch_dialog is not None:
+            self._live_batch_dialog.lift()
+            return
+        try:
+            paths = self._selected_paths()
+            tags = sorted(set.intersection(*[
+                set(ableton_tags.sample_tags(path)) for path in paths
+            ]))
+        except (OSError, ValueError) as error:
+            messagebox.showerror("Live tags", str(error))
+            return
+        theme = gui_theme.THEME
+        dialog = tk.Toplevel(self)
+        dialog.title("Shared Ableton Live tags")
+        dialog.configure(bg=theme["bg_dark"])
+        dialog.minsize(580, 420)
+        self._place_dialog(dialog, 620, 480)
+        tk.Label(
+            dialog, text=f"Manual Live tags - {len(paths):,} selected sounds",
+            font=("Segoe UI", 12, "bold"), bg=theme["bg_dark"], fg=theme["fg_light"]
+        ).pack(anchor="w", padx=15, pady=(15, 8))
+        tk.Label(
+            dialog,
+            text="Writes Ableton .xmp sidecars, not audio or Live's database. "
+                 "Close Live while saving to avoid concurrent edits. Existing sidecars are backed up.\n"
+                 "Choose a group for plain names, or enter Group|Tag|Subtag explicitly. "
+                 "The list shows assignments shared by all selected sounds. "
+                 "Rename changes these samples only, not Live's global tag definition.",
+            wraplength=540, justify="left", bg=theme["bg_dark"], fg=theme["fg_muted"]
+        ).pack(fill="x", padx=15)
+        listing = tk.Listbox(
+            dialog, height=8, exportselection=False, bg=theme["bg_field"],
+            fg=theme["fg_light"], selectbackground=theme["tag_enabled"]
+        )
+        listing.pack(fill="both", expand=True, padx=15, pady=10)
+        for tag in tags:
+            listing.insert("end", tag)
+        value = tk.StringVar(dialog)
+        group = tk.StringVar(dialog, value=self.live_group_var.get())
+        def load_suggestions():
+            self._load_live_tag_suggestions()
+            group_entry.configure(values=self.live_group_entry.cget("values"))
+            entry.configure(values=self.live_tag_entry.cget("values"))
+        group_entry = ttk.Combobox(
+            dialog, textvariable=group, values=self.live_group_entry.cget("values"), postcommand=load_suggestions
+        )
+        group_entry.pack(fill="x", padx=15, pady=(0, 4))
+        entry = ttk.Combobox(
+            dialog, textvariable=value, values=self.live_tag_entry.cget("values"), postcommand=load_suggestions
+        )
+        entry.pack(fill="x", padx=15)
+        self._rename_suggestion_entries = (entry, group_entry)
+        self._load_live_tag_suggestions()
+        def select_tag(_event):
+            selection = listing.curselection()
+            if selection:
+                value.set(listing.get(selection[0]))
+                group.set(value.get().split("|")[0])
+        listing.bind("<<ListboxSelect>>", select_tag)
+        def apply(action):
+            replacement = None
+            if action == "rename":
+                result = ask_fields(dialog, "Rename assignment", "New Live tag hierarchy:", ["Tag"])
+                if not result:
+                    return
+                replacement = result[0]
+            try:
+                tag = ableton_tags.qualify_tag(value.get(), group.get())
+                if replacement is not None:
+                    replacement = ableton_tags.qualify_tag(replacement, group.get())
+            except ValueError as error:
+                messagebox.showerror("Live tags", str(error))
+                return
+            if self._edit_live_tags(paths, tag, action, replacement):
+                dialog.destroy()
+        actions = tk.Frame(dialog, bg=theme["bg_dark"])
+        actions.pack(fill="x", padx=15, pady=15)
+        for text, action in (("Add", "add"), ("Remove", "remove"), ("Rename", "rename")):
+            tk.Button(
+                actions, text=text, command=lambda action=action: apply(action),
+                bg=theme["btn_secondary"], fg=theme["fg_light"], bd=1
+            ).pack(side="left", padx=(0, 8))
+        tk.Button(
+            actions, text="Close", command=dialog.destroy,
+            bg=theme["btn_secondary"], fg=theme["fg_light"], bd=1
+        ).pack(side="right")
+        entry.focus_set()
+
+    def _edit_live_tags(self, paths, tag, action, replacement=None):
+        if self._metadata_queue is not None or self._live_refresh_queue is not None or self._live_batch_dialog is not None:
+            show_notice(self.winfo_toplevel(), "Live tags", "Finish the metadata refresh or close the batch editor first.")
+            return False
+        try:
+            operation = ableton_tags.TagOperation(
+                action, ableton_tags.normalize_tag(tag),
+                ableton_tags.normalize_tag(replacement) if replacement is not None else None,
+            )
+        except ValueError as error:
+            messagebox.showerror("Invalid Live tag action", str(error))
+            return False
+        dialog = LiveTagBatchDialog(self, tuple(paths))
+        self._live_batch_dialog = dialog
+        dialog.title("Review Live tag change")
+        dialog.operations.append(operation)
+        dialog.listing.insert(
+            "end", f"{action}: {operation.tag}"
+            + (f" -> {operation.replacement}" if operation.replacement else "")
+        )
+        dialog.review()
+        return True
+
+    def _open_live_batch(self):
+        if self._live_batch_dialog is not None:
+            self._live_batch_dialog.lift()
+            return
+        if self._metadata_queue is not None or self._live_refresh_queue is not None:
+            show_notice(self.winfo_toplevel(), "Batch Live tags", "Wait for the metadata refresh to finish.")
+            return
+        try:
+            paths = tuple(self._selected_paths())
+        except ValueError as error:
+            messagebox.showerror("Batch Live tags", str(error))
+            return
+        self._live_batch_dialog = LiveTagBatchDialog(self, paths)
+        self._show_selected_asset()
 
     def _tab_is_visible(self):
         try:
@@ -432,16 +1028,130 @@ class TagsTab(ttk.Frame):
         try:
             with open(self._saved_searches_file(), "r", encoding="utf-8") as handle:
                 data = json.load(handle)
-            return [item for item in data if isinstance(item, dict) and item.get("name")]
-        except (OSError, ValueError):
+            if not isinstance(data, list) or any(
+                not isinstance(item, dict)
+                or not isinstance(item.get("name"), str) or not item["name"].strip()
+                or any(not isinstance(item.get(key, ""), str) for key in ("text", "tag"))
+                or item.get("collection", "All sounds") not in (
+                    "All sounds", "Favorites", "Loops", "One-shots", "MIDI"
+                )
+                for item in data
+            ):
+                raise ValueError("Saved collections must contain named searches with valid filters.")
+            return data
+        except FileNotFoundError:
             return []
+        except (OSError, ValueError) as error:
+            messagebox.showerror("Saved collections", f"Could not load saved collections: {error}")
+            return None
 
     def _write_saved_searches(self, items):
+        temporary_path = None
         try:
-            with open(self._saved_searches_file(), "w", encoding="utf-8") as handle:
+            path = self._saved_searches_file()
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=os.path.dirname(path),
+                prefix="saved_searches-", suffix=".tmp", delete=False
+            ) as handle:
+                temporary_path = handle.name
                 json.dump(items, handle, indent=2)
-        except OSError:
-            show_notice(self.winfo_toplevel(), "Saved searches", "Could not save the list.", heading="Not saved")
+            os.replace(temporary_path, path)
+        except OSError as error:
+            messagebox.showerror("Saved collections", f"Could not save collections: {error}")
+            return False
+        finally:
+            if temporary_path and os.path.exists(temporary_path):
+                os.remove(temporary_path)
+        self._refresh_saved_collections()
+        return True
+
+    def _refresh_saved_collections(self):
+        items = self._load_saved_searches()
+        self._saved_collections = items if items is not None else []
+        self.saved_collection_list.delete(0, "end")
+        for item in self._saved_collections:
+            self.saved_collection_list.insert("end", item["name"])
+        if not self._saved_collections:
+            self.saved_collection_list.insert(
+                "end", "Could not load collections" if items is None else "No saved collections"
+            )
+        self._sync_saved_collection_selection()
+
+    def _sync_saved_collection_selection(self):
+        self.saved_collection_list.selection_clear(0, "end")
+        for index, item in enumerate(self._saved_collections):
+            if (
+                item.get("text", "") == self.search_var.get().strip()
+                and (item.get("collection") or "All sounds") == self._active_collection
+                and item.get("tag", "") == self.active_tag_filter
+            ):
+                self.saved_collection_list.selection_set(index)
+                break
+
+    def _saved_collection_selected(self, _event=None):
+        selection = self.saved_collection_list.curselection()
+        if selection and selection[0] < len(self._saved_collections):
+            self._apply_saved_search(self._saved_collections[selection[0]])
+
+    def _delete_selected_collection(self):
+        selection = self.saved_collection_list.curselection()
+        if selection and selection[0] < len(self._saved_collections):
+            self._delete_saved_search(self._saved_collections[selection[0]])
+        else:
+            show_notice(
+                self.winfo_toplevel(), "Saved collections",
+                "Select a saved collection to delete it. Your sounds and tags are not affected."
+            )
+
+    def _refresh_filter_chips(self):
+        for widget in self.filter_chips.winfo_children():
+            widget.destroy()
+        filters = []
+        if self.search_var.get().strip():
+            filters.append(("search", f"Search: {self.search_var.get().strip()}"))
+        if self._active_collection != "All sounds":
+            filters.append(("collection", f"Collection: {self._active_collection}"))
+        if self.active_tag_filter:
+            filters.append(("tag", f"Tag: {self.active_tag_filter}"))
+        theme = gui_theme.THEME
+        for column, (kind, label) in enumerate(filters):
+            label = label if len(label) <= 30 else label[:27] + "..."
+            tk.Button(
+                self.filter_chips, text=f"{label}  x",
+                command=lambda kind=kind: self._clear_filter(kind),
+                bg=theme["btn_secondary"], fg=theme["fg_light"], bd=1
+            ).grid(row=0, column=column, sticky="w", padx=(0, 5), pady=1)
+        if filters:
+            tk.Button(
+                self.filter_chips, text="Clear all", command=self._clear_all_filters,
+                bg=theme["btn_secondary"], fg=theme["fg_light"], bd=1
+            ).grid(row=0, column=len(filters), sticky="w", padx=3)
+        self._sync_saved_collection_selection()
+
+    def _clear_filter(self, kind):
+        if kind == "search":
+            self.search_var.set("")
+        elif kind == "collection":
+            self._active_collection = "All sounds"
+            self.favorites_only = False
+        elif kind == "tag":
+            self.active_tag_filter = ""
+        self._reload_filter_results()
+
+    def _clear_all_filters(self):
+        self.search_var.set("")
+        self._active_collection = "All sounds"
+        self.favorites_only = False
+        self.active_tag_filter = ""
+        self._reload_filter_results()
+
+    def _reload_filter_results(self):
+        self.stop_sound()
+        self._page_index = 0
+        self._rendered_tag_scope = None
+        self._tag_selection_generation = 0
+        self._safe_render_results()
+        self._request_sidebar_load(gui_theme.USER_LIBRARY_PATH)
 
     def _show_saved_searches_menu(self):
         theme = gui_theme.THEME
@@ -451,6 +1161,9 @@ class TagsTab(ttk.Frame):
         )
         menu.add_command(label="Save current search…", command=self._save_current_search)
         items = self._load_saved_searches()
+        if items is None:
+            menu.destroy()
+            return
         if items:
             menu.add_separator()
             for item in items:
@@ -480,6 +1193,111 @@ class TagsTab(ttk.Frame):
             parts.append(f"text '{item['text']}'")
         return ", ".join(parts) or "everything"
 
+    def _open_discovery_filters(self):
+        try:
+            tags = sorter_engine.list_indexed_tags(gui_theme.USER_LIBRARY_PATH)
+        except (OSError, ValueError, sorter_engine.sqlite3.Error) as error:
+            messagebox.showerror("Discovery filters", str(error))
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("Add discovery filters")
+        dialog.minsize(580, 490)
+        self._place_dialog(dialog, 640, 560)
+        theme = gui_theme.THEME
+        dialog.configure(bg=theme["bg_dark"])
+        ttk.Label(
+            dialog, text="Add constraints to the current search. Saved collections remember them.",
+            wraplength=540
+        ).pack(fill="x", padx=12, pady=10)
+        ttk.Label(
+            dialog, text="Choose tags (Ctrl/Shift for several). Live assignments appear first."
+        ).pack(anchor="w", padx=12)
+        tags = [
+            (tag, count) for tag, count in tags
+            if tag.startswith((ableton_tags.CACHE_PREFIX, "category:", "name:"))
+        ]
+        ordered = sorted(tags, key=lambda row: (
+            not row[0].startswith(ableton_tags.CACHE_PREFIX), row[0].casefold()
+        ))
+        frame = ttk.Frame(dialog)
+        frame.pack(fill="both", expand=True, padx=12, pady=5)
+        scroll = ttk.Scrollbar(frame)
+        scroll.pack(side="right", fill="y")
+        listing = tk.Listbox(
+            frame, selectmode="extended", exportselection=False, height=8,
+            yscrollcommand=scroll.set, bg=theme["bg_field"], fg=theme["fg_light"],
+            selectbackground=theme["tag_enabled"], selectforeground=theme["fg_light"],
+            highlightbackground=theme["border"], highlightcolor=theme["accent_neon"],
+            highlightthickness=1, bd=0, relief="flat", activestyle="dotbox",
+            font=("Segoe UI", 9)
+        )
+        listing.pack(fill="both", expand=True)
+        scroll.configure(command=listing.yview)
+        for tag, count in ordered:
+            listing.insert("end", f"{tag} ({count})")
+        mode = tk.StringVar(dialog, value="Match all")
+        ttk.Combobox(
+            dialog, textvariable=mode, state="readonly",
+            values=("Match all", "Match any", "Exclude selected")
+        ).pack(fill="x", padx=12, pady=4)
+        live_state = tk.StringVar(dialog, value="Any manual Live tags")
+        ttk.Combobox(
+            dialog, textvariable=live_state, state="readonly",
+            values=("Any manual Live tags", "No manual Live tags", "Has manual Live tags")
+        ).pack(fill="x", padx=12, pady=4)
+        ttk.Label(dialog, text="Missing Live group (optional; e.g. Character):").pack(anchor="w", padx=12)
+        group = tk.StringVar(dialog)
+        ttk.Combobox(
+            dialog, textvariable=group,
+            values=sorted({
+                tag[len(ableton_tags.CACHE_PREFIX):].split("|")[0]
+                for tag, _count in tags if tag.startswith(ableton_tags.CACHE_PREFIX)
+            })
+        ).pack(fill="x", padx=12, pady=4)
+        ttk.Label(
+            dialog, text="Manual Live filters use cached sidecar assignments, not automatic/factory "
+            "metadata. Rescan after external edits. Match-any tags form one OR set across the search.",
+            wraplength=540, justify="left"
+        ).pack(fill="x", padx=12, pady=6)
+        def apply():
+            if self._add_discovery_filters(
+                [ordered[index][0] for index in listing.curselection()],
+                mode.get(), live_state.get(), group.get()
+            ):
+                dialog.destroy()
+        ttk.Button(dialog, text="Add to search", command=apply).pack(side="right", padx=12, pady=12)
+        ttk.Button(dialog, text="Cancel", command=dialog.destroy).pack(side="left", padx=12, pady=12)
+
+    def _add_discovery_filters(self, tags, mode, live_state, group):
+        try:
+            if mode not in {"Match all", "Match any", "Exclude selected"}:
+                raise ValueError("Choose a supported tag matching mode.")
+            if live_state not in {"Any manual Live tags", "No manual Live tags", "Has manual Live tags"}:
+                raise ValueError("Choose a supported manual Live tag filter.")
+            tokens = []
+            prefix = {"Match all": "tag:", "Match any": "anytag:", "Exclude selected": "-tag:"}[mode]
+            for tag in tags:
+                if not tag or '"' in tag or any(ord(char) < 32 for char in tag):
+                    raise ValueError("This tag cannot be represented in search syntax.")
+                tokens.append(f'"{prefix}{tag}"')
+            if live_state != "Any manual Live tags":
+                tokens.append("live:none" if live_state == "No manual Live tags" else "live:tagged")
+            group = group.strip()
+            if group:
+                if "|" in group or '"' in group or any(ord(char) < 32 for char in group):
+                    raise ValueError("Enter one Live group name, not a hierarchy.")
+                tokens.append(f'"missing-group:{group}"')
+            if not tokens:
+                raise ValueError("Choose at least one discovery constraint.")
+            search = " ".join([self.search_var.get().strip(), *tokens]).strip()
+            sorter_engine._discovery_clauses(sorter_engine._parse_asset_search(search))
+        except ValueError as error:
+            messagebox.showerror("Discovery filters", str(error))
+            return False
+        self.search_var.set(search)
+        self._reload_filter_results()
+        return True
+
     def _save_current_search(self):
         item = {
             "text": self.search_var.get().strip(),
@@ -500,11 +1318,15 @@ class TagsTab(ttk.Frame):
         if not result or not result[0].strip():
             return
         item["name"] = result[0].strip()
-        items = [i for i in self._load_saved_searches() if i["name"].lower() != item["name"].lower()]
+        existing = self._load_saved_searches()
+        if existing is None:
+            return
+        items = [i for i in existing if i["name"].lower() != item["name"].lower()]
         items.append(item)
         self._write_saved_searches(items)
 
     def _apply_saved_search(self, item):
+        self.stop_sound()
         self.search_var.set(item.get("text", ""))
         self._active_collection = item.get("collection") or "All sounds"
         self.favorites_only = self._active_collection == "Favorites"
@@ -521,7 +1343,9 @@ class TagsTab(ttk.Frame):
             f"Delete '{item['name']}'? Your sounds and tags are not affected.", "Delete"
         ):
             return
-        self._write_saved_searches([i for i in self._load_saved_searches() if i["name"] != item["name"]])
+        items = self._load_saved_searches()
+        if items is not None:
+            self._write_saved_searches([i for i in items if i["name"] != item["name"]])
 
     def refresh(self):
         self._static_counts.clear()
@@ -534,6 +1358,7 @@ class TagsTab(ttk.Frame):
 
     def invalidate_library(self, _event=None):
         """Invalidates index-derived state and reloads now or on the next visit."""
+        self._clear_selection()
         self._sidebar_generation += 1
         self._static_counts.clear()
         self._cached_tags = []
@@ -545,15 +1370,100 @@ class TagsTab(ttk.Frame):
         if self._tab_is_visible():
             self.ensure_loaded()
 
+    def _set_freshness(self, text):
+        scan = self._last_full_scan or "not this session"
+        sync = self._last_metadata_sync or "not this session"
+        self.freshness_var.set(f"{text}\nFull scan: {scan} | Library Live-tag sync: {sync}")
+
+    def _monitor_toggled(self):
+        if self.monitor_live_var.get():
+            self._set_freshness("Live-tag monitoring enabled; waiting for a stable check.")
+        else:
+            self._set_freshness("Live-tag monitoring paused; external edits may not be reflected.")
+
+    def _poll_live_metadata(self):
+        self._metadata_after_id = None
+        if getattr(self.winfo_toplevel(), "_closing", False):
+            return
+        if not self.monitor_live_var.get() or not self._tab_is_visible():
+            self._metadata_after_id = self.after(5000, self._poll_live_metadata)
+            return
+        if self._refresh_running or self._live_refresh_queue is not None or self._live_batch_dialog is not None:
+            self._set_freshness("Live-tag monitoring paused during scan / selected refresh / batch editing.")
+            self._metadata_after_id = self.after(5000, self._poll_live_metadata)
+            return
+        root = gui_theme.USER_LIBRARY_PATH
+        if root != self._metadata_root:
+            self._metadata_baseline = None
+            self._metadata_candidate = None
+            self._metadata_root = root
+        results = queue.Queue()
+        self._metadata_queue = results
+        baseline, candidate = self._metadata_baseline, self._metadata_candidate
+        self._set_freshness("Checking manual Live sidecars in the background...")
+        self._show_selected_asset()
+        def worker():
+            try:
+                state, snapshot = live_tag_sync.poll_live_metadata(root, baseline, candidate)
+            except (OSError, ValueError, sorter_engine.sqlite3.Error) as error:
+                results.put((None, None, error))
+            else:
+                results.put((state, snapshot, None))
+        threading.Thread(target=worker, daemon=True).start()
+        self._metadata_after_id = self.after(30, self._finish_metadata_poll, root)
+
+    def _finish_metadata_poll(self, root):
+        self._metadata_after_id = None
+        try:
+            state, snapshot, error = self._metadata_queue.get_nowait()
+        except queue.Empty:
+            self._metadata_after_id = self.after(30, self._finish_metadata_poll, root)
+            return
+        self._metadata_queue = None
+        self._show_selected_asset()
+        if root != gui_theme.USER_LIBRARY_PATH:
+            self._metadata_baseline = None
+            self._metadata_candidate = None
+            self._set_freshness("Library location changed; waiting for a new metadata check.")
+        elif error is not None:
+            self._metadata_candidate = None
+            self._set_freshness(f"Live-tag sync failed; cached assignments retained: {error}")
+            self._set_status(f"Live-tag sync failed: {error}")
+        elif state == "pending":
+            self._metadata_candidate = snapshot
+            self._set_freshness("Live metadata differs / not yet checked; waiting for a stable second probe.")
+        else:
+            self._metadata_baseline = snapshot
+            self._metadata_candidate = None
+            self._last_metadata_sync = datetime.datetime.now().strftime("%H:%M:%S")
+            if state == "refreshed":
+                self._tag_suggestions_revision += 1
+                self._safe_render_results()
+                self._static_counts.clear()
+                self._request_sidebar_load(root)
+            self._set_freshness(
+                "Manual Live metadata checked. New / deleted audio still requires Rescan."
+                if self.monitor_live_var.get() else "Final metadata check finished; monitoring is paused."
+            )
+        self._metadata_after_id = self.after(5000, self._poll_live_metadata)
+
     def rescan_library(self):
+        if getattr(self.winfo_toplevel(), "_closing", False):
+            return
         if self._refresh_running:
+            return
+        if self._metadata_queue is not None or self._live_refresh_queue is not None or self._live_batch_dialog is not None:
+            show_notice(self.winfo_toplevel(), "Rescan library", "Finish the metadata refresh or close the batch editor first.")
             return
         library_root = gui_theme.USER_LIBRARY_PATH
         if not library_root or not os.path.isdir(library_root):
+            self._set_freshness("Library unavailable; cached results may be stale.")
+            messagebox.showerror("Rescan library", "The configured User Library is unavailable.")
             return
         self._refresh_running = True
         self.rescan_button.configure(state="disabled")
         self._set_status("Scanning the library for sounds...")
+        self._set_freshness("Scanning audio and manual Live metadata...")
         threading.Thread(
             target=self._discover_then_refresh, args=(library_root,), daemon=True
         ).start()
@@ -564,9 +1474,27 @@ class TagsTab(ttk.Frame):
         except (
             OSError, ValueError, KeyError, TypeError, sorter_engine.sqlite3.Error
         ) as error:
-            self.after(0, lambda error=error: self._finish_refresh(0, error))
+            self._library_work_results.put(("scan", 0, error, None))
             return
-        self.after(0, lambda: self._finish_refresh(discovered, None))
+        self._library_work_results.put(("scan", discovered, None, None))
+
+    def _finish_library_work(self):
+        try:
+            while True:
+                kind, result, error, generation = self._library_work_results.get_nowait()
+                if kind == "scan":
+                    self._finish_refresh(result, error)
+                else:
+                    self._finish_sidebar_load(result, error, generation)
+        except queue.Empty:
+            pass
+        self._library_work_after_id = self.after(30, self._finish_library_work)
+
+    def has_pending_library_work(self):
+        return (
+            self._refresh_running or self._sidebar_loading
+            or self._metadata_queue is not None or self._live_refresh_queue is not None
+        )
 
     def _request_sidebar_load(self, library_root):
         self._sidebar_generation += 1
@@ -603,13 +1531,9 @@ class TagsTab(ttk.Frame):
             OSError, ValueError, KeyError, TypeError, tk.TclError,
             sorter_engine.sqlite3.Error
         ) as error:
-            self.after(
-                0, lambda error=error: self._finish_sidebar_load(None, error, generation)
-            )
+            self._library_work_results.put(("sidebar", None, error, generation))
             return
-        self.after(
-            0, lambda: self._finish_sidebar_load(sidebar_data, None, generation)
-        )
+        self._library_work_results.put(("sidebar", sidebar_data, None, generation))
 
     def _finish_sidebar_load(self, sidebar_data, error, generation):
         self._sidebar_loading = False
@@ -710,9 +1634,14 @@ class TagsTab(ttk.Frame):
         self.__dict__.setdefault("_static_counts", {}).clear()
         self.filter_button.configure(state="normal")
         if error:
+            self._set_freshness(f"Scan failed; cached results may be stale: {error}")
             self._set_status(f"Refresh failed: {error}")
             messagebox.showerror("Refresh Failed", str(error))
             return
+        self._last_full_scan = datetime.datetime.now().strftime("%H:%M:%S")
+        self._metadata_baseline = None
+        self._metadata_candidate = None
+        self._set_freshness("Full scan complete; manual Live tags read.")
         self._set_status(
             f"Refresh complete. Found {discovered:,} sounds in the User Library."
         )
@@ -726,10 +1655,16 @@ class TagsTab(ttk.Frame):
         self._render_results(refresh_sidebar=sidebar_data is None)
 
     def _render_results(self, refresh_sidebar=False, load_sidebar=True):
-        selection = self.asset_tree.selection()
-        selected_paths = {
-            self._asset_paths[item] for item in selection if item in self._asset_paths
-        }
+        if refresh_sidebar:
+            self._tag_suggestions_revision += 1
+        self._refresh_filter_chips()
+        self._capture_page_selection()
+        scope = self._current_selection_scope()
+        if scope != self._selection_scope:
+            self._selection_paths.clear()
+            self._selection_revision += 1
+            self._selection_scope = scope
+        selected_paths = self._selection_paths
         library_root = gui_theme.USER_LIBRARY_PATH
         collection_queries = {
             "Loops": "type:loop",
@@ -780,8 +1715,9 @@ class TagsTab(ttk.Frame):
         has_next_page = len(records) > self._page_size
         records = records[:self._page_size]
         self.page_label.configure(
-            text=f"Showing {self._page_index * self._page_size + 1}-"
-            f"{self._page_index * self._page_size + len(records)}"
+            text=f"Page {self._page_index + 1}\n"
+            f"{self._page_index * self._page_size + 1:,}-"
+            f"{self._page_index * self._page_size + len(records):,}"
             if records else "No sounds on this page"
         )
         self._filtered_count = self._page_index * self._page_size + len(records)
@@ -856,22 +1792,98 @@ class TagsTab(ttk.Frame):
             label = f"{collection}  ({count:,})" if count is not None else collection
             self.collection_list.insert("end", label)
         self._set_collection_selection()
+        self._render_tag_browser(tags)
+
+    def _size_tag_navigation(self, event):
+        self.tag_browser_status.configure(wraplength=max(100, event.width))
+
+    def _explain_tag_sources(self):
+        show_notice(
+            self.winfo_toplevel(), "Library tag sources",
+            "Live manual tags: exact assignments read from Ableton Folder Info .xmp sidecars "
+            "for sounds inside the configured User Library. Groups come from those assignments "
+            "(for example Sounds or Character); empty groups and unused vocabulary are not listed.\n\n"
+            "Generated tags: category: and name: labels derived by the manager, not Live tags.\n\n"
+            "Live tag editor: dropdown suggestions can include Live's stored vocabulary, "
+            "including unused tags. Use Vocabulary source... to choose a database when more than "
+            "one is available. Suggestions do not assign tags or change manual-tag counts.\n\n"
+            "Ableton's automatic/factory tags, colored Collections, and its complete global tag "
+            "vocabulary are not imported by this sidecar workflow. Tags on external folders will "
+            "not appear unless the sounds are imported into the configured library.\n\n"
+            "Watch Live tags checks manual sidecars in the background while Library is visible. "
+            "Allow two stable probes; see the freshness line for pending checks or errors. "
+            "Rescan discovers new/deleted audio; Refresh selected rereads just those samples. "
+            "Group/source/Find controls browse the tag list only; "
+            "they do not change the sound selection or active sound filter."
+        )
+
+    def _schedule_tag_navigation(self, *_args):
+        if self._tag_browser_after_id is not None:
+            self.after_cancel(self._tag_browser_after_id)
+        self._tag_browser_after_id = self.after(100, self._tag_navigation_changed)
+
+    def _tag_navigation_changed(self, _event=None):
+        if self._tag_browser_after_id is not None:
+            self.after_cancel(self._tag_browser_after_id)
+            self._tag_browser_after_id = None
+        self._render_tag_browser(self._cached_tags)
+
+    def _render_tag_browser(self, tags):
         if self._tag_render_after_id is not None:
             self.after_cancel(self._tag_render_after_id)
             self._tag_render_after_id = None
         self.tag_list.delete(0, "end")
         self._tag_render_generation += 1
-        if not tags:
+        groups = sorted({
+            tag[len(ableton_tags.CACHE_PREFIX):].split("|")[0]
+            for tag, _count in tags if tag.startswith(ableton_tags.CACHE_PREFIX)
+        })
+        self.tag_group_picker.configure(values=("All groups", *groups))
+        if self.tag_group_var.get() not in ("All groups", *groups):
+            self.tag_group_var.set("All groups")
+        self.tag_group_picker.configure(
+            state="readonly" if self.tag_source_var.get() in ("All tags", "Live manual tags") else "disabled"
+        )
+        source = self.tag_source_var.get()
+        group = self.tag_group_var.get()
+        search = self.tag_search_var.get().strip().casefold()
+        rows = []
+        for tag, count in tags:
+            if tag.startswith(ableton_tags.CACHE_PREFIX):
+                kind = "Live manual tags"
+                label = tag[len(ableton_tags.CACHE_PREFIX):]
+                rank = 0
+            elif tag.startswith(("category:", "name:")):
+                kind, label, rank = "Generated tags", tag, 2
+            else:
+                continue
+            if source != "All tags" and source != kind:
+                continue
+            if source in ("All tags", "Live manual tags") and group != "All groups":
+                if kind != "Live manual tags" or label.split("|")[0] != group:
+                    continue
+            if search and search not in label.casefold():
+                continue
+            display = f"Live: {label}" if kind == "Live manual tags" else label
+            rows.append((rank, label.casefold(), tag, count, display))
+        rows.sort(key=lambda row: (row[0], row[1], row[2]))
+        self._tag_browser_rows = [(tag, count, display) for _rank, _label, tag, count, display in rows]
+        live_count = sum(tag.startswith(ableton_tags.CACHE_PREFIX) for tag, _count in tags)
+        self.tag_browser_status.configure(
+            text=f"{len(rows):,} tags; {live_count:,} manual Live.\n"
+            + ("No manual Live assignments in these results." if not live_count else "Counts follow search / collection.")
+        )
+        if not rows:
             self.tag_list.insert("end", NO_TAGS_LABEL)
             return
-        self._insert_tag_batch(tags, 0, self._tag_render_generation)
+        self._insert_tag_batch(self._tag_browser_rows, 0, self._tag_render_generation)
 
     def _insert_tag_batch(self, tags, start, generation):
         if generation != self._tag_render_generation:
             return
         batch_end = min(start + 250, len(tags))
-        for tag, count in tags[start:batch_end]:
-            self.tag_list.insert("end", f"{tag}  ({count})")
+        for _tag, count, display in tags[start:batch_end]:
+            self.tag_list.insert("end", f"{display}  ({count})")
         if batch_end < len(tags):
             self._tag_render_after_id = self.after(
                 1, lambda: self._insert_tag_batch(
@@ -884,17 +1896,11 @@ class TagsTab(ttk.Frame):
             self._tag_selection_generation != generation
             and not self.tag_list.curselection()
         ):
-            for index, (tag, _count) in enumerate(tags):
+            for index, (tag, _count, _display) in enumerate(tags):
                 if tag.lower() == self.active_tag_filter.lower():
                     self.tag_list.selection_set(index)
                     self.tag_list.see(index)
                     break
-
-    def _stop_tag_batch_render(self, _event):
-        self._tag_render_generation += 1
-        if self._tag_render_after_id is not None:
-            self.after_cancel(self._tag_render_after_id)
-            self._tag_render_after_id = None
 
     def _tag_released(self, event):
         index = self.tag_list.nearest(event.y)
@@ -909,8 +1915,11 @@ class TagsTab(ttk.Frame):
             self.tag_list.selection_set(index)
         finally:
             self._updating_browser_filters = False
-        value = self.tag_list.get(index)
-        self._apply_tag_filter(value)
+        self._apply_browser_tag_index(index)
+
+    def _apply_browser_tag_index(self, index):
+        if index < len(self._tag_browser_rows):
+            self._apply_tag_filter(self._tag_browser_rows[index][0], exact=True)
 
     def _set_collection_selection(self):
         was_updating = self._updating_browser_filters
@@ -958,11 +1967,11 @@ class TagsTab(ttk.Frame):
             return
         if self.tag_list.get(selection[0]) == NO_TAGS_LABEL:
             return
-        self._apply_tag_filter(self.tag_list.get(selection[0]))
+        self._apply_browser_tag_index(selection[0])
 
-    def _apply_tag_filter(self, value):
+    def _apply_tag_filter(self, value, exact=False):
         self.stop_sound()
-        self.active_tag_filter = value.rsplit("  (", 1)[0]
+        self.active_tag_filter = value if exact else value.rsplit("  (", 1)[0]
         self.favorites_only = self._active_collection == "Favorites"
         self._page_index = 0
         self._tag_selection_generation = getattr(
@@ -1004,13 +2013,18 @@ class TagsTab(ttk.Frame):
                 fg=gui_theme.THEME["accent_gold"]
             )
 
-    def _show_selected_asset(self):
-        paths = [
-            self._asset_paths[item] for item in self.asset_tree.selection()
-            if item in self._asset_paths
-        ]
+    def _show_selected_asset(self, selection_summary=None):
+        paths = sorted(self._selection_paths)
+        self.assigned_tags_text.configure(state="normal")
+        self.assigned_tags_text.delete("1.0", "end")
+        self.assigned_tags_text.insert(
+            "end", "Loading assigned tags..." if paths else "Select sounds to see their assigned tags."
+        )
+        self.assigned_tags_text.configure(state="disabled")
+        off_page = len(self._selection_paths - set(self._asset_paths.values()))
         self.selection_count_var.set(
             f"{len(paths):,} sound{'s' if len(paths) != 1 else ''} selected"
+            + (f" ({off_page:,} off page)" if off_page else "")
             if paths else "No sounds selected"
         )
         self.personal_tag_list.delete(0, "end")
@@ -1020,6 +2034,88 @@ class TagsTab(ttk.Frame):
             self.remove_tag_button, self.personal_tag_entry
         ):
             control.configure(state=state)
+        live_state = (
+            "normal" if paths and self._live_refresh_queue is None and self._metadata_queue is None
+            and self._live_batch_dialog is None else "disabled"
+        )
+        for control in (
+            self.live_tags_button, self.live_apply_button, self.live_remove_button,
+            self.live_refresh_button, self.live_tag_entry, self.live_batch_button,
+            self.live_group_entry, self.edit_live_tags_button, self.edit_local_tags_button
+        ):
+            control.configure(state=live_state)
+        try:
+            if selection_summary is None and len(paths) > 500:
+                self.selected_asset_var.set(f"{len(paths):,} sounds selected")
+                self.selected_tags_var.set("Loading selection tags in the background. You can clear or change selection.")
+                self.live_tag_tree.delete(*self.live_tag_tree.get_children())
+                for control in (
+                    self.favorite_button, self.unfavorite_button, self.add_tag_button,
+                    self.remove_tag_button, self.personal_tag_entry, self.live_tags_button,
+                    self.live_apply_button, self.live_remove_button, self.live_refresh_button,
+                    self.live_tag_entry, self.live_batch_button, self.play_button, self.autoplay_check,
+                    self.live_group_entry, self.edit_live_tags_button, self.edit_local_tags_button
+                ):
+                    control.configure(state="disabled")
+                self.stop_sound()
+                self._waveform_generation += 1
+                self.waveform_canvas.delete("all")
+                if self._selection_summary_queue is None:
+                    results = queue.Queue()
+                    self._selection_summary_queue = results
+                    revision = self._selection_revision
+                    scope = self._current_selection_scope()
+                    def worker():
+                        try:
+                            result = sorter_engine.summarize_asset_selection(paths)
+                        except (OSError, ValueError, sorter_engine.sqlite3.Error) as error:
+                            results.put(error)
+                        else:
+                            results.put(result)
+                    threading.Thread(target=worker, daemon=True).start()
+                    self.after(30, self._finish_selection_summary, paths, revision, scope)
+                return
+            if isinstance(selection_summary, Exception):
+                raise selection_summary
+            summary = selection_summary if selection_summary is not None else sorter_engine.summarize_asset_selection(paths)
+            self._show_live_tag_summary(paths, summary["live_counts"])
+            lines = []
+            for label, counts in (
+                ("Generated (search / classification)", summary["generated_counts"]),
+                ("Manual Live (shared with Ableton)", summary["live_counts"]),
+            ):
+                lines.append(label)
+                lines.extend(
+                    f"{' > '.join(tag.split('|'))}"
+                    + (f" ({count:,}/{len(paths):,})" if len(paths) > 1 else "")
+                    for tag, count in sorted(counts.items())
+                )
+                if not counts:
+                    lines.append("None")
+                lines.append("")
+            self.assigned_tags_text.configure(state="normal")
+            self.assigned_tags_text.delete("1.0", "end")
+            self.assigned_tags_text.insert(
+                "end", "\n".join(lines) if paths else "Select sounds to see their assigned tags."
+            )
+            self.assigned_tags_text.configure(state="disabled")
+        except (OSError, ValueError, sorter_engine.sqlite3.Error) as error:
+            self.live_tag_tree.delete(*self.live_tag_tree.get_children())
+            for control in (
+                self.live_apply_button, self.live_remove_button, self.live_tags_button,
+                self.add_tag_button, self.remove_tag_button, self.favorite_button,
+                self.unfavorite_button, self.play_button,
+                self.edit_live_tags_button, self.edit_local_tags_button
+            ):
+                control.configure(state="disabled")
+            self.selected_asset_var.set("Selection is out of date")
+            self.selected_tags_var.set("Clear selection or rescan the Library before editing.")
+            self.assigned_tags_text.configure(state="normal")
+            self.assigned_tags_text.delete("1.0", "end")
+            self.assigned_tags_text.insert("end", "Assignments unavailable: selection is out of date.")
+            self.assigned_tags_text.configure(state="disabled")
+            self._set_status(f"Live tag summary unavailable: {error}")
+            return
         self.play_button.configure(state="normal" if len(paths) == 1 else "disabled")
         self.autoplay_check.configure(state="disabled")
         self._waveform_generation += 1
@@ -1027,23 +2123,14 @@ class TagsTab(ttk.Frame):
         if not paths:
             self.selected_asset_var.set("No sound selected")
             self.selected_tags_var.set(
-                "Select a sound to audition it or edit tags. "
-                "Use Shift/Ctrl (Command on Mac) to select several sounds."
+                "Select a sound to inspect it.\n"
+                "Shift/Ctrl (Command on Mac): select several."
             )
             self.favorite_button.configure(text="Favorite selected")
             return
         if len(paths) > 1:
             self.stop_sound()
-            personal_tags = []
-            for path in paths:
-                record = sorter_engine.get_indexed_asset(path)
-                if record is None:
-                    self.selected_asset_var.set("Selection is out of date")
-                    self.selected_tags_var.set("Refresh the Library before editing this selection.")
-                    return
-                personal_tags.append(set(record["personal_tags"]))
-            shared_tags = set.intersection(*personal_tags)
-            for tag in sorted(shared_tags):
+            for tag in summary["shared_personal_tags"]:
                 self.personal_tag_list.insert("end", tag)
             self.selected_asset_var.set(f"{len(paths):,} sounds selected")
             self.selected_tags_var.set(
@@ -1062,12 +2149,9 @@ class TagsTab(ttk.Frame):
         self.selected_asset_var.set(record["filename"])
         for tag in record["personal_tags"]:
             self.personal_tag_list.insert("end", tag)
-        generated_tags = sorted(set(record["tags"]) - set(record["personal_tags"]))
         folder = os.path.relpath(os.path.dirname(path), gui_theme.USER_LIBRARY_PATH)
         self.selected_tags_var.set(
             f"Folder: {'User Library' if folder == '.' else folder}"
-            + ("\nGenerated tags: " + ", ".join(generated_tags[:6]) if generated_tags else "")
-            + (f" (+{len(generated_tags) - 6} more)" if len(generated_tags) > 6 else "")
         )
         self.favorite_button.configure(
             text="★ Favorite" if "favorite" in record["tags"] else "☆ Favorite"
@@ -1080,6 +2164,24 @@ class TagsTab(ttk.Frame):
                 self._play_sound(path)
             except (OSError, ValueError):
                 pass
+
+    def _finish_selection_summary(self, paths, revision, scope):
+        if self._selection_summary_queue is None:
+            return
+        try:
+            summary = self._selection_summary_queue.get_nowait()
+        except queue.Empty:
+            self.after(30, self._finish_selection_summary, paths, revision, scope)
+            return
+        self._selection_summary_queue = None
+        if (
+            revision != self._selection_revision
+            or scope != self._current_selection_scope()
+            or set(paths) != self._selection_paths
+        ):
+            self._show_selected_asset()
+            return
+        self._show_selected_asset(selection_summary=summary)
 
     def _draw_waveform(self, path):
         canvas = self.waveform_canvas
@@ -1130,11 +2232,8 @@ class TagsTab(ttk.Frame):
             record = sorter_engine.get_indexed_asset(path)
             if record is None:
                 raise ValueError("The selected sound is no longer indexed.")
-            if "favorite" in record["tags"]:
-                sorter_engine.remove_asset_tag(path, "favorite")
-            else:
-                sorter_engine.add_asset_tag(path, "favorite")
-            self._render_results(refresh_sidebar=True)
+            if not self._update_selected_tag("favorite", remove="favorite" in record["tags"]):
+                return
             if self.status_label_ref:
                 self.status_label_ref.config(
                     text=" Application Status: Favorite updated.",
@@ -1144,22 +2243,100 @@ class TagsTab(ttk.Frame):
             messagebox.showerror("Favorite Update Failed", str(error))
 
     def _selected_path(self):
-        selection = self.asset_tree.selection()
-        if not selection:
-            raise ValueError("Select an indexed asset first.")
-        if selection[0] not in self._asset_paths:
-            raise ValueError("Select an indexed sound first.")
-        return self._asset_paths[selection[0]]
+        paths = self._selected_paths()
+        if len(paths) != 1:
+            raise ValueError("Select exactly one sound for playback or details.")
+        return paths[0]
 
     def _selected_paths(self):
-        paths = [
-            self._asset_paths[item_id]
-            for item_id in self.asset_tree.selection()
-            if item_id in self._asset_paths
-        ]
+        self._capture_page_selection()
+        paths = sorted(self._selection_paths)
         if not paths:
             raise ValueError("Select at least one indexed sound.")
         return paths
+
+    def _current_selection_scope(self):
+        return (
+            gui_theme.USER_LIBRARY_PATH, self.search_var.get(),
+            self.active_tag_filter, self.favorites_only, self._active_collection
+        )
+
+    def _capture_page_selection(self):
+        visible = set(self._asset_paths.values())
+        selected = {
+            self._asset_paths[item] for item in self.asset_tree.selection()
+            if item in self._asset_paths
+        }
+        updated = (self._selection_paths - visible) | selected
+        if updated != self._selection_paths:
+            self._selection_paths = updated
+            self._selection_revision += 1
+
+    def _page_selection_changed(self, _event=None):
+        revision = self._selection_revision
+        self._capture_page_selection()
+        if revision != self._selection_revision:
+            self._show_selected_asset()
+
+    def _select_page(self):
+        items = tuple(self._asset_paths)
+        if set(self.asset_tree.selection()) == set(items):
+            return
+        self.asset_tree.selection_set(items)
+        self._page_selection_changed()
+
+    def _clear_selection(self):
+        self._selection_paths.clear()
+        self._selection_revision += 1
+        self.asset_tree.selection_remove(self.asset_tree.selection())
+        self._show_selected_asset()
+
+    def _select_all_matching(self):
+        if self._select_all_queue is not None:
+            return
+        self._capture_page_selection()
+        scope = self._current_selection_scope()
+        revision = self._selection_revision
+        root, search, tag, favorites, collection = scope
+        type_query = {"Loops": "type:loop", "One-shots": "type:one-shot", "MIDI": "type:midi"}
+        search = f"{search} {type_query.get(collection, '')}".strip()
+        results = queue.Queue()
+        self._select_all_queue = results
+        self._set_status("Capturing all matching sounds for selection...")
+        def worker():
+            try:
+                paths = sorter_engine.list_indexed_assets(
+                    search, tag, favorites, library_root=root, limit=-1, paths_only=True
+                )
+            except (OSError, ValueError, sorter_engine.sqlite3.Error) as error:
+                results.put((None, error))
+            else:
+                results.put((paths, None))
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(30, self._finish_select_all, scope, revision)
+
+    def _finish_select_all(self, scope, revision):
+        try:
+            paths, error = self._select_all_queue.get_nowait()
+        except queue.Empty:
+            self.after(30, self._finish_select_all, scope, revision)
+            return
+        self._select_all_queue = None
+        self._capture_page_selection()
+        if error is not None:
+            messagebox.showerror("Selection Failed", str(error))
+            return
+        if scope != self._current_selection_scope() or revision != self._selection_revision:
+            self._set_status("Select all cancelled because filters or selection changed.")
+            return
+        self._selection_scope = scope
+        self._selection_paths = set(paths)
+        self._selection_revision += 1
+        self.asset_tree.selection_set(tuple(
+            item for item, path in self._asset_paths.items() if path in self._selection_paths
+        ))
+        self._show_selected_asset()
+        self._set_status(f"Captured {len(paths):,} matching sounds. Changing filters clears selection.")
 
     def bulk_add_tag(self):
         try:
@@ -1186,12 +2363,22 @@ class TagsTab(ttk.Frame):
         normalized_tag = tag.strip().lower()
         if normalized_tag.startswith(("category:", "name:")):
             raise ValueError("Generated tags are read-only here. Enter a personal tag.")
+        off_page = len(set(paths) - set(self._asset_paths.values()))
+        if off_page and not ask_confirm(
+            self.winfo_toplevel(), "Update captured selection",
+            f"{'Remove' if remove else 'Apply'} local tag '{normalized_tag}' "
+            f"for {len(paths):,} selected sounds, including {off_page:,} off the current page.\n"
+            "This changes app-only tags, not Live sidecars.",
+            "Update selected"
+        ):
+            return False
         sorter_engine.bulk_update_asset_tags(paths, normalized_tag, remove=remove)
         self._render_results(refresh_sidebar=True)
         self._set_status(
             f"Tag '{normalized_tag}' {'removed from' if remove else 'applied to'} "
             f"{len(paths):,} sound{'s' if len(paths) != 1 else ''}."
         )
+        return True
 
     def play_selected_sound(self):
         try:
@@ -1310,13 +2497,28 @@ class TagsTab(ttk.Frame):
             bg=theme["bg_dark"], fg=theme["accent_neon"], anchor="w"
         ).pack(fill="x", padx=18, pady=(16, 8))
         details = f"Location: {record['path']}"
-        tk.Label(
-            dialog, text=details, font=("Segoe UI", 9), bg=theme["bg_field"],
-            fg=theme["fg_muted"], justify="left", anchor="nw", wraplength=570
-        ).pack(fill="both", expand=True, padx=18, pady=8)
+        if record["ableton_tags"]:
+            details += "\n\nLive tags (read-only):\n" + "\n".join(record["ableton_tags"])
+        routing_type, routing_folder = sorter_engine.resolve_routing_tags(record["personal_tags"])
+        details += "\n\nFolder advice (review only)\n" + tag_evidence.describe_library_evidence(
+            path, gui_theme.USER_LIBRARY_PATH, record["ableton_tags"], routing_type, routing_folder
+        )
+        details_frame = tk.Frame(dialog, bg=theme["bg_field"])
+        details_frame.pack(fill="both", expand=True, padx=18, pady=8)
+        details_scroll = ttk.Scrollbar(details_frame)
+        details_scroll.pack(side="right", fill="y")
+        self.sound_details_text = tk.Text(
+            details_frame, height=6, wrap="word", font=("Segoe UI", 9),
+            bg=theme["bg_field"], fg=theme["fg_light"], bd=0,
+            yscrollcommand=details_scroll.set
+        )
+        self.sound_details_text.pack(fill="both", expand=True)
+        details_scroll.configure(command=self.sound_details_text.yview)
+        self.sound_details_text.insert("1.0", details)
+        self.sound_details_text.configure(state="disabled")
 
         tk.Label(
-            dialog, text="Tags — click a button to enable or disable it for this sound:",
+            dialog, text="Generated search tags — click to enable or disable:",
             font=("Segoe UI", 9, "bold"), bg=theme["bg_dark"],
             fg=theme["fg_light"], anchor="w"
         ).pack(fill="x", padx=18, pady=(2, 4))
@@ -1324,7 +2526,7 @@ class TagsTab(ttk.Frame):
         tag_buttons.pack(fill="x", padx=18, pady=(0, 10))
         all_tags = sorted(
             tag for tag in set(record["tags"]) | set(record.get("disabled_tags", []))
-            if not tag.startswith("category:")
+            if tag.startswith("name:")
         )
         tag_states = {tag: tag in record["tags"] for tag in all_tags}
         tag_button_refs = {}
@@ -1354,25 +2556,6 @@ class TagsTab(ttk.Frame):
                 tag_buttons, text="No tags yet", font=("Segoe UI", 8, "italic"),
                 bg=theme["bg_dark"], fg=theme["fg_muted"]
             ).pack(anchor="w")
-
-        tag_row = tk.Frame(dialog, bg=theme["bg_dark"])
-        tag_row.pack(fill="x", padx=18, pady=(0, 16))
-        tk.Label(tag_row, text="Personal tag:", bg=theme["bg_dark"], fg=theme["fg_light"]).pack(side="left")
-        entry = tk.Entry(tag_row, textvariable=self.new_tag_var, width=24, bg=theme["bg_field"], fg=theme["fg_light"], insertbackground=theme["fg_light"])
-        entry.pack(side="left", padx=6)
-        tk.Button(
-            tag_row, text="Add tag", command=self.add_tag,
-            bg=theme["btn_primary"], fg=theme["btn_primary_fg"],
-            activebackground=theme["btn_primary_hover"],
-            activeforeground=theme["btn_primary_fg"], bd=0
-        ).pack(side="left", padx=4)
-        tk.Button(
-            tag_row, text="Remove tag", command=self.remove_tag,
-            bg=theme["btn_danger"], fg="white",
-            activebackground=theme["btn_danger_hover"],
-            activeforeground="white", bd=1
-        ).pack(side="left", padx=4)
-        entry.focus_set()
 
     def _place_dialog(self, dialog, width, height):
         """Centers a child window over the main app and keeps it on-screen."""

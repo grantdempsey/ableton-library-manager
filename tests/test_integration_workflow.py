@@ -3,8 +3,10 @@ import os
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 import sorter_engine
+import ableton_tags
 
 
 class ImmediateWindow:
@@ -123,6 +125,101 @@ class LibraryWorkflowIntegrationTests(unittest.TestCase):
         self.assertEqual([], sorter.operation_errors)
         self.assertEqual(0, sorter_engine.count_indexed_assets(library))
         self.assertEqual([], sorter_engine.get_asset_tags(path))
+
+    def test_move_then_undo_preserves_live_tags_and_cache(self):
+        source = os.path.join(self.temp_dir.name, "incoming")
+        destination = os.path.join(self.temp_dir.name, "library")
+        os.makedirs(source)
+        path = os.path.join(source, "heavy_kick.wav")
+        with open(path, "wb") as handle:
+            handle.write(b"sample")
+        ableton_tags.prepare_edit([path], "Sounds|Kick|Shared").commit()
+        sorter_engine.index_existing_library(source)
+
+        sorter, (stats, _mode) = self._run_sorter(source, destination, copy_mode=False)
+        moved = os.path.join(destination, "Samples", "One-Shots", "Kicks", "heavy_kick.wav")
+        self.assertEqual(0, stats["Errors/Skipped Files"])
+        self.assertEqual([], sorter.operation_errors)
+        self.assertEqual(["Sounds|Kick|Shared"], ableton_tags.sample_tags(moved))
+        self.assertEqual([], ableton_tags.sample_tags(path))
+        self.assertEqual(
+            ["Sounds|Kick|Shared"], sorter_engine.get_indexed_asset(moved)["ableton_tags"]
+        )
+        result = sorter_engine.undo_move_log(sorter.move_log_path)
+        self.assertEqual(1, result["restored"])
+        self.assertEqual([], result["errors"])
+        self.assertEqual(["Sounds|Kick|Shared"], ableton_tags.sample_tags(path))
+        self.assertEqual([], ableton_tags.sample_tags(moved))
+        self.assertEqual(
+            ["Sounds|Kick|Shared"], sorter_engine.get_indexed_asset(path)["ableton_tags"]
+        )
+        record = sorter_engine.get_indexed_asset(path)
+        self.assertEqual(os.path.basename(path), record["filename"])
+        self.assertEqual(os.path.dirname(path), record["destination"])
+
+    def test_undo_reports_cache_failure_without_partial_index_update(self):
+        source = os.path.join(self.temp_dir.name, "incoming")
+        destination = os.path.join(self.temp_dir.name, "library")
+        os.makedirs(source)
+        path = os.path.join(source, "heavy_kick.wav")
+        with open(path, "wb") as handle:
+            handle.write(b"sample")
+        ableton_tags.prepare_edit([path], "Sounds|Shared").commit()
+        sorter, (_stats, _mode) = self._run_sorter(source, destination, copy_mode=False)
+        moved = os.path.join(destination, "Samples", "One-Shots", "Kicks", "heavy_kick.wav")
+        with mock.patch.object(sorter_engine, "_cache_ableton_tags", side_effect=ValueError("bad metadata")):
+            result = sorter_engine.undo_move_log(sorter.move_log_path)
+        self.assertEqual(1, result["restored"])
+        self.assertIn("File restored but index update failed", result["errors"][0])
+        self.assertTrue(os.path.isfile(path))
+        self.assertEqual(["Sounds|Shared"], ableton_tags.sample_tags(path))
+        self.assertIsNone(sorter_engine.get_indexed_asset(path))
+        self.assertIsNotNone(sorter_engine.get_indexed_asset(moved))
+        self.assertTrue(os.path.isfile(sorter.move_log_path))
+
+    def test_copy_and_duplicate_merge_preserve_live_tags(self):
+        source = os.path.join(self.temp_dir.name, "incoming")
+        destination = os.path.join(self.temp_dir.name, "library")
+        os.makedirs(source)
+        path = os.path.join(source, "heavy_kick.wav")
+        with open(path, "wb") as handle:
+            handle.write(b"sample")
+        ableton_tags.prepare_edit([path], "Sounds|Source").commit()
+        _sorter, (stats, _mode) = self._run_sorter(source, destination, copy_mode=True)
+        copied = os.path.join(destination, "Samples", "One-Shots", "Kicks", "heavy_kick.wav")
+        self.assertEqual(0, stats["Errors/Skipped Files"])
+        self.assertEqual(["Sounds|Source"], ableton_tags.sample_tags(path))
+        self.assertEqual(["Sounds|Source"], ableton_tags.sample_tags(copied))
+        ableton_tags.prepare_edit([copied], "Character|Destination").commit()
+        sorter, (stats, _mode) = self._run_sorter(source, destination, copy_mode=False)
+        self.assertEqual(0, stats["Errors/Skipped Files"])
+        self.assertFalse(os.path.exists(path))
+        self.assertEqual(
+            ["Character|Destination", "Sounds|Source"], ableton_tags.sample_tags(copied)
+        )
+        self.assertEqual(
+            ["Character|Destination", "Sounds|Source"],
+            sorter_engine.get_indexed_asset(copied)["ableton_tags"]
+        )
+        self.assertEqual([], sorter.operation_errors)
+
+    def test_repair_preserves_live_tags_and_index(self):
+        source = os.path.join(self.temp_dir.name, "library", "Samples", "Samples")
+        destination = os.path.join(self.temp_dir.name, "library", "Samples")
+        os.makedirs(source)
+        path = os.path.join(source, "heavy_kick.wav")
+        target = os.path.join(destination, "heavy_kick.wav")
+        with open(path, "wb") as handle:
+            handle.write(b"sample")
+        ableton_tags.prepare_edit([path], "Sounds|Kick").commit()
+        sorter_engine.index_existing_library(source)
+        result = sorter_engine.repair_nested_folder_files([
+            {"source": path, "destination": target}
+        ])
+        self.assertEqual({"moved": 1, "skipped": 0, "errors": []}, result)
+        self.assertEqual(["Sounds|Kick"], ableton_tags.sample_tags(target))
+        self.assertEqual(["Sounds|Kick"], sorter_engine.get_indexed_asset(target)["ableton_tags"])
+        self.assertIsNone(sorter_engine.get_indexed_asset(path))
 
 
 if __name__ == "__main__":

@@ -1,12 +1,13 @@
 import os
 import re
-import threading
+import sqlite3
 import tkinter as tk
 from tkinter import filedialog
+from tkinter.scrolledtext import ScrolledText
 
 import gui_theme
 import xo_filter
-from tab_matrix import _center_over, show_notice
+from tab_matrix import _center_over, show_notice, messagebox
 
 DEFAULT_DEST = r"C:\XO Samples for Filters"
 
@@ -19,7 +20,7 @@ def _clean_name(name):
     return re.sub(r'[<>:"/\\|?*]', "", name).strip().strip(".")
 
 
-def open_type_editor(win, anchor, library, on_change, auto_find=False, include_loops=False):
+def open_type_editor(win, anchor, library, on_change, auto_find=False, include_loops=False, *, use_live_tags=False):
     """Lets the user add folders, add keywords to any folder, or learn new folders from the library."""
     theme = gui_theme.THEME
     editor = tk.Toplevel(win)
@@ -172,7 +173,12 @@ def open_type_editor(win, anchor, library, on_change, auto_find=False, include_l
         with_loops = editor_loops.get()
 
         def work():
-            result["value"] = xo_filter.suggest_types(library, include_loops=with_loops)
+            try:
+                result["value"] = xo_filter.suggest_types(
+                    library, include_loops=with_loops, use_live_tags=use_live_tags
+                )
+            except (OSError, ValueError, sqlite3.Error) as error:
+                result["error"] = str(error)
 
         def poll():
             try:
@@ -185,6 +191,12 @@ def open_type_editor(win, anchor, library, on_change, auto_find=False, include_l
                 return
             state["busy"] = False
             find_button.config(state="normal", text="Find suggestions")
+            if "error" in result:
+                state["suggestions"] = []
+                suggestion_list.delete(0, "end")
+                suggestion_list.insert("end", "Suggestion scan failed; retry after resolving the error.")
+                messagebox.showerror("XO suggestion scan failed", result["error"], parent=editor)
+                return
             state["suggestions"] = result["value"][:40]
             suggestion_list.delete(0, "end")
             for item in state["suggestions"]:
@@ -194,8 +206,9 @@ def open_type_editor(win, anchor, library, on_change, auto_find=False, include_l
             if not state["suggestions"]:
                 suggestion_list.insert("end", "Nothing new found; your folders already cover your library.")
 
-        thread = threading.Thread(target=work, daemon=True)
-        thread.start()
+        thread = gui_theme.start_background_job(editor, work)
+        if thread is None:
+            return
         editor.after(150, poll)
 
     def use_suggestion(_event=None):
@@ -233,7 +246,9 @@ def open_xo_builder(anchor):
     win.title("Build XO filter folder")
     win.configure(bg=theme["bg_dark"])
     win.transient(anchor.winfo_toplevel())
-    win.resizable(False, False)
+    win.resizable(True, True)
+    win.geometry("700x680")
+    win.minsize(640, 580)
     state = {"plan": None, "busy": False, "cancel": False, "vars": {}}
 
     def label(text, font=("Segoe UI", 9), fg=None, **pack):
@@ -279,14 +294,36 @@ def open_xo_builder(anchor):
     refresh_notes()
 
     loops_var = tk.BooleanVar(value=False)
-    tk.Checkbutton(win, text="Include loops (XO works best with one-shots)", variable=loops_var,
+    loops_check = tk.Checkbutton(win, text="Include loops (XO works best with one-shots)", variable=loops_var,
                    bg=theme["bg_dark"], fg=theme["fg_light"], selectcolor=theme["bg_field"],
                    activebackground=theme["bg_dark"], activeforeground=theme["fg_light"],
-                   font=("Segoe UI", 9)).pack(anchor="w", padx=18, pady=(8, 0))
+                   font=("Segoe UI", 9))
+    loops_check.pack(anchor="w", padx=18, pady=(8, 0))
+    live_var = tk.BooleanVar(value=False)
+    live_check = tk.Checkbutton(
+        win, text="Use manual Live sound types (opt-in; conflicts are skipped)", variable=live_var,
+        bg=theme["bg_dark"], fg=theme["fg_light"], selectcolor=theme["bg_field"],
+        activebackground=theme["bg_dark"], activeforeground=theme["fg_light"], font=("Segoe UI", 9)
+    )
+    live_check.pack(anchor="w", padx=18)
 
     status = label("Click Scan to see what will be created.", fg=theme["fg_light"], pady=(8, 4))
-    types_frame = tk.Frame(win, bg=theme["bg_field"])
-    types_frame.pack(fill="x", padx=20)
+    type_area = tk.Frame(win, bg=theme["bg_field"])
+    type_area.pack(fill="both", expand=True, padx=20)
+    type_scroll = tk.Scrollbar(type_area, orient="vertical")
+    type_scroll.pack(side="right", fill="y")
+    type_canvas = tk.Canvas(
+        type_area, height=170, bg=theme["bg_field"], highlightthickness=0,
+        yscrollcommand=type_scroll.set
+    )
+    type_canvas.pack(side="left", fill="both", expand=True)
+    type_scroll.configure(command=type_canvas.yview)
+    types_frame = tk.Frame(type_canvas, bg=theme["bg_field"])
+    type_window = type_canvas.create_window((0, 0), window=types_frame, anchor="nw")
+    types_frame.bind("<Configure>", lambda _event: type_canvas.configure(scrollregion=type_canvas.bbox("all")))
+    type_canvas.bind("<Configure>", lambda event: type_canvas.itemconfigure(type_window, width=event.width))
+    for column in (0, 1):
+        types_frame.columnconfigure(column, weight=1)
 
     buttons = tk.Frame(win, bg=theme["bg_dark"])
     buttons.pack(fill="x", padx=20, pady=(12, 16))
@@ -313,12 +350,45 @@ def open_xo_builder(anchor):
 
     loops_var.trace_add("write", lambda *_: folders_changed()
                         if state["plan"] is not None else None)
+    live_var.trace_add("write", lambda *_: folders_changed()
+                       if state["plan"] is not None else None)
+
+    def show_evidence():
+        dialog = tk.Toplevel(win)
+        dialog.title("XO manual Live evidence")
+        dialog.geometry("720x480")
+        dialog.configure(bg=theme["bg_dark"])
+        dialog.minsize(480, 320)
+        output = ScrolledText(
+            dialog, wrap="word", font=("Segoe UI", 10), bg=theme["bg_field"],
+            fg=theme["fg_light"], insertbackground=theme["fg_light"],
+            selectbackground=theme["tag_enabled"], relief="flat", padx=12, pady=12
+        )
+        output.pack(fill="both", expand=True, padx=12, pady=12)
+        output.insert("end", "Scan snapshot only. Originals and Live tags are not modified.\n\n")
+        for item in state.get("evidence", []):
+            output.insert("end", (
+                f"{item['path']}\n{', '.join(item['assignments'])}\n"
+                f"{item['status']}; group: {item['sound_type'] or 'none'}; loop: {item['is_loop']}\n\n"
+            ))
+        output.configure(state="disabled")
+        tk.Button(
+            dialog, text="Close", command=dialog.destroy, bg=theme["btn_secondary"],
+            fg=theme["fg_light"], bd=0
+        ).pack(anchor="e", padx=12, pady=(0, 12))
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+    evidence_button = tk.Button(
+        buttons, text="Evidence", command=show_evidence, state="disabled",
+        bg=theme["btn_secondary"], fg=theme["fg_light"], bd=0
+    )
+    evidence_button.pack(side="left", padx=5)
 
     edit_button = tk.Button(buttons, text="Edit folders…", bg=theme["tag_enabled"], fg="white",
                             activebackground=theme["tag_enabled"], activeforeground="white", cursor="hand2",
                             bd=0, font=("Segoe UI", 9, "bold"),
                             command=lambda: open_type_editor(win, anchor, library, folders_changed,
                                                              include_loops=loops_var.get(),
+                                                             use_live_tags=live_var.get(),
                                                              auto_find=bool(state["plan"] is not None
                                                                             and state.get("unrecognized"))))
     edit_button.pack(side="left")
@@ -330,6 +400,9 @@ def open_xo_builder(anchor):
     def set_busy(busy):
         state["busy"] = busy
         scan_button.config(state="disabled" if busy else "normal")
+        for control in (loops_check, live_check, edit_button):
+            control.configure(state="disabled" if busy else "normal")
+        evidence_button.configure(state="disabled" if busy or not state.get("evidence") else "normal")
         if busy:
             build_button.config(state="disabled", bg=theme["btn_secondary"], fg=theme["fg_muted"])
 
@@ -344,6 +417,8 @@ def open_xo_builder(anchor):
             child.destroy()
         state["vars"] = {}
         state["plan"] = plan
+        state["evidence"] = stats.get("evidence", [])
+        evidence_button.configure(state="normal" if state["evidence"] else "disabled")
         counts = sorted(plan.items(), key=lambda kv: -len(kv[1]))
         for index, (sound_type, files) in enumerate(counts):
             var = tk.BooleanVar(value=True)
@@ -365,7 +440,10 @@ def open_xo_builder(anchor):
         if stats["unclassified"]:
             skipped.append(f"{stats['unclassified']:,} not recognized")
         status.config(text=f"Scan complete: found {total:,} sounds in {len(plan)} types"
-                           + (f" ({', '.join(skipped)})." if skipped else "."))
+                           + (f" ({', '.join(skipped)})." if skipped else ".")
+                           + (f"\nManual types: {stats['manual_classified']:,}; "
+                              f"conflicting samples excluded: {stats['manual_conflicts']:,}. Review Evidence."
+                              if "manual_classified" in stats else ""))
         if total:
             build_button.config(state="normal", bg=theme["btn_primary"], fg=theme["btn_primary_fg"])
             set_scan_primary(False)
@@ -382,10 +460,17 @@ def open_xo_builder(anchor):
         result = {}
 
         include_loops = loops_var.get()
+        use_live_tags = live_var.get()
+        state["plan"] = None
+        state["evidence"] = []
 
         def work():
-            result["value"] = xo_filter.build_plan(library, include_loops=include_loops,
-                                                   should_cancel=lambda: state["cancel"])
+            try:
+                result["value"] = xo_filter.build_plan(
+                    library, include_loops=include_loops, use_live_tags=use_live_tags,
+                    should_cancel=lambda: state["cancel"])
+            except (OSError, ValueError, sqlite3.Error) as error:
+                result["error"] = str(error)
 
         def poll():
             if not alive():
@@ -394,10 +479,14 @@ def open_xo_builder(anchor):
                 win.after(150, poll)
                 return
             set_busy(False)
+            if "error" in result:
+                status.config(text=f"Could not scan the library: {result['error']}")
+                return
             show_plan(*result["value"])
 
-        thread = threading.Thread(target=work, daemon=True)
-        thread.start()
+        thread = gui_theme.start_background_job(win, work, cancel=lambda: state.update(cancel=True))
+        if thread is None:
+            return
         win.after(150, poll)
 
     def build():
@@ -440,8 +529,9 @@ def open_xo_builder(anchor):
                 parts.append(f"{outcome['failed']:,} failed")
             status.config(text="Done: " + ", ".join(parts) + f".\nIn XO, point your filter folder at {dest}.")
 
-        thread = threading.Thread(target=work, daemon=True)
-        thread.start()
+        thread = gui_theme.start_background_job(win, work, cancel=lambda: state.update(cancel=True))
+        if thread is None:
+            return
         win.after(200, poll)
 
     scan_button.config(command=scan)

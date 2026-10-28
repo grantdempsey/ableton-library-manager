@@ -3,8 +3,40 @@ import tkinter as tk
 from tkinter import ttk
 from tab_matrix import messagebox
 import os
-import threading
+import tempfile
 import gui_theme
+
+OPTION_HELP_URL = "https://help.ableton.com/hc/en-us/articles/6003224107292-Options-txt-file"
+PLUGIN_LIMIT_OPTION = "-_PluginAutoPopulateThreshold="
+
+
+def documented_options(system):
+    options = {
+        "-EnableArmOnSelection": (
+            "Arm selected track (not recommended with Push 2 or Push 3)",
+            "Arms the selected track. Ableton warns against this option when using Push 2 or Push 3.",
+        ),
+        "-DontCombineAPCs": (
+            "Keep APC controllers independent",
+            "Disables APC combination mode so each controller's session ring stays independent.",
+        ),
+    }
+    if system == "Windows":
+        options["-_EnsureKeyMessagesForPlugins"] = (
+            "Send keyboard messages to affected plug-ins",
+            "Windows only. Helps affected VST plug-ins, such as Reaktor, receive keyboard input.",
+        )
+    if system == "Darwin":
+        options["-DisableGraphicsHardwareAcceleration"] = (
+            "Disable Metal UI rendering",
+            "macOS. Disables the Metal-based interface rendering introduced in Live 11.2.",
+        )
+        options["-DisableAppleSiliconBurstWorkaround"] = (
+            "Use pre-11.3.25 Apple Silicon energy-saving behavior",
+            "Apple Silicon only. May make low-buffer audio performance less reliable.",
+        )
+    return options
+
 
 class ExperimentalTab(ttk.Frame):
     def __init__(self, parent, status_label_ref):
@@ -13,38 +45,19 @@ class ExperimentalTab(ttk.Frame):
         self.status_lbl = status_label_ref
         
         # Track Boolean Checkbutton Variable States
-        self.options_state = {
-            "-EnableArmOnSelection": tk.BooleanVar(value=False),
-            "-_AbsoluteMouseMode": tk.BooleanVar(value=False),
-            "-AdaptiveMacroMappingBounds": tk.BooleanVar(value=False),
-            "-RestrictToPCores": tk.BooleanVar(value=False),
-            "-_NoVstStartupScan": tk.BooleanVar(value=False),
-            "-ForceKeyboardFocusVST": tk.BooleanVar(value=False),
-            "-DisableHardwareAcceleration": tk.BooleanVar(value=False)
-        }
+        self.option_definitions = documented_options(gui_theme.CURRENT_OS)
+        self.options_state = {key: tk.BooleanVar(value=False) for key in self.option_definitions}
         
         # Track Numerical Parameter Entry String States
-        self.max_threads_var = tk.StringVar(value="")
         self.vst_limit_var = tk.StringVar(value="")
 
         # Plain-English Informational Tooltip Dictionary Map Matrix
-        self.tooltips = {
-            "-EnableArmOnSelection": "Automatically arms any track for live recording immediately when selected.",
-            "-_AbsoluteMouseMode": "Enables asynchronous background file loading to keep your browser completely smooth.",
-            "-AdaptiveMacroMappingBounds": "Dynamically scales macro encoder bounds matching your active controller matrix.",
-            "-RestrictToPCores": "Forces your audio engine exclusively onto high-performance CPU cores to stop audio dropouts.",
-            "-_NoVstStartupScan": "Prevents Ableton from re-scanning your plug-in directory folders on every boot.",
-            "-ForceKeyboardFocusVST": "Locks your system keyboard layout focus automatically straight into active VST plug-in windows.",
-            "-DisableHardwareAcceleration": "Bypasses system GPU acceleration frameworks if you are encountering UI stutter or crashes."
-        }
+        self.tooltips = {key: definition[1] for key, definition in self.option_definitions.items()}
 
         self.setup_ui_layout()
         
         # FIXED LIFE-CYCLE SEQUENCE: Read file and run automated checks instantly on window creation
         self.read_live_options_file()
-        self.automated_background_verify_sweep()
-
-        # Replaces manual verification buttons by running asynchronous diagnostics instantly on frame view
         self.bind("<Visibility>", lambda e: self.handle_tab_visibility_sequence())
 
     def setup_ui_layout(self):
@@ -57,8 +70,9 @@ class ExperimentalTab(ttk.Frame):
         ).pack(anchor="w", padx=15, pady=(14, 0))
         tk.Label(
             self,
-            text="Optional Ableton settings for experienced users. If you are unsure what a setting does, "
-                 "leave it unchanged.",
+            text="Experimental Options.txt settings documented by Ableton; availability can change between "
+                 "Live versions. Restart Live after saving. Close Live before editing. Unlisted or legacy "
+                 "lines are preserved, not verified or migrated. Leave settings unchanged if unsure.",
             font=("Segoe UI", 9), bg=t["bg_dark"], fg=t["fg_muted"],
             justify="left", anchor="w", wraplength=900
         ).pack(fill="x", padx=15, pady=(12, 8))
@@ -97,6 +111,14 @@ class ExperimentalTab(ttk.Frame):
             bd=0, padx=15, command=self.write_live_options_file
         )
         btn_save.pack(side="right", padx=(8, 0), ipady=2) # 🌟 FIXED: Shifted ipady to the geometry pack layer
+        tk.Button(
+            self, text="Reload settings from disk", command=self.read_live_options_file,
+            bg=t["btn_secondary"], fg=t["fg_light"],
+        ).pack(anchor="w", padx=15, pady=(0, 5))
+        tk.Label(
+            self, text="Reference: " + OPTION_HELP_URL, wraplength=900, anchor="w",
+            justify="left", bg=t["bg_dark"], fg=t["fg_muted"],
+        ).pack(fill="x", padx=15, pady=(0, 5))
 
         # --- DUAL COLUMN CHECKBOX SPLITTER WORKSPACE CONTAINER ---
         f_columns = tk.Frame(self, bg=t["bg_dark"])
@@ -105,30 +127,29 @@ class ExperimentalTab(ttk.Frame):
         f_columns.columnconfigure(1, weight=1)
 
         # LEFT COLUMN: Workflow & UI Enhancements
-        f_left_col = tk.Frame(f_columns, bg=t["bg_dark"])
-        f_left_col.grid(row=0, column=0, sticky="nw")
+        f_left_col = tk.Frame(f_columns, bg=t["bg_dark"], padx=12, pady=12,
+                              highlightbackground=t["border"], highlightthickness=1)
+        f_left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
 
         tk.Label(f_left_col, text="Workflow and interface options", font=("Segoe UI", 10, "bold"), bg=t["bg_dark"], fg=t["accent_neon"]).pack(anchor="w", pady=(0, 8))
         
         left_configs = [
-            ("Track Arm on Selection", "-EnableArmOnSelection"),
-            ("Async Background Browser Loading", "-_AbsoluteMouseMode"),
-            ("Adaptive Macro Mapping Bounds", "-AdaptiveMacroMappingBounds")
+            (definition[0], key) for key, definition in self.option_definitions.items()
+            if key in {"-EnableArmOnSelection", "-DontCombineAPCs"}
         ]
         for label_text, option_key in left_configs:
             self.create_tooltip_checkbutton(f_left_col, label_text, option_key)
 
         # RIGHT COLUMN: System & Plugin Management
-        f_right_col = tk.Frame(f_columns, bg=t["bg_dark"])
-        f_right_col.grid(row=0, column=1, sticky="nw")
+        f_right_col = tk.Frame(f_columns, bg=t["bg_dark"], padx=12, pady=12,
+                               highlightbackground=t["border"], highlightthickness=1)
+        f_right_col.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
 
         tk.Label(f_right_col, text="System and plug-in options", font=("Segoe UI", 10, "bold"), bg=t["bg_dark"], fg=t["accent_neon"]).pack(anchor="w", pady=(0, 8))
         
         right_configs = [
-            ("Restrict Audio Engine to CPU P-Cores", "-RestrictToPCores"),
-            ("Bypass VST Plugin Folder Startup Scan", "-_NoVstStartupScan"),
-            ("Force Keyboard Focus Into VST Panels", "-ForceKeyboardFocusVST"),
-            ("Disable GPU/Metal UI Acceleration", "-DisableHardwareAcceleration")
+            (definition[0], key) for key, definition in self.option_definitions.items()
+            if key not in {"-EnableArmOnSelection", "-DontCombineAPCs"}
         ]
         for label_text, option_key in right_configs:
             self.create_tooltip_checkbutton(f_right_col, label_text, option_key)
@@ -142,15 +163,13 @@ class ExperimentalTab(ttk.Frame):
         f_thresholds_row = tk.Frame(self, bg=t["bg_dark"])
         f_thresholds_row.pack(fill="x", padx=15, pady=5)
 
-        tk.Label(f_thresholds_row, text="Max CPU Audio Threads:", font=("Segoe UI", 9), bg=t["bg_dark"], fg=t["fg_light"]).pack(side="left")
-        self.ent_threads = tk.Entry(f_thresholds_row, width=6, font=("Segoe UI", 9), bg=t["bg_field"], fg=t["fg_light"], bd=1, relief="solid", textvariable=self.max_threads_var, justify="center", insertbackground=t["fg_light"])
-        self.ent_threads.pack(side="left", padx=(6, 25))
-        self.ent_threads.bind("<Enter>", lambda e: self.update_tooltip_text("Sets the absolute maximum thread limit allocation for Ableton's background DSP core rendering mixer pipeline."))
-
-        tk.Label(f_thresholds_row, text="VST Auto-Populate Parameter Limit:", font=("Segoe UI", 9), bg=t["bg_dark"], fg=t["fg_light"]).pack(side="left")
+        tk.Label(f_thresholds_row, text="Plug-in auto-populate limit (1-128; blank = Live default):", font=("Segoe UI", 9), bg=t["bg_dark"], fg=t["fg_light"]).pack(side="left")
         self.ent_vst_limit = tk.Entry(f_thresholds_row, width=6, font=("Segoe UI", 9), bg=t["bg_field"], fg=t["fg_light"], bd=1, relief="solid", textvariable=self.vst_limit_var, justify="center", insertbackground=t["fg_light"])
         self.ent_vst_limit.pack(side="left", padx=6)
-        self.ent_vst_limit.bind("<Enter>", lambda e: self.update_tooltip_text("Configures the macro mapping threshold limit before Ableton stops auto-populating plugin parameters (-1 disables)."))
+        self.ent_vst_limit.bind("<Enter>", lambda e: self.update_tooltip_text(
+            "Adds -_PluginAutoPopulateThreshold. Ableton documents 1-128 (default 64); "
+            "128 always populates up to 128 parameters. Blank removes only this exact documented option."
+        ))
 
         # --- LIVE HELP/TOOLTIP DISPLAY BAR PANEL ---
         f_tip_box = tk.Frame(self, bg=t["bg_field"], bd=1, relief="solid")
@@ -172,54 +191,75 @@ class ExperimentalTab(ttk.Frame):
         self.ent_path.xview_moveto(0)
         self.focus_set()
         
-        # Fire background automated verify threads safely without interrupting current frame graphics
-        threading.Thread(target=self.automated_background_verify_sweep, daemon=True).start()
+        self.automated_background_verify_sweep()
 
 # tab_experimental.py - Piece 3: Automated Verification Logic & Preferences File IO
     def automated_background_verify_sweep(self):
-        """Silently verifies system configuration parameters in the background on tab visibility."""
+        """Inspects option syntax without claiming that Ableton Live verified the settings."""
         target_file_path = gui_theme.OPTIONS_PATH
-        
-        cpu_val = "Default"
         plugin_val = "Default"
-        is_obsolete = False
-        
-        if os.path.exists(target_file_path):
-            try:
-                # Capture variables natively to report parameters onto status footprint bars
-                with open(target_file_path, 'r', encoding='utf-8', errors='ignore') as f_obj:
-                    for raw_line in f_obj:
-                        line_clean = raw_line.strip()
-                        if line_clean.startswith("-MaxCpuAudioThreads="):
-                            cpu_val = line_clean.split("=")[-1].strip()
-                            try:
-                                # Simple syntax constraint checking validation bounds
-                                if cpu_val and int(cpu_val) > 64: is_obsolete = True
-                            except ValueError:
-                                is_obsolete = True
-                        elif line_clean.startswith("-PluginAutoPopulateThreshold="):
-                            plugin_val = line_clean.split("=")[-1].strip()
+        try:
+            with open(target_file_path, "rb") as f_obj:
+                contents = f_obj.read()
+            text = contents.decode("utf-8")
+            for raw_line in text.splitlines():
+                line_clean = raw_line.strip()
+                if line_clean.startswith(PLUGIN_LIMIT_OPTION):
+                    plugin_val = line_clean.split("=", 1)[1].strip()
 
-                file_size = os.path.getsize(target_file_path)
-                if self.status_lbl:
-                    if is_obsolete:
-                        self.after(0, lambda: self.status_lbl.config(
-                            text="⚠️ Preferences Guard: Obsolete or invalid performance string detected! Auto-disabling conflicting entries.", 
-                            fg=gui_theme.THEME["accent_gold"]
-                        ))
-                    else:
-                        self.after(0, lambda: self.status_lbl.config(
-                            text=f" Preferences Guard: Live 12.4 Options.txt Auto-Verified ({file_size} bytes) | Threads: {cpu_val} | Buffers: {plugin_val}", 
-                            fg=gui_theme.THEME["accent_neon"]
-                        ))
-            except Exception:
-                pass
-        else:
-            if self.status_lbl:
-                self.after(0, lambda: self.status_lbl.config(
-                    text=" Application Status: Options.txt missing. Click '💾 Save changes' to initialize.", 
-                    fg=gui_theme.THEME["accent_gold"]
-                ))
+            issues = self._numeric_option_errors(plugin_val)
+            file_size = len(contents)
+            if issues:
+                self._set_status(
+                    "Options.txt inspection found invalid numeric value(s): "
+                    + "; ".join(issues)
+                    + ". No settings were changed.",
+                    gui_theme.THEME["accent_gold"],
+                )
+            else:
+                self._set_status(
+                    f"Options.txt inspected ({file_size} bytes); not validated by Live. "
+                    f"Documented parameter limit: {plugin_val}. Other options were not validated.",
+                    gui_theme.THEME["accent_neon"],
+                )
+        except FileNotFoundError:
+            self._set_status(
+                "Options.txt is missing. Save changes to create it.",
+                gui_theme.THEME["accent_gold"],
+            )
+        except (OSError, UnicodeError) as error:
+            self._set_status(
+                f"Could not inspect Options.txt: {error}",
+                gui_theme.THEME["accent_gold"],
+            )
+
+    def _set_status(self, text, color):
+        if self.status_lbl:
+            self.status_lbl.config(text=text, fg=color)
+
+    @staticmethod
+    def _numeric_option_errors(plugin_limit_value):
+        errors = []
+        if plugin_limit_value != "Default":
+            try:
+                plugin_limit = int(plugin_limit_value)
+                if not 1 <= plugin_limit <= 128:
+                    errors.append("-_PluginAutoPopulateThreshold must be an integer from 1 to 128")
+            except ValueError:
+                errors.append("-_PluginAutoPopulateThreshold must be an integer from 1 to 128")
+        return errors
+
+    @staticmethod
+    def _is_numeric_option(line):
+        return line.startswith(PLUGIN_LIMIT_OPTION)
+
+    @staticmethod
+    def _read_bytes_or_missing(path):
+        try:
+            with open(path, "rb") as source:
+                return source.read()
+        except FileNotFoundError:
+            return None
 
     def create_tooltip_checkbutton(self, parent_frame, label_text, option_key):
         """Generates a perfectly styled checkbutton that triggers contextual help tooltips on hover."""
@@ -238,6 +278,8 @@ class ExperimentalTab(ttk.Frame):
 
         cb.bind("<Enter>", lambda event: self.update_tooltip_text(self.tooltips.get(option_key, "")))
         cb.bind("<Leave>", lambda event: self.clear_tooltip_display())
+        cb.bind("<FocusIn>", lambda event: self.update_tooltip_text(self.tooltips.get(option_key, "")))
+        cb.bind("<FocusOut>", lambda event: self.clear_tooltip_display())
 
     def update_tooltip_text(self, descriptive_string):
         """Swaps active contextual help logs into the text view tray."""
@@ -260,75 +302,158 @@ class ExperimentalTab(ttk.Frame):
 
     def read_live_options_file(self):
         """Parses the existing Options.txt file to synchronize checkbuttons and numerical caps based on reality."""
-        if not os.path.exists(gui_theme.OPTIONS_PATH):
+        path = gui_theme.OPTIONS_PATH
+        try:
+            contents = self._read_bytes_or_missing(path)
+            lines = [] if contents is None else contents.decode("utf-8").splitlines()
+        except (OSError, UnicodeError) as e:
+            self._options_snapshot_path = path
+            self._options_snapshot = None
+            self._options_read_error = e
+            self._set_status(
+                f"Could not read Options.txt; saving is disabled until it can be read: {e}",
+                gui_theme.THEME["accent_gold"],
+            )
+            messagebox.showwarning(
+                "Options.txt read failure",
+                f"Could not read native Options.txt configuration flags:\n{str(e)}",
+            )
             return
 
-        try:
-            with open(gui_theme.OPTIONS_PATH, "r", encoding="utf-8") as f_in:
-                lines = f_in.readlines()
-                
+        self._options_snapshot_path = path
+        self._options_snapshot = contents
+        self._options_read_error = None
+        if contents is None:
             for key in self.options_state:
                 self.options_state[key].set(False)
-            self.max_threads_var.set("")
             self.vst_limit_var.set("")
+            self._set_status(
+                "Options.txt is missing. Save changes to create it.",
+                gui_theme.THEME["accent_gold"],
+            )
+            return
 
-            for line in lines:
-                clean_line = line.strip()
-                if clean_line in self.options_state:
-                    self.options_state[clean_line].set(True)
-                elif clean_line.startswith("-MaxCpuAudioThreads="):
-                    self.max_threads_var.set(clean_line.split("=")[-1])
-                elif clean_line.startswith("-PluginAutoPopulateThreshold="):
-                    self.vst_limit_var.set(clean_line.split("=")[-1])
-                    
-            if self.status_lbl:
-                self.status_lbl.config(text=" Application Status: Live telemetry options file successfully mapped.", fg=gui_theme.THEME["accent_gold"])
-        except Exception as e:
-            messagebox.showwarning("Telemetry Warning", f"Could not read native Options.txt configuration flags:\n{str(e)}")
+        for key in self.options_state:
+            self.options_state[key].set(False)
+        self.vst_limit_var.set("")
+
+        for line in lines:
+            clean_line = line.strip()
+            if clean_line in self.options_state:
+                self.options_state[clean_line].set(True)
+            elif clean_line.startswith(PLUGIN_LIMIT_OPTION):
+                self.vst_limit_var.set(clean_line.split("=", 1)[1])
+
+        self._set_status(
+            "Options.txt settings loaded; experimental options are not verified by Live.",
+            gui_theme.THEME["accent_gold"],
+        )
 
     def write_live_options_file(self):
-        """Safely commits your modified hardware options and numerical caps back into the physical Options.txt file."""
+        """Validates, backs up, and atomically replaces Options.txt after a conflict check."""
+        path = gui_theme.OPTIONS_PATH
         target_dir = os.path.dirname(gui_theme.OPTIONS_PATH)
-        if not os.path.exists(target_dir):
-            try:
-                os.makedirs(target_dir, exist_ok=True)
-            except Exception as err:
-                messagebox.showerror("System Fault", f"Could not initialize user preferences directories:\n{str(err)}")
-                return
-
-        existing_lines = []
-        if os.path.exists(gui_theme.OPTIONS_PATH):
-            try:
-                with open(gui_theme.OPTIONS_PATH, "r", encoding="utf-8") as f_read:
-                    existing_lines = [line.strip() for line in f_read.readlines() if line.strip()]
-            except Exception:
-                pass
-
-        cleaned_lines = [line for line in existing_lines if line not in self.options_state and not line.startswith("-MaxCpuAudioThreads=") and not line.startswith("-PluginAutoPopulateThreshold=")]
-
-        for flag_key, var_value in self.options_state.items():
-            if var_value.get():
-                cleaned_lines.append(flag_key)
-
-        threads_val = self.max_threads_var.get().strip()
-        if threads_val:
-            cleaned_lines.append(f"-MaxCpuAudioThreads={threads_val}")
-
-        vst_val = self.vst_limit_var.get().strip()
-        if vst_val:
-            cleaned_lines.append(f"-PluginAutoPopulateThreshold={vst_val}")
-
+        temp_path = None
+        backup_path = None
         try:
-            with open(gui_theme.OPTIONS_PATH, "w", encoding="utf-8") as f_out:
-                for line in cleaned_lines:
-                    f_out.write(f"{line}\n")
-                    
-            if self.status_lbl:
-                self.status_lbl.config(text=" SUCCESS: Native Options.txt settings committed successfully!", fg=gui_theme.THEME["accent_neon"])
-            messagebox.showinfo("Success", "Hardware configuration variables successfully written to Options.txt!")
-            
-            # Re-read files instantly to refresh active memory caches and update footer text telemetry
-            self.read_live_options_file()
-            self.automated_background_verify_sweep()
-        except Exception as write_err:
-            messagebox.showerror("Write Failure", f"Could not modify target preferences text file:\n{str(write_err)}")
+            if getattr(self, "_options_read_error", None) is not None:
+                raise OSError(
+                    f"The current Options.txt could not be read; refusing to overwrite it: "
+                    f"{self._options_read_error}"
+                )
+            if getattr(self, "_options_snapshot_path", None) != path:
+                raise RuntimeError("Options.txt location changed since it was loaded; reload before saving.")
+
+            vst_val = self.vst_limit_var.get().strip()
+            errors = self._numeric_option_errors(vst_val or "Default")
+            if errors:
+                raise ValueError("; ".join(errors))
+
+            os.makedirs(target_dir, exist_ok=True)
+            snapshot = getattr(self, "_options_snapshot", None)
+            current = self._read_bytes_or_missing(path)
+            if current != snapshot:
+                raise RuntimeError(
+                    "Options.txt changed since it was loaded; reload it and review the "
+                    "new contents before saving."
+                )
+
+            existing_lines = (
+                [] if current is None else current.decode("utf-8").splitlines(keepends=True)
+            )
+            retained_lines = []
+            for raw_line in existing_lines:
+                line = raw_line.strip()
+                if line in self.options_state or self._is_numeric_option(line):
+                    continue
+                retained_lines.append(raw_line)
+
+            additions = [
+                key for key, value in self.options_state.items() if value.get()
+            ]
+            if vst_val:
+                additions.append(PLUGIN_LIMIT_OPTION + vst_val)
+
+            output = "".join(retained_lines)
+            if output and not output.endswith(("\n", "\r")) and additions:
+                output += "\n"
+            if additions:
+                output += "".join(f"{line}\n" for line in additions)
+            output_bytes = output.encode("utf-8")
+
+            if current is not None:
+                backup_fd, backup_path = tempfile.mkstemp(
+                    prefix=f".{os.path.basename(path)}.", suffix=".bak", dir=target_dir
+                )
+                with os.fdopen(backup_fd, "wb") as backup:
+                    backup.write(current)
+                    backup.flush()
+                    os.fsync(backup.fileno())
+
+            temp_fd, temp_path = tempfile.mkstemp(
+                prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=target_dir
+            )
+            with os.fdopen(temp_fd, "wb") as temporary:
+                temporary.write(output_bytes)
+                temporary.flush()
+                os.fsync(temporary.fileno())
+
+            if self._read_bytes_or_missing(path) != snapshot:
+                raise RuntimeError(
+                    "Options.txt changed while saving; no replacement was made. "
+                    "Reload and review the current contents."
+                )
+            os.replace(temp_path, path)
+            temp_path = None
+            self._options_snapshot = output_bytes
+            self._options_snapshot_path = path
+            self._options_read_error = None
+            self._set_status(
+                "Options.txt saved successfully. Its experimental settings are not verified by Live.",
+                gui_theme.THEME["accent_neon"],
+            )
+            messagebox.showinfo(
+                "Success",
+                "Options.txt was saved. "
+                + (f"Original backup: {backup_path}. " if backup_path else "No previous file existed. ")
+                + "Restart Live to apply changes. Ableton Live behavior was not verified.",
+            )
+        except (OSError, ValueError, RuntimeError) as write_err:
+            self._set_status(
+                f"Options.txt was not saved: {write_err}",
+                gui_theme.THEME["accent_gold"],
+            )
+            messagebox.showerror(
+                "Options.txt save failure",
+                f"Could not safely modify Options.txt:\n{str(write_err)}",
+            )
+        finally:
+            for leftover in (temp_path,):
+                if leftover and os.path.exists(leftover):
+                    try:
+                        os.unlink(leftover)
+                    except OSError as cleanup_error:
+                        messagebox.showerror(
+                            "Options.txt temporary file cleanup failed",
+                            f"Remove this temporary file when it is no longer locked:\n{leftover}\n{cleanup_error}",
+                        )

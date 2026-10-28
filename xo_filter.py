@@ -9,8 +9,29 @@ import hashlib
 import json
 import os
 import re
+import shutil
 
 import sorter_engine
+import ableton_tags
+import tag_evidence
+from typing import NotRequired, TypedDict
+
+
+class XoEvidence(TypedDict):
+    path: str
+    assignments: list[str]
+    status: str
+    sound_type: str | None
+    is_loop: bool
+
+
+class XoPlanStats(TypedDict):
+    scanned: int
+    unclassified: int
+    loops_skipped: int
+    manual_classified: NotRequired[int]
+    manual_conflicts: NotRequired[int]
+    evidence: NotRequired[list[XoEvidence]]
 
 # Order matters: on a score tie, earlier types win.
 SOUND_TYPES = {
@@ -108,6 +129,7 @@ def load_custom_types():
     return {str(name): [str(w) for w in words] for name, words in raw.items() if isinstance(words, list)}
 
 
+@sorter_engine.serialized_config
 def save_custom_types(custom):
     """Persists custom types; a built-in name adds keywords to it, a new name creates a folder."""
     data = {}
@@ -150,21 +172,39 @@ _STOP_WORDS = {"loop", "loops", "bpm", "one", "shot", "oneshot", "dry", "wet", "
                "maj", "min", "minor", "major", "version", "bonus", "final"}
 
 
-def suggest_types(library_root, min_files=25, should_cancel=None, include_loops=True):
+def suggest_types(library_root, min_files=25, should_cancel=None, include_loops=True, *, use_live_tags=False):
     """Finds words common in files no type recognizes; each could become its own folder.
 
     Words found in most unrecognized files are almost always a pack or brand name,
     so they are skipped. Returns [{word, count, example}] most common first.
     """
     counts, examples, loop_counts, total = {}, {}, {}, 0
+    excluded = set()
+    manual_loops = set()
+    if use_live_tags:
+        plan, stats = build_plan(
+            library_root, include_loops=include_loops, should_cancel=should_cancel, use_live_tags=True
+        )
+        excluded.update(path for paths in plan.values() for path in paths)
+        for item in stats.get("evidence", []):
+            if item["is_loop"]:
+                manual_loops.add(item["path"])
+            if "excluded from build" in item["status"]:
+                excluded.add(item["path"])
     for dirpath, dirnames, filenames in os.walk(library_root):
         if should_cancel and should_cancel():
             break
         dirnames[:] = [d for d in dirnames if d not in sorter_engine.IGNORED_DIRECTORIES]
         for filename in filenames:
+            if ableton_tags.is_metadata_stub(filename):
+                continue
             if os.path.splitext(filename)[1].lower() not in AUDIO_EXTS:
                 continue
-            sound_type, is_loop = classify(os.path.join(dirpath, filename), library_root)
+            path = os.path.normpath(os.path.join(dirpath, filename))
+            if path in excluded:
+                continue
+            sound_type, is_loop = classify(path, library_root)
+            is_loop = is_loop or path in manual_loops
             if sound_type is not None or (is_loop and not include_loops):
                 continue
             total += 1
@@ -214,6 +254,8 @@ def classify(path, library_root, personal_tags=()):
         folder_tokens.extend(_tokens(part))
     tag_tokens = []
     for tag in personal_tags:
+        if tag.startswith(("ableton:", "category:", "name:")):
+            continue
         tag_tokens.extend(_tokens(tag.split(":")[-1]))
 
     scores = {}
@@ -241,8 +283,6 @@ def _personal_tags_by_path(library_root):
             "SELECT asset_path, tag FROM asset_tags WHERE enabled != 0 "
             "AND tag NOT LIKE 'category:%' AND tag NOT LIKE 'name:%'"
         ).fetchall()
-    except sqlite3.Error:
-        rows = []
     finally:
         connection.close()
     for path, tag in rows:
@@ -251,40 +291,80 @@ def _personal_tags_by_path(library_root):
     return tags
 
 
-def build_plan(library_root, include_loops=False, selected_types=None, should_cancel=None):
+def build_plan(library_root, include_loops=False, selected_types=None, should_cancel=None, *, use_live_tags=False):
     """Walks the library and returns {sound_type: [source paths]} plus summary counts."""
     apply_custom_types()
     personal = _personal_tags_by_path(library_root)
     plan = {}
-    stats = {"scanned": 0, "unclassified": 0, "loops_skipped": 0}
+    stats: XoPlanStats = {"scanned": 0, "unclassified": 0, "loops_skipped": 0}
+    paths = []
     for dirpath, dirnames, filenames in os.walk(library_root):
         if should_cancel and should_cancel():
             break
         dirnames[:] = [d for d in dirnames if d not in sorter_engine.IGNORED_DIRECTORIES]
         for filename in filenames:
+            if ableton_tags.is_metadata_stub(filename):
+                continue
             if os.path.splitext(filename)[1].lower() not in AUDIO_EXTS:
                 continue
             path = os.path.normpath(os.path.join(dirpath, filename))
             if os.path.islink(path):
                 continue
-            stats["scanned"] += 1
-            sound_type, is_loop = classify(path, library_root, personal.get(path, ()))
-            if sound_type is None:
-                stats["unclassified"] += 1
-                continue
-            if is_loop and not include_loops:
-                stats["loops_skipped"] += 1
-                continue
-            if selected_types is not None and sound_type not in selected_types:
-                continue
-            plan.setdefault(sound_type, []).append(path)
+            paths.append(path)
+    manual = ableton_tags.read_sample_assignments(paths) if use_live_tags else {}
+    if use_live_tags:
+        stats.update({"manual_classified": 0, "manual_conflicts": 0, "evidence": []})
+    for path in paths:
+        if should_cancel and should_cancel():
+            break
+        stats["scanned"] += 1
+        sound_type, is_loop = classify(path, library_root, personal.get(path, ()))
+        if use_live_tags:
+            evidence = tag_evidence.interpret_manual_tags(manual.get(os.path.normcase(os.path.abspath(path)), ()))
+            is_loop = is_loop or evidence.is_loop
+            routing_type, routing_folder = sorter_engine.resolve_routing_tags(personal.get(path, ()))
+            if routing_type == "one-shot":
+                is_loop = False
+            elif routing_type == "loop":
+                is_loop = True
+            if evidence.assignments or evidence.is_loop:
+                if routing_type or routing_folder:
+                    status = "local routing override present; Live type not adopted"
+                elif not evidence.one_shot_eligible:
+                    status = "manual kit, multisample or impulse-response role; excluded from build"
+                    sound_type = None
+                elif not evidence.alternatives:
+                    status = "manual role only; keyword grouping retained"
+                elif not evidence.sound_type:
+                    stats["manual_conflicts"] += 1
+                    status = "conflicting manual sound types; excluded from build"
+                    sound_type = None
+                else:
+                    status = "manual Live type" + (
+                        f" overrides keyword type {sound_type}" if sound_type and sound_type != evidence.sound_type else ""
+                    )
+                    sound_type = evidence.sound_type
+                    stats["manual_classified"] += 1
+                stats["evidence"].append({
+                    "path": path, "assignments": list(evidence.assignments),
+                    "status": status, "sound_type": sound_type, "is_loop": is_loop
+                })
+        if sound_type is None:
+            stats["unclassified"] += 1
+            continue
+        if is_loop and not include_loops:
+            stats["loops_skipped"] += 1
+            continue
+        if selected_types is not None and sound_type not in selected_types:
+            continue
+        plan.setdefault(sound_type, []).append(path)
     return plan, stats
 
 
 def _unique_name(dest_dir, source):
     name = os.path.basename(source)
     target = os.path.join(dest_dir, name)
-    if not os.path.exists(target):
+    if not os.path.lexists(target):
         return target, False
     try:
         if os.path.samefile(source, target):
@@ -293,13 +373,18 @@ def _unique_name(dest_dir, source):
         pass
     stem, ext = os.path.splitext(name)
     digest = hashlib.sha1(source.encode("utf-8", "ignore")).hexdigest()[:6]
-    target = os.path.join(dest_dir, f"{stem}_{digest}{ext}")
-    if os.path.exists(target):
-        try:
-            return target, os.path.samefile(source, target)
-        except OSError:
+    counter = 0
+    while True:
+        suffix = f"_{counter}" if counter else ""
+        target = os.path.join(dest_dir, f"{stem}_{digest}{suffix}{ext}")
+        if not os.path.lexists(target):
             return target, False
-    return target, False
+        try:
+            if os.path.samefile(source, target):
+                return target, True
+        except OSError:
+            pass
+        counter += 1
 
 
 def build_folder(plan, dest_root, library_root, progress=None, should_cancel=None):
@@ -324,16 +409,38 @@ def build_folder(plan, dest_root, library_root, progress=None, should_cancel=Non
             if exists:
                 result["existing"] += 1
                 continue
-            try:
-                os.link(source, target)
-                result["linked"] += 1
-            except OSError:
+            while True:
                 try:
-                    import shutil
-                    shutil.copy2(source, target)
-                    result["copied"] += 1
+                    os.link(source, target)
+                    result["linked"] += 1
+                    break
+                except FileExistsError:
+                    target, exists = _unique_name(dest_dir, source)
+                    if exists:
+                        result["existing"] += 1
+                        break
                 except OSError:
-                    result["failed"] += 1
+                    try:
+                        with open(source, "rb") as incoming:
+                            with open(target, "xb") as outgoing:
+                                try:
+                                    shutil.copyfileobj(incoming, outgoing)
+                                    outgoing.flush()
+                                    shutil.copystat(source, target)
+                                except OSError:
+                                    outgoing.close()
+                                    os.remove(target)
+                                    raise
+                        result["copied"] += 1
+                        break
+                    except FileExistsError:
+                        target, exists = _unique_name(dest_dir, source)
+                        if exists:
+                            result["existing"] += 1
+                            break
+                    except OSError:
+                        result["failed"] += 1
+                        break
     if progress:
         progress(total, total)
     return result

@@ -1,2 +1,2 @@
 @echo off
-start pythonw AbletonLibraryManager.pyw
+start "" /D "%~dp0" pythonw "%~dp0AbletonLibraryManager.pyw"

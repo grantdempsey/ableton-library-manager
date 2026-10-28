@@ -33,7 +33,7 @@ def build(parent_frame):
     # 3. System Deployment Subtitle
     lbl_version = tk.Label(
         f_center_box, 
-        text="Organize your sounds, presets, and samples with confidence • Version 2.0.1", 
+        text="Organize your sounds, presets, and samples with confidence • Version 2.1.0 (development)",
         font=("Segoe UI", 11, "italic"), 
         bg=t["bg_dark"], 
         fg=t["fg_muted"]

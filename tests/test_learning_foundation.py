@@ -77,29 +77,61 @@ class LearningFoundationTests(unittest.TestCase):
             self.assertEqual(original, json.load(backup))
 
     def test_evidence_accumulates_and_creates_pending_candidate(self):
-        evidence = [("rimshot", "Snares")] * 3
+        evidence = [("rimshot", "Snares")] * 19
         self.assertEqual([], sorter_engine.record_learning_evidence(evidence))
-        candidates = sorter_engine.record_learning_evidence([("rimshot", "Snares")] * 2)
+        candidates = sorter_engine.record_learning_evidence([("rimshot", "Snares")])
 
         self.assertEqual(1, len(candidates))
         self.assertEqual("pending", candidates[0]["status"])
-        self.assertEqual(5, candidates[0]["count"])
+        self.assertEqual(20, candidates[0]["count"])
 
         with open(sorter_engine.CONFIG_FILE, "r", encoding="utf-8") as config_file:
             saved = json.load(config_file)
-        self.assertEqual(5, saved["LEARNING_COUNTS"]["rimshot|Snares"]["count"])
+        self.assertEqual(20, saved["LEARNING_COUNTS"]["rimshot|Snares"]["count"])
         self.assertEqual({}, saved.get("DRUM_KEYWORDS", {}))
         self.assertEqual(1, len(saved["LEARNED_RULE_CANDIDATES"]))
 
     def test_existing_pending_candidate_is_not_duplicated(self):
-        evidence = [("rimshot", "Snares")] * 5
+        evidence = [("rimshot", "Snares")] * 20
         self.assertEqual(1, len(sorter_engine.record_learning_evidence(evidence)))
         self.assertEqual([], sorter_engine.record_learning_evidence(evidence))
 
-    def test_approving_candidate_activates_only_that_rule(self):
-        sorter_engine.record_learning_evidence([("rimshot", "Snares")] * 5)
+    def test_historical_pending_support_floor_and_accumulation(self):
+        sorter_engine.record_learning_evidence([("rimshot", "Snares")] * 5, minimum_count=5)
+        candidate = sorter_engine.LEARNED_RULE_CANDIDATES[0]
+        self.assertFalse(sorter_engine.is_reviewable_learning_candidate(candidate))
+        with open(sorter_engine.CONFIG_FILE, "rb") as handle:
+            before = handle.read()
+        with self.assertRaisesRegex(ValueError, "at least 20"):
+            sorter_engine.review_learning_candidate("rimshot", "Snares", "approved")
+        with open(sorter_engine.CONFIG_FILE, "rb") as handle:
+            self.assertEqual(before, handle.read())
+        sorter_engine.record_learning_evidence([("rimshot", "Snares")] * 14)
+        self.assertEqual(19, sorter_engine.LEARNED_RULE_CANDIDATES[0]["count"])
+        self.assertFalse(sorter_engine.is_reviewable_learning_candidate(sorter_engine.LEARNED_RULE_CANDIDATES[0]))
+        sorter_engine.record_learning_evidence([("rimshot", "Snares")])
+        self.assertEqual(1, len(sorter_engine.LEARNED_RULE_CANDIDATES))
+        self.assertTrue(sorter_engine.is_reviewable_learning_candidate(sorter_engine.LEARNED_RULE_CANDIDATES[0]))
+        with self.assertRaisesRegex(ValueError, "historical observations"):
+            sorter_engine.review_learning_candidate("rimshot", "Snares", "approved")
+        self.assertNotIn(r"\brimshot\w*\b", sorter_engine.DRUM_KEYWORDS)
 
-        sorter_engine.review_learning_candidate("rimshot", "Snares", "approved")
+    def test_bulk_cannot_bypass_historical_floor_but_rejection_is_allowed(self):
+        sorter_engine.record_learning_evidence([("rimshot", "Snares")] * 20)
+        sorter_engine.record_learning_evidence([("quasar", "Snares")] * 7, minimum_count=5)
+        with self.assertRaisesRegex(ValueError, "at least 20"):
+            sorter_engine.review_learning_candidates((("rimshot", "Snares"), ("quasar", "Snares")), "approved")
+        self.assertNotIn(r"\brimshot\w*\b", sorter_engine.DRUM_KEYWORDS)
+        self.assertTrue(all(c["status"] == "pending" for c in sorter_engine.LEARNED_RULE_CANDIDATES))
+        sorter_engine.review_learning_candidate("quasar", "Snares", "rejected")
+        self.assertEqual("rejected", sorter_engine.LEARNED_RULE_CANDIDATES[1]["status"])
+
+    def test_approving_candidate_activates_only_that_rule(self):
+        sorter_engine.record_learning_evidence([("rimshot", "Snares")] * 20)
+        # The wrapper persists only candidates whose current evidence was verified.
+        from unittest import mock
+        with mock.patch("rule_suggester.revalidate_candidates", side_effect=lambda candidates: candidates):
+            sorter_engine.review_learning_candidate("rimshot", "Snares", "approved")
 
         self.assertIn(r"\brimshot\w*\b", sorter_engine.DRUM_KEYWORDS)
         with open(sorter_engine.CONFIG_FILE, "r", encoding="utf-8") as config_file:
@@ -107,7 +139,7 @@ class LearningFoundationTests(unittest.TestCase):
         self.assertEqual("approved", saved["LEARNED_RULE_CANDIDATES"][0]["status"])
 
     def test_rejecting_candidate_does_not_activate_rule(self):
-        sorter_engine.record_learning_evidence([("rimshot", "Snares")] * 5)
+        sorter_engine.record_learning_evidence([("rimshot", "Snares")] * 20)
 
         sorter_engine.review_learning_candidate("rimshot", "Snares", "rejected")
 

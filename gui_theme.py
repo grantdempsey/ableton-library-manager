@@ -4,6 +4,7 @@ import re
 import sys
 import platform
 import subprocess
+import threading
 import tkinter as tk
 from tkinter import messagebox
 
@@ -45,6 +46,20 @@ ACCENT_GOLD = THEME["accent_gold"]
 ACCENT_BUTTON = THEME["btn_execute"]
 ACCENT_GREY = THEME["hover_dark"]
 BORDER = THEME["border"]
+
+
+def start_background_job(owner, target, *, cancel=None):
+    """Register jobs on the Tk thread so shutdown can wait before destroying Tk."""
+    root = owner._root()
+    if getattr(root, "_closing", False):
+        return None
+    jobs = getattr(root, "_background_jobs", [])
+    jobs[:] = [(thread, stop) for thread, stop in jobs if thread.is_alive()]
+    thread = threading.Thread(target=target, daemon=False)
+    jobs.append((thread, cancel))
+    root._background_jobs = jobs
+    thread.start()
+    return thread
 
 # 🌎 GLOBAL SYSTEM ENVIRONMENT RECONNAISSANCE MATRIX
 USER_HOME = os.path.expanduser("~")

@@ -3,13 +3,15 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 import re
 import os
+import sqlite3
 import json
 import datetime
+import copy
 import sorter_engine
 import gui_theme
 import rule_suggester
-import threading
 import webbrowser
+import tag_evidence
 
 _drum_tree = None
 _synth_tree = None
@@ -56,7 +58,7 @@ def refresh_matrix_data():
         ordered = sorted(sorter_engine.LEARNED_RULE_CANDIDATES,
                          key=lambda c: (-int(c.get("count", 0) or 0), c.get("token", "")))
         for candidate in ordered:
-            if candidate.get("status", "pending") == "pending":
+            if sorter_engine.is_reviewable_learning_candidate(candidate):
                 try:
                     placement = sorter_engine.suggest_rule_priority(
                         candidate.get("pattern", ""), candidate.get("target", ""))
@@ -66,34 +68,45 @@ def refresh_matrix_data():
                 _candidate_tree.insert(
                     '', 'end',
                     values=(candidate.get("token", ""), candidate.get("target", ""), priority,
-                            candidate.get("count", 0), candidate.get("pattern", ""))
+                            candidate.get("count", 0), candidate.get("pattern", ""),
+                            candidate.get("evidence_source", "legacy metadata"))
                 )
 
-def _sync_config_state(status_msg):
-    """Safely dumps data mappings down onto physical local config file layouts."""
+@sorter_engine.serialized_config
+def _sync_config_state(status_msg, edit):
+    """Persist staged edits before publishing them to active rules."""
     try:
-        disk_data = {}
+        expected = None
         if os.path.exists(sorter_engine.CONFIG_FILE):
-            with open(sorter_engine.CONFIG_FILE, 'r', encoding='utf-8') as f:
-                disk_data = json.load(f)
-        
-        disk_data["DRUM_KEYWORDS"] = sorter_engine.DRUM_KEYWORDS
-        disk_data["SYNTH_EXTS"] = sorter_engine.SYNTH_EXTS
-        disk_data["NATIVE_EXTS"] = sorter_engine.NATIVE_EXTS
-        disk_data["LOOP_LAYOUT"] = list(sorter_engine.LOOP_LAYOUT)
-        if hasattr(sorter_engine, 'IGNORED_DIRECTORIES'):
-            disk_data["IGNORED_DIRECTORIES"] = sorter_engine.IGNORED_DIRECTORIES
-            
-        sorter_engine.backup_config()
-        with open(sorter_engine.CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(disk_data, f, indent=4)
-
+            with open(sorter_engine.CONFIG_FILE, "rb") as handle:
+                expected = handle.read()
+            disk_data = sorter_engine._validate_config(json.loads(expected))
+        else:
+            disk_data = sorter_engine._default_config()
+        staged = copy.deepcopy(disk_data)
+        edit(staged)
+        for key in ("DRUM_KEYWORDS", "SYNTH_EXTS", "NATIVE_EXTS"):
+            rules = staged.get(key, {})
+            if not isinstance(rules, dict):
+                raise ValueError(f"{key} must be an object.")
+            for pattern, folder in rules.items():
+                if not isinstance(pattern, str) or not isinstance(folder, str) or not folder.strip():
+                    raise ValueError(f"{key} must map strings to nonempty folder names.")
+                if key == "DRUM_KEYWORDS":
+                    re.compile(pattern)
+        sorter_engine._write_config(staged, expected_content=expected)
+    except (OSError, ValueError, TypeError, KeyError, re.error) as error:
+        messagebox.showerror("Sync Failure", f"Rules were not changed: {error}")
+        return False
+    try:
         sorter_engine.load_external_config()
         refresh_matrix_data()
         if _status_label_ref:
             _status_label_ref.config(text=f" Application Status: {status_msg}", fg=gui_theme.THEME["accent_neon"])
-    except Exception as e:
-        messagebox.showerror("Sync Failure", f"Could not commit parameters script: {str(e)}")
+    except (OSError, ValueError, tk.TclError) as error:
+        messagebox.showerror("Rules Refresh Failure", f"Rules were saved, but could not be refreshed: {error}")
+        return False
+    return True
 
 # tab_matrix.py - Piece 2: Workspace Serialization Portability Engines (Import/Export)
 def execute_profile_json_export(parent_window):
@@ -160,19 +173,19 @@ def execute_profile_json_import(parent_window):
         if not confirm_overwrite:
             return
 
-        if "DRUM_KEYWORDS" in imported_package:
-            sorter_engine.DRUM_KEYWORDS.update(imported_package["DRUM_KEYWORDS"])
-        if "SYNTH_EXTS" in imported_package:
-            sorter_engine.SYNTH_EXTS.update(imported_package["SYNTH_EXTS"])
-        if "NATIVE_EXTS" in imported_package:
-            sorter_engine.NATIVE_EXTS.update(imported_package["NATIVE_EXTS"])
-        if "IGNORED_DIRECTORIES" in imported_package:
-            current_ignored = set(getattr(sorter_engine, 'IGNORED_DIRECTORIES', []))
-            current_ignored.update(imported_package["IGNORED_DIRECTORIES"])
-            setattr(sorter_engine, 'IGNORED_DIRECTORIES', sorted(list(current_ignored)))
+        def merge_profile(data):
+            sorter_engine._validate_config(imported_package)
+            for key in ("DRUM_KEYWORDS", "SYNTH_EXTS", "NATIVE_EXTS"):
+                if key in imported_package:
+                    data.setdefault(key, {}).update(imported_package[key])
+            if "IGNORED_DIRECTORIES" in imported_package:
+                ignored = imported_package["IGNORED_DIRECTORIES"]
+                if any(not isinstance(item, str) for item in ignored):
+                    raise ValueError("IGNORED_DIRECTORIES must contain folder names.")
+                data["IGNORED_DIRECTORIES"] = sorted(set(data.get("IGNORED_DIRECTORIES", [])) | set(ignored))
 
-        _sync_config_state("Workspace parameters reconstructed and synchronized clean!")
-        messagebox.showinfo("Import Complete", "Studio profile ingested successfully! Grid ledgers updated.")
+        if _sync_config_state("Workspace parameters reconstructed and synchronized clean!", merge_profile):
+            messagebox.showinfo("Import Complete", "Studio profile ingested successfully! Grid ledgers updated.")
     except Exception as e:
         messagebox.showerror("Import Failed", f"Could not ingest configuration script data: {str(e)}")
 
@@ -359,9 +372,10 @@ def open_loop_layout(anchor, library):
 
     def describe(result):
         stats = result["stats"]
+        audit = tag_evidence.describe_loop_tag_audit(result["tag_evidence"])
         if not result["loops"]:
-            return "No loops found yet, so Tempo then Key is suggested."
-        lines = [f"Recommended: {' then '.join(names[l] for l in result['layout']) or 'no sub-folders'}."]
+            return audit + "\n\nNo filename-routed loops found, so Tempo then Key is the fallback."
+        lines = [audit, "", f"Recommended: {' then '.join(names[l] for l in result['layout']) or 'no sub-folders'}."]
         for level in sorter_engine.LOOP_LEVELS:
             info = stats[level]
             percent = round(info["coverage"] * 100)
@@ -387,12 +401,44 @@ def open_loop_layout(anchor, library):
 
     def save():
         layout = enabled_layout()
-        sorter_engine.LOOP_LAYOUT = layout
-        _sync_config_state("Loop layout saved: " + (" > ".join(names[l] for l in layout) or "no sub-folders"))
-        message.config(text="Saved. Run Organize (use Preview first) to apply it to existing loops. "
-                            "Folders you created yourself are left alone.")
+        if _sync_config_state(
+            "Loop layout saved: " + (" > ".join(names[l] for l in layout) or "no sub-folders"),
+            lambda data: data.update(LOOP_LAYOUT=layout),
+        ):
+            message.config(text="Saved. Run Organize (use Preview first) to apply it to existing loops. "
+                                "Folders you created yourself are left alone.")
 
     render()
+    def show_evidence():
+        result = state["recommended"]
+        if result is None:
+            return
+        dialog = tk.Toplevel(win)
+        dialog.title("Loop layout tag evidence")
+        dialog.configure(bg=theme["bg_dark"])
+        dialog.geometry("760x480")
+        dialog.minsize(480, 300)
+        scroll = ttk.Scrollbar(dialog)
+        scroll.pack(side="right", fill="y")
+        text = tk.Text(
+            dialog, wrap="word", bg=theme["bg_field"], fg=theme["fg_light"],
+            selectbackground=theme["tag_enabled"], selectforeground=theme["fg_light"],
+            yscrollcommand=scroll.set, padx=10, pady=10
+        )
+        text.pack(fill="both", expand=True)
+        scroll.configure(command=text.yview)
+        audit = result["tag_evidence"]
+        lines = [tag_evidence.describe_loop_tag_audit(audit), "\nExamples (up to 10):"]
+        for item in audit["examples"]:
+            lines.extend((
+                "\n" + item["path"], "Assignments: " + ", ".join(item["assignments"]),
+                "Manual key: " + (item["manual_key"] or "not unambiguous"),
+                "; ".join(item["notes"]),
+            ))
+        text.insert("1.0", "\n".join(lines))
+        text.configure(state="disabled")
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+
     row = tk.Frame(win, bg=theme["bg_dark"])
     row.pack(fill="x", padx=20, pady=(6, 16))
     tk.Button(row, text="Close", width=10, command=win.destroy, bg=theme["btn_secondary"],
@@ -403,13 +449,23 @@ def open_loop_layout(anchor, library):
                                  bg=theme["tag_enabled"], fg="white", activebackground=theme["tag_enabled"],
                                  activeforeground="white", bd=0, font=("Segoe UI", 9, "bold"), padx=10, pady=3)
     recommend_button.pack(side="left")
+    evidence_button = tk.Button(
+        row, text="Evidence", command=show_evidence, state="disabled",
+        bg=theme["btn_secondary"], fg=theme["fg_light"], bd=0, font=("Segoe UI", 9, "bold")
+    )
+    evidence_button.pack(side="left", padx=8)
 
     result = {}
 
     def work():
-        result["value"] = sorter_engine.recommend_loop_layout(library)
+        try:
+            result["value"] = sorter_engine.recommend_loop_layout(library)
+        except (OSError, ValueError, sqlite3.Error) as error:
+            result["error"] = str(error)
 
     def poll():
+        if getattr(win._root(), "_closing", False):
+            return
         try:
             if not win.winfo_exists():
                 return
@@ -418,14 +474,19 @@ def open_loop_layout(anchor, library):
         if thread.is_alive():
             win.after(150, poll)
             return
+        if "error" in result or "value" not in result:
+            advice.configure(text="Loop layout recommendation failed: " + result.get("error", "Scan did not complete."))
+            _center_over(win, anchor)
+            return
         state["recommended"] = result["value"]
         advice.config(text=describe(result["value"]))
         recommend_button.config(state="normal")
+        evidence_button.config(state="normal")
         _center_over(win, anchor)
 
-    thread = threading.Thread(target=work, daemon=True)
-    thread.start()
-    win.after(150, poll)
+    thread = gui_theme.start_background_job(win, work)
+    if thread is not None:
+        win.after(150, poll)
     win.bind("<Escape>", lambda _e: win.destroy())
     _center_over(win, anchor)
     return win
@@ -803,7 +864,9 @@ def build(parent, status_label_ref):
     ).pack(anchor="w", pady=(0, 2))
     tk.Label(
         candidate_section,
-        text="Smart Learning only suggests rules. Select a suggestion, then choose Use or Dismiss. Nothing is changed automatically. "
+        text=f"Only suggestions with at least {sorter_engine.MIN_RULE_EVIDENCE} supporters are shown, including saved suggestions. "
+             "Scan evidence also requires at least 90% agreement. "
+             "Select a suggestion, then choose Use or Dismiss. Nothing is changed automatically. "
              "Priority uses the same scale as the rules below: a higher number is checked first, so new words go to the bottom (1) and never take files from a more specific rule.",
         font=("Segoe UI", 8), bg=gui_theme.THEME["bg_dark"], fg=gui_theme.THEME["fg_muted"],
         wraplength=760, justify="left"
@@ -814,7 +877,7 @@ def build(parent, status_label_ref):
     candidate_scroll.pack(side="right", fill="y")
     _candidate_tree = ttk.Treeview(
         candidate_wrapper,
-        columns=("Token", "Target", "Priority", "Evidence", "Generated Pattern"),
+        columns=("Token", "Target", "Priority", "Evidence", "Generated Pattern", "Source"),
         show="headings", style="Treeview", height=5,
         yscrollcommand=candidate_scroll.set
     )
@@ -823,7 +886,8 @@ def build(parent, status_label_ref):
     for column, heading, width in (
         ("Token", "Word found", 100), ("Target", "Suggested folder", 150),
         ("Priority", "Priority if used", 100),
-        ("Evidence", "Examples", 70), ("Generated Pattern", "Matching pattern", 260)
+        ("Evidence", "Examples", 70), ("Generated Pattern", "Matching pattern", 200),
+        ("Source", "Evidence source", 110)
     ):
         _candidate_tree.heading(column, text=heading)
         _candidate_tree.column(column, width=width, anchor="w")
@@ -916,8 +980,8 @@ def build(parent, status_label_ref):
                         "Delete"
                     ):
                         return
-                    del sorter_engine.DRUM_KEYWORDS[pattern]
-                    _sync_config_state(f"Deleted sound rule for: {pattern}")
+                    _sync_config_state(f"Deleted sound rule for: {pattern}",
+                                       lambda data: data["DRUM_KEYWORDS"].pop(pattern))
         elif synth_sel:
             vals = _synth_tree.item(synth_sel[0], 'values')
             if vals and len(vals) > 0:
@@ -929,11 +993,11 @@ def build(parent, status_label_ref):
                     ):
                         return
                 if pattern in sorter_engine.SYNTH_EXTS:
-                    del sorter_engine.SYNTH_EXTS[pattern]
-                    _sync_config_state(f"Deleted preset rule for: {pattern}")
+                    _sync_config_state(f"Deleted preset rule for: {pattern}",
+                                       lambda data: data["SYNTH_EXTS"].pop(pattern))
                 elif pattern in sorter_engine.NATIVE_EXTS:
-                    del sorter_engine.NATIVE_EXTS[pattern]
-                    _sync_config_state(f"Deleted Live rack rule for: {pattern}")
+                    _sync_config_state(f"Deleted Live rack rule for: {pattern}",
+                                       lambda data: data["NATIVE_EXTS"].pop(pattern))
         else:
             messagebox.showwarning("Selection Required", "Please select a rule row from either table category to delete.")
 
@@ -945,7 +1009,7 @@ def build(parent, status_label_ref):
         pattern = _drum_tree.item(selection[0], "values")[0]
         try:
             sorter_engine.set_rule_metadata(pattern, enabled=enabled)
-            _sync_config_state(f"{'Enabled' if enabled else 'Disabled'} rule: {pattern}")
+            refresh_matrix_data()
         except (OSError, ValueError, json.JSONDecodeError) as error:
             messagebox.showerror("Rule Update Failure", str(error))
 
@@ -1118,8 +1182,9 @@ def build(parent, status_label_ref):
                 return
             if not ask_confirm(popup, "Add this file type?", f"Send every {extension} file into the folder '{folder}'?", "Add"):
                 return
-            sorter_engine.SYNTH_EXTS[extension] = folder
-            _sync_config_state(f"Added file type rule: {extension} → {folder}")
+            if not _sync_config_state(f"Added file type rule: {extension} → {folder}",
+                                      lambda data: data.setdefault("SYNTH_EXTS", {}).update({extension: folder})):
+                return
             reselect("file", extension)
             update_selected_label()
 
@@ -1137,13 +1202,11 @@ def build(parent, status_label_ref):
             new_folder = values[0]
             if not ask_confirm(popup, "Please confirm", f"Send '{pattern}' to '{new_folder}' instead of '{folder}'?", "Change"):
                 return
-            if kind == "drum":
-                sorter_engine.DRUM_KEYWORDS[pattern] = new_folder
-            elif pattern in sorter_engine.NATIVE_EXTS:
-                sorter_engine.NATIVE_EXTS[pattern] = new_folder
-            else:
-                sorter_engine.SYNTH_EXTS[pattern] = new_folder
-            _sync_config_state(f"Changed folder for {pattern} → {new_folder}")
+            key = ("DRUM_KEYWORDS" if kind == "drum" else
+                   "NATIVE_EXTS" if pattern in sorter_engine.NATIVE_EXTS else "SYNTH_EXTS")
+            if not _sync_config_state(f"Changed folder for {pattern} → {new_folder}",
+                                      lambda data: data[key].update({pattern: new_folder})):
+                return
             reselect(kind, pattern)
             update_selected_label()
 
@@ -1224,9 +1287,13 @@ def build(parent, status_label_ref):
                 "Restore", cards
             ):
                 return
-            for key, rules in missing.items():
-                getattr(sorter_engine, key).update(rules)
-            _sync_config_state(f"Restored {sum(len(r) for r in missing.values())} default rules")
+            def restore_missing(data):
+                for key, rules in missing.items():
+                    data.setdefault(key, {}).update(rules)
+            if not _sync_config_state(
+                f"Restored {sum(len(r) for r in missing.values())} default rules", restore_missing
+            ):
+                return
             update_selected_label()
 
         def advanced_button(text, command, primary=False, danger=False):
@@ -1281,19 +1348,99 @@ def build(parent, status_label_ref):
                 tree.bind("<<TreeviewSelect>>", update_selected_label, add="+")
         update_selected_label()
 
+    review_state = {"busy": False, "scanning": False}
+    review_controls = []
+
+    def review_candidates(selections, decision):
+        if getattr(parent._root(), "_closing", False):
+            return
+        if review_state["busy"]:
+            return
+        if review_state["scanning"]:
+            messagebox.showwarning("Suggestions refreshing", "Wait for the current suggestion scan before reviewing.")
+            return
+        review_state["busy"] = True
+        for control in review_controls:
+            control.configure(state="disabled")
+        if _status_label_ref is not None:
+            _status_label_ref.configure(text=" Application Status: Checking current suggestion evidence...")
+        result = {}
+
+        def work():
+            try:
+                sorter_engine.review_learning_candidates(selections, decision)
+            except (OSError, ValueError, sqlite3.Error) as error:
+                result["error"] = str(error)
+            else:
+                result["completed"] = True
+
+        def poll():
+            if getattr(parent._root(), "_closing", False):
+                return
+            if not parent.winfo_exists():
+                return
+            if thread.is_alive():
+                parent.after(50, poll)
+                return
+            review_state["busy"] = False
+            for control in review_controls:
+                control.configure(state="normal")
+            refresh_matrix_data()
+            if not result.get("completed"):
+                if _status_label_ref is not None:
+                    _status_label_ref.configure(text=" Application Status: Suggestion review failed; no selected rules added.")
+                messagebox.showerror(
+                    "Candidate Review Failure", result.get("error", "Suggestion review did not complete. Refresh Rules before retrying.")
+                )
+            elif _status_label_ref is not None:
+                _status_label_ref.configure(
+                    text=f" Application Status: {'Approved' if decision == 'approved' else 'Dismissed'} "
+                         f"{len(selections)} suggestion(s)."
+                )
+
+        thread = gui_theme.start_background_job(parent, work)
+        if thread is not None:
+            parent.after(50, poll)
+        else:
+            review_state["busy"] = False
+
     def review_selected_candidate(decision):
+        if getattr(parent._root(), "_closing", False):
+            return
         selection = _candidate_tree.selection()
         if not selection:
             messagebox.showwarning("Selection Required", "Select a pending learning candidate first.")
             return
         values = _candidate_tree.item(selection[0], "values")
-        try:
-            sorter_engine.review_learning_candidate(values[0], values[1], decision)
-            _sync_config_state(
-                f"{'Approved' if decision == 'approved' else 'Rejected'} learning candidate: {values[0]}"
-            )
-        except (OSError, ValueError, json.JSONDecodeError) as error:
-            messagebox.showerror("Candidate Review Failure", str(error))
+        review_candidates(((values[0], values[1]),), decision)
+
+    def show_candidate_evidence(_event=None):
+        selection = _candidate_tree.selection()
+        if not selection:
+            return
+        values = _candidate_tree.item(selection[0], "values")
+        candidate = next((
+            item for item in sorter_engine.LEARNED_RULE_CANDIDATES
+            if item.get("token") == values[0] and item.get("target") == values[1]
+        ), None)
+        if candidate is None:
+            messagebox.showerror("Suggestion evidence", "This suggestion is no longer available. Refresh Rules.")
+            return
+        show_notice(
+            parent, "Suggestion evidence",
+            f"Source: {candidate.get('evidence_source', 'legacy metadata')}\n"
+            f"Supporting samples: {candidate.get('count', 0)} / "
+            f"{candidate.get('evidence_total', candidate.get('count', 0))}\n"
+            "Tags: " + (", ".join(candidate.get("evidence_tags", [])) or "not recorded") +
+            "\nExamples: " + (", ".join(candidate.get("examples", [])) or "not recorded") +
+            f"\nLibrary scope: {candidate.get('library_root', 'not recorded; refresh before approval')}" +
+            f"\nRequired support: {candidate.get('min_files', 'not recorded')} files; "
+            f"agreement: {candidate.get('min_share', 'not recorded')}" +
+            "\n\nPending only. Use this suggestion to activate a filename rule; "
+            "scan-based evidence is rechecked before approval. "
+            "Manual tags are evidence, not automatic routing commands."
+        )
+    _candidate_tree.bind("<Double-1>", show_candidate_evidence)
 
     # Keep the common action first and separate advanced maintenance controls below it.
     tk.Label(
@@ -1307,48 +1454,55 @@ def build(parent, status_label_ref):
         fg=gui_theme.THEME["fg_muted"], wraplength=190, justify="left", anchor="w"
     ).pack(fill="x", pady=(0, 6))
     tk.Button(
+        action_panel, text="View evidence", command=show_candidate_evidence,
+        bg=gui_theme.THEME["btn_secondary"], fg=gui_theme.THEME["fg_light"],
+        activebackground=gui_theme.THEME["btn_secondary_hover"], bd=0,
+        font=("Segoe UI", 9), height=1
+    ).pack(fill="x", pady=(0, 5))
+    use_button = tk.Button(
         action_panel, text="Use this suggestion",
         bg=gui_theme.THEME["btn_primary"], fg=gui_theme.THEME["btn_primary_fg"],
         activebackground=gui_theme.THEME["btn_primary_hover"],
         activeforeground=gui_theme.THEME["btn_primary_fg"], bd=0,
         font=("Segoe UI", 9, "bold"), height=2,
         command=lambda: review_selected_candidate("approved")
-    ).pack(fill="x", pady=(0, 5))
+    )
+    use_button.pack(fill="x", pady=(0, 5))
 
     def use_all_candidates():
-        pending = [c for c in sorter_engine.LEARNED_RULE_CANDIDATES if c.get("status", "pending") == "pending"]
+        if getattr(parent._root(), "_closing", False):
+            return
+        pending = [c for c in sorter_engine.LEARNED_RULE_CANDIDATES
+                   if sorter_engine.is_reviewable_learning_candidate(c)]
         if not pending:
             show_notice(parent, "Use all suggestions", "There are no suggestions to review.")
             return
         if not ask_confirm(parent, "Use all suggestions",
                            f"Add all {len(pending)} suggested rules? Each one is ranked automatically so it "
                            "won't steal files from a more specific rule. You can still disable or remove any "
-                           "rule later, and Organize backs up before moving anything.", yes_text="Use all"):
+                           "rule later, and Organize backs up before moving anything. Scan-based evidence "
+                           "is rechecked; if any selected suggestion is stale, none will be added.", yes_text="Use all"):
             return
-        applied = 0
-        try:
-            for candidate in pending:
-                sorter_engine.review_learning_candidate(candidate["token"], candidate["target"], "approved")
-                applied += 1
-        except (OSError, ValueError, json.JSONDecodeError) as error:
-            messagebox.showerror("Candidate Review Failure", str(error))
-        _sync_config_state(f"Added {applied} suggested rules")
+        review_candidates(tuple((candidate["token"], candidate["target"]) for candidate in pending), "approved")
 
-    tk.Button(
+    use_all_button = tk.Button(
         action_panel, text="Use all suggestions",
         bg=gui_theme.THEME["btn_secondary"], fg=gui_theme.THEME["fg_light"],
         activebackground=gui_theme.THEME["btn_secondary_hover"],
         activeforeground=gui_theme.THEME["accent_neon"], bd=1, relief="solid",
         font=("Segoe UI", 9, "bold"), height=2, command=use_all_candidates
-    ).pack(fill="x", pady=(0, 5))
-    tk.Button(
+    )
+    use_all_button.pack(fill="x", pady=(0, 5))
+    dismiss_button = tk.Button(
         action_panel, text="Dismiss this suggestion",
         bg=gui_theme.THEME["bg_panel"], fg=gui_theme.THEME["fg_light"],
         activebackground=gui_theme.THEME["btn_danger_hover"],
         activeforeground="white", bd=1,
         relief="solid", font=("Segoe UI", 9), height=2,
         command=lambda: review_selected_candidate("rejected")
-    ).pack(fill="x", pady=(0, 14))
+    )
+    dismiss_button.pack(fill="x", pady=(0, 14))
+    review_controls.extend((use_button, use_all_button, dismiss_button))
 
     tk.Label(
         action_panel, text="Advanced options",
@@ -1376,34 +1530,56 @@ def build(parent, status_label_ref):
         ).pack(fill="x", pady=(0, bottom))
 
     def auto_suggest_from_library():
+        if getattr(parent._root(), "_closing", False):
+            return
+        if review_state["busy"] or review_state["scanning"]:
+            return
         library = gui_theme.USER_LIBRARY_PATH
         if not library or not os.path.isdir(library):
+            messagebox.showerror("Rule suggestions", "The configured User Library is unavailable. Check its location before refreshing.")
             return
+        review_state["scanning"] = True
+        if _status_label_ref is not None:
+            _status_label_ref.configure(text=" Application Status: Refreshing rule suggestions in the background...")
         result = {}
 
         def work():
             try:
                 found = rule_suggester.suggest_rules(library)
-                result["added"] = rule_suggester.add_suggestions_as_candidates(found)
-            except (OSError, ValueError, json.JSONDecodeError):
-                result["added"] = 0
+                result["added"] = rule_suggester.add_suggestions_as_candidates(found, library_root=library)
+            except (OSError, ValueError, sqlite3.Error) as error:
+                result["error"] = str(error)
 
         def poll():
+            if getattr(parent._root(), "_closing", False):
+                return
             if thread.is_alive():
                 parent.after(300, poll)
                 return
+            review_state["scanning"] = False
             try:
+                if result.get("error"):
+                    if _status_label_ref:
+                        _status_label_ref.config(
+                            text=f" Application Status: Rule suggestions could not be refreshed: {result['error']}",
+                            fg=gui_theme.THEME["accent_gold"])
+                    else:
+                        messagebox.showerror("Rule suggestions", result["error"])
+                    return
                 refresh_matrix_data()
-                if result.get("added") and _status_label_ref:
+                if _status_label_ref is not None:
                     _status_label_ref.config(
-                        text=f" Application Status: Found {result['added']} new rule suggestion(s) in your library. Review them on the Rules tab.",
+                        text=f" Application Status: Suggestions refreshed; {result['added']} new suggestion(s). "
+                             "Evidence updated; unsupported suggestions retired. Review on the Rules tab.",
                         fg=gui_theme.THEME["accent_neon"])
             except tk.TclError:
                 pass
 
-        thread = threading.Thread(target=work, daemon=True)
-        thread.start()
-        parent.after(300, poll)
+        thread = gui_theme.start_background_job(parent, work)
+        if thread is not None:
+            parent.after(300, poll)
+        else:
+            review_state["scanning"] = False
 
     add_action_button("Advanced options…", lambda: open_advanced_options(parent), primary=True, bottom=5)
     add_action_button("Test a filename…", lambda: open_filename_tester(parent), bottom=0)
@@ -1424,6 +1600,13 @@ def build(parent, status_label_ref):
     footer.grid(row=1, column=0, sticky="ew", pady=(8, 0))
     tk.Label(footer, text="Profile (all rules and settings):", font=("Segoe UI", 9),
              bg=gui_theme.THEME["bg_dark"], fg=gui_theme.THEME["fg_muted"]).pack(side="left")
+    tk.Button(
+        footer, text="Refresh suggestions", command=lambda: auto_suggest_from_library(),
+        bg=gui_theme.THEME["btn_secondary"], fg=gui_theme.THEME["fg_light"],
+        activebackground=gui_theme.THEME["btn_secondary_hover"],
+        activeforeground=gui_theme.THEME["accent_neon"], bd=1, relief="solid",
+        font=("Segoe UI", 9, "bold")
+    ).pack(side="left", padx=12)
     for text, command in (("Import", lambda: execute_profile_json_import(parent)),
                           ("Export", lambda: execute_profile_json_export(parent))):
         tk.Button(footer, text=text, command=command, bg=gui_theme.THEME["btn_secondary"],

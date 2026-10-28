@@ -102,7 +102,10 @@ class BackupAndUndoTests(unittest.TestCase):
         log = sorter_engine._new_move_log_path()
         os.makedirs(os.path.dirname(log), exist_ok=True)
         with open(log, "w", encoding="utf-8") as f:
-            f.write(json.dumps({"source": src, "destination": dst}) + "\n")
+            f.write(json.dumps({
+                "source": src, "destination": dst,
+                "destination_identity": sorter_engine._file_identity(dst),
+            }) + "\n")
         with mock.patch.object(sorter_engine, "ASSET_INDEX_FILE", os.path.join(root, "none.db"), create=True):
             result = sorter_engine.undo_move_log(log)
         self.assertEqual(result["restored"], 1)
