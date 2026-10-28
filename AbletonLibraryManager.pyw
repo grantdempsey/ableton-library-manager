@@ -200,7 +200,7 @@ class ProductionStudioManagerApp(tk.Tk):
         # 4. Searchable sound index
         self.tags_panel = TagsTab(self.tab_notebook, self.status_lbl)
         self.tab_notebook.add(self.tags_panel, text=" 🏷️  Library ")
-        self.after(1500, self.tags_panel.rescan_library)
+        self.after(1500, lambda: self.tags_panel.rescan_library(notify_busy=False))
         self.bind("<<LibraryChanged>>", self.tags_panel.invalidate_library, add="+")
 
         self.integrations_panel = IntegrationsTab(self.tab_notebook)

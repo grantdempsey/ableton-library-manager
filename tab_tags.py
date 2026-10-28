@@ -1447,13 +1447,16 @@ class TagsTab(ttk.Frame):
             )
         self._metadata_after_id = self.after(5000, self._poll_live_metadata)
 
-    def rescan_library(self):
+    def rescan_library(self, *, notify_busy=True):
         if getattr(self.winfo_toplevel(), "_closing", False):
             return
         if self._refresh_running:
             return
         if self._metadata_queue is not None or self._live_refresh_queue is not None or self._live_batch_dialog is not None:
-            show_notice(self.winfo_toplevel(), "Rescan library", "Finish the metadata refresh or close the batch editor first.")
+            if notify_busy:
+                show_notice(self.winfo_toplevel(), "Rescan library", "Finish the metadata refresh or close the batch editor first.")
+            else:
+                self.after(500, lambda: self.rescan_library(notify_busy=False))
             return
         library_root = gui_theme.USER_LIBRARY_PATH
         if not library_root or not os.path.isdir(library_root):

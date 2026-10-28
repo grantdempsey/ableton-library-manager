@@ -407,6 +407,19 @@ class RecoveryUiTests(unittest.TestCase):
         self.assertIn("legacy-label", sorter_engine.get_asset_tags(str(self.sample)))
         dialog.destroy()
 
+    def test_startup_rescan_defers_without_modal_during_metadata_edit(self):
+        browser = self.app.tags_panel
+        browser._live_batch_dialog = object()
+        try:
+            with mock.patch("tab_tags.show_notice") as notice, mock.patch.object(browser, "after") as schedule:
+                browser.rescan_library(notify_busy=False)
+            notice.assert_not_called()
+            schedule.assert_called_once()
+            self.assertEqual(500, schedule.call_args.args[0])
+            self.assertFalse(browser._refresh_running)
+        finally:
+            browser._live_batch_dialog = None
+
 
 if __name__ == "__main__":
     unittest.main()

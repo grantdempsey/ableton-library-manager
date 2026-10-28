@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: macos-validation-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   validate:
     strategy:
@@ -41,11 +45,12 @@ jobs:
           python build_app.py
       - name: Smoke native app with fresh and legacy profiles
         shell: bash
+        timeout-minutes: 5
         run: |
           app="$(find release_builds -path '*/dist/AbletonLibraryManager.app' -type d -print -quit)"
           test -n "$app"
           file "$app/Contents/MacOS/AbletonLibraryManager"
           export HOME="$(mktemp -d)"
           mkdir -p "$HOME/Music/Ableton/User Library"
-          python tests/verify_windows_bundle.py "$app"
+          python -u -c "import faulthandler, runpy; faulthandler.dump_traceback_later(180, repeat=True); runpy.run_path('tests/verify_windows_bundle.py', run_name='__main__')" "$app"
           python tests/smoke_macos_package.py "$app"
