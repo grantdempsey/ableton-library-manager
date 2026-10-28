@@ -54,3 +54,27 @@ jobs:
           mkdir -p "$HOME/Music/Ableton/User Library"
           python -u -c "import faulthandler, runpy; faulthandler.dump_traceback_later(180, repeat=True); runpy.run_path('tests/verify_windows_bundle.py', run_name='__main__')" "$app"
           python tests/smoke_macos_package.py "$app"
+      - name: Package and verify unsigned tester download
+        shell: bash
+        timeout-minutes: 3
+        run: |
+          app="$(find release_builds -path '*/dist/AbletonLibraryManager.app' -type d -print -quit)"
+          test -n "$app"
+          mkdir -p tester-download
+          archive="tester-download/AbletonLibraryManager-${{ matrix.runner }}-unsigned-test.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "$archive"
+          unzip -t "$archive"
+          extracted="$(mktemp -d)"
+          ditto -x -k "$archive" "$extracted"
+          diff -qr "$app" "$extracted/AbletonLibraryManager.app"
+          python tests/smoke_macos_package.py "$extracted/AbletonLibraryManager.app"
+          (cd tester-download && shasum -a 256 *.zip > SHA256SUMS.txt)
+          cp RELEASE-ACCEPTANCE.md tester-download/
+          printf 'UNSIGNED TEST BUILD. Not notarized. Do not bypass OS protections.\nSource: %s\nRunner: %s\n' "$GITHUB_SHA" "${{ matrix.runner }}" > tester-download/BUILD-INFO.txt
+      - name: Retain unsigned tester download
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-${{ matrix.runner }}
+          path: tester-download/
+          if-no-files-found: error
+          retention-days: 14

@@ -2,6 +2,30 @@
 
 Updated: October 27, 2026, release recovery and macOS validation preparation.
 
+## Final acceptance preparation
+
+The user has no signing credentials available and requested guided Live testing
+on this Windows PC. No security controls will be bypassed and signing/trust
+remains an explicit public-distribution gate.
+
+- [RELEASE-ACCEPTANCE.md](RELEASE-ACCEPTANCE.md) provides the exact disposable
+  Live add/cancel/rename/remove and unchanged-neighbor/audio checks.
+- `tests/prepare_live_acceptance.py` creates generated tones, verifies their
+  hashes/assignments and launches source with isolated profile/index/library,
+  isolated Options location and no personal catalog database discovery.
+  It does not launch Live or edit personal content. Four new tests cover the
+  fixture, changed-audio/neighbor detection and launcher isolation.
+- Current Windows suite: 353 tests passed in 54.691s, one POSIX-only skip.
+- With the user's authorization, Mac CI now packages each architecture using
+  `ditto`, checks ZIP integrity/extracted content, reruns native smoke on the
+  extraction, and retains unsigned test ZIPs/checksums/source SHA/guide for
+  14 days in Actions artifacts. This is not a GitHub Release or notarization.
+  Verify the new CI run before directing testers to download artifacts.
+
+The human Live test remains pending; do not infer acceptance from the generated
+fixture's automated round trip. Signing credentials/services still need a user
+decision before a trusted stable binary distribution can be completed.
+
 ## Current release decision — native automated gates passed
 
 The user authorized commit/push and macOS validation only, **not publication**.
