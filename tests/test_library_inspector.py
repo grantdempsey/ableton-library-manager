@@ -80,9 +80,10 @@ class LibraryInspectorTests(unittest.TestCase):
         self.assertIsNone(self.tab._tag_suggestions_queue)
 
     def test_inspector_separates_assignments_and_suggestions_from_tag_editing(self):
-        self.assertFalse(self.tab.tag_editor.winfo_ismapped())
-        self.assertIs(self.tab.tag_notebook.master, self.tab.tag_editor)
-        self.assertEqual(2, len(self.tab.tag_notebook.tabs()))
+        self.assertIsNone(self.tab._live_batch_dialog)
+        self.assertFalse(hasattr(self.tab, "tag_editor"))
+        self.assertFalse(hasattr(self.tab, "personal_tag_entry"))
+        self.assertFalse(hasattr(self.tab, "edit_local_tags_button"))
         self.select(self.paths)
         text = self.tab.assigned_tags_text.get("1.0", "end")
         self.assertIn("Manual Live (shared with Ableton)", text)
@@ -95,12 +96,130 @@ class LibraryInspectorTests(unittest.TestCase):
         for control in (self.tab.edit_live_tags_button,):
             self.assertTrue(control.winfo_ismapped())
             self.assertEqual("normal", control.cget("state"))
-        self.assertFalse(self.tab.live_apply_button.winfo_ismapped())
-        self.assertFalse(self.tab.personal_tag_entry.winfo_ismapped())
         self.select([])
         self.assertIn("Select sounds", self.tab.assigned_tags_text.get("1.0", "end"))
-        for control in (self.tab.edit_live_tags_button, self.tab.edit_local_tags_button):
+        for control in (self.tab.edit_live_tags_button,):
             self.assertEqual("disabled", control.cget("state"))
+
+    def test_one_live_editor_captures_selection_and_close_discards_without_writing(self):
+        self.select(self.paths[:1])
+        self.tab.edit_live_tags_button.invoke()
+        self.root.update()
+        dialog = self.tab._live_batch_dialog
+        self.wait_for_batch(dialog)
+        self.assertTrue(dialog.winfo_ismapped())
+        self.assertEqual((self.paths[0],), dialog.paths)
+        self.assertFalse(hasattr(self.tab, "tag_editor"))
+        dialog.group_var.set("Genres")
+        dialog.tag_var.set("Unsaved")
+        dialog.review_button.invoke()
+        self.wait_for_batch(dialog)
+        self.select(self.paths)
+        self.assertEqual((self.paths[0],), dialog.paths)
+        self.assertIn(self.paths[0], dialog.preview.get("1.0", "end"))
+        self.assertNotIn(self.paths[1], dialog.preview.get("1.0", "end"))
+        with mock.patch("live_tag_batch.ask_confirm", return_value=False):
+            dialog.close()
+        self.assertTrue(dialog.winfo_exists())
+        with mock.patch("live_tag_batch.ask_confirm", return_value=True):
+            dialog.close()
+        self.assertIsNone(self.tab._live_batch_dialog)
+        self.assertFalse(os.path.isdir(os.path.join(self.temp_dir.name, "Ableton Folder Info")))
+
+    def test_consolidated_assignments_reload_select_remove_and_rename(self):
+        ableton_tags.prepare_edit(self.paths, "Genres|Shared").commit()
+        ableton_tags.prepare_edit(self.paths[:1], "Character|Partial").commit()
+        dialog = self.open_batch()
+        self.assertEqual(
+            [("Character|Partial", "1/2"), ("Genres|Shared", "2/2")],
+            self.assigned_rows(dialog)
+        )
+        dialog.assigned_tree.selection_set(dialog.assigned_tree.get_children()[0])
+        self.root.update()
+        self.assertEqual("remove", dialog.action_var.get())
+        self.assertEqual("Character|Partial", dialog.tag_var.get())
+        dialog.action_var.set("rename")
+        dialog.replacement_var.set("Genres|Renamed")
+        dialog.review()
+        self.wait_for_batch(dialog)
+        self.assertIn("- Character|Partial", dialog.preview.get("1.0", "end"))
+        self.assertIn("+ Genres|Renamed", dialog.preview.get("1.0", "end"))
+        dialog.save()
+        self.wait_for_batch(dialog)
+        self.assertIn("Changes saved", dialog.status_var.get())
+        self.assertEqual(
+            [("Genres|Renamed", "1/2"), ("Genres|Shared", "2/2")],
+            self.assigned_rows(dialog)
+        )
+        ableton_tags.prepare_edit(self.paths, "Genres|Shared", "remove").commit()
+        dialog.refresh_button.invoke()
+        self.wait_for_batch(dialog)
+        self.assertEqual([("Genres|Renamed", "1/2")], self.assigned_rows(dialog))
+        self.assertIsNone(dialog.plan)
+        self.assertEqual("disabled", str(dialog.save_button.cget("state")))
+
+    def test_assignment_read_failure_is_explicit_and_never_enables_save(self):
+        dialog = self.open_batch()
+        with mock.patch.object(
+            sorter_engine, "refresh_live_tag_cache", side_effect=ValueError("Invalid sidecar")
+        ), mock.patch("live_tag_batch.messagebox.showerror") as error:
+            dialog.refresh_button.invoke()
+            self.wait_for_batch(dialog)
+        self.assertIn("Invalid sidecar", error.call_args.args[1])
+        self.assertIn("Could not read", dialog.status_var.get())
+        self.assertIsNone(dialog.plan)
+        self.assertEqual("disabled", str(dialog.save_button.cget("state")))
+        self.assertFalse(os.path.isdir(os.path.join(self.temp_dir.name, "Ableton Folder Info")))
+
+    def test_assignment_read_is_background_and_single_flight(self):
+        dialog = self.open_batch()
+        release = threading.Event()
+        started = threading.Event()
+        original = sorter_engine.refresh_live_tag_cache
+        threads = []
+        def delayed(paths):
+            threads.append(threading.current_thread())
+            started.set()
+            if not release.wait(3):
+                raise ValueError("Test reader timed out")
+            return original(paths)
+        with mock.patch.object(sorter_engine, "refresh_live_tag_cache", side_effect=delayed) as read:
+            try:
+                dialog.refresh_assignments()
+                self.assertTrue(started.wait(1))
+                dialog.refresh_assignments()
+                heartbeat = []
+                self.root.after_idle(lambda: heartbeat.append(True))
+                self.root.update()
+                self.assertEqual([True], heartbeat)
+                self.assertEqual("disabled", str(dialog.save_button.cget("state")))
+                self.assertTrue(dialog.busy)
+            finally:
+                release.set()
+            self.wait_for_batch(dialog)
+        self.assertEqual(1, read.call_count)
+        self.assertTrue(all(thread is not threading.main_thread() for thread in threads))
+
+    def test_favorites_still_target_captured_selection_without_app_tags(self):
+        self.tab._page_size = 1
+        self.tab._render_results(load_sidebar=False)
+        self.tab._select_all_matching()
+        self.wait_for_select_all()
+        with mock.patch("tab_tags.ask_confirm", return_value=False):
+            self.tab.bulk_remove_favorite()
+        with mock.patch("tab_tags.ask_confirm", return_value=True):
+            self.tab._update_selected_tag("favorite")
+        for path in self.paths:
+            self.assertIn("favorite", sorter_engine.get_asset_tags(path))
+            self.assertNotIn("shared", sorter_engine.get_asset_tags(path))
+        with mock.patch("tab_tags.ask_confirm", return_value=True):
+            self.tab.bulk_remove_favorite()
+        for path in self.paths:
+            self.assertNotIn("favorite", sorter_engine.get_asset_tags(path))
+        with self.assertRaisesRegex(ValueError, "App-only tags have been removed"):
+            self.tab._update_selected_tag("custom")
+        for attribute in ("personal_tag_entry", "personal_tag_list", "add_tag_button", "bulk_add_tag"):
+            self.assertFalse(hasattr(self.tab, attribute))
 
     def test_pagination_view_and_metadata_controls_are_grouped_by_scope(self):
         self.assertEqual("Previous page", self.tab.previous_page_button.cget("text"))
@@ -154,7 +273,7 @@ class LibraryInspectorTests(unittest.TestCase):
             self.assertNotIn("only-first", text)
             self.assertNotIn("category:Disabled", text)
             self.assertNotIn("hidden-personal", text)
-            self.assertEqual(("shared",), self.tab.personal_tag_list.get(0, "end"))
+            self.assertNotIn("\nshared\n", text)
             self.select(self.paths[:1])
             self.tab._open_asset_details()
             self.root.update()
@@ -164,39 +283,14 @@ class LibraryInspectorTests(unittest.TestCase):
             self.assertIn("Folder advice (review only)", self.tab.sound_details_text.get("1.0", "end"))
             write.assert_not_called()
 
-    def test_tag_editor_follows_selection_and_open_close_never_writes(self):
-        self.select(self.paths[:1])
-        before = sorter_engine.list_indexed_tags(library_root=self.temp_dir.name)
-        with mock.patch.object(ableton_tags.TagEdit, "commit") as write, mock.patch.object(
-            self.tab, "_edit_live_tags"
-        ) as edit, mock.patch.object(sorter_engine, "refresh_live_tag_cache") as refresh:
-            self.tab.edit_live_tags_button.invoke()
-            self.root.update()
-            self.assertTrue(self.tab.tag_editor.winfo_ismapped())
-            self.assertEqual(0, self.tab.tag_notebook.index("current"))
-            self.tab.live_tag_var.set("Uncommitted")
-            self.select(self.paths)
-            self.assertEqual("2 sounds selected", self.tab.selected_asset_var.get())
-            self.tab.tag_editor.withdraw()
-            self.tab.edit_live_tags_button.invoke()
-            self.root.update()
-            self.assertEqual(0, self.tab.tag_notebook.index("current"))
-            self.assertEqual("Uncommitted", self.tab.live_tag_var.get())
-            self.assertEqual("", self.tab.live_tag_entry.bind("<Return>"))
-            self.tab.tag_editor.event_generate("<Escape>")
-            self.root.update()
-            self.assertFalse(self.tab.tag_editor.winfo_ismapped())
-            write.assert_not_called()
-            edit.assert_not_called()
-            refresh.assert_not_called()
-        self.assertEqual(before, sorter_engine.list_indexed_tags(library_root=self.temp_dir.name))
-        self.assertEqual(self.paths, self.tab._selected_paths())
 
     def test_live_vocabulary_augments_cached_custom_suggestions_without_assigning_tags(self):
         vocabulary = ("Genres", "Genres|Ambient", "My Group|Subgroup|Custom", "Drums|Snare|Rim")
         self.tab.live_group_var.set("My Group")
         self.tab.live_tag_var.set("Keep typed value")
         before = sorter_engine.list_indexed_tags(library_root=self.temp_dir.name)
+        batch = self.open_batch()
+        batch.tag_var.set("Keep typed value")
         with mock.patch("live_catalog.available_databases", return_value=("chosen.db",)), mock.patch(
             "live_catalog.read_vocabulary", return_value=vocabulary
         ) as read, mock.patch.object(ableton_tags.TagEdit, "commit") as write:
@@ -204,31 +298,16 @@ class LibraryInspectorTests(unittest.TestCase):
             self.wait_for_vocabulary()
             self.assertEqual(
                 ("Drums|Snare|Rim", "Genres|Ambient", "My Group|Subgroup|Custom"),
-                self.tab.live_tag_entry.cget("values")
+                batch.tag_entry.cget("values")
             )
-            self.assertIn("My Group", self.tab.live_group_entry.cget("values"))
-            self.assertNotIn("Format", self.tab.live_group_entry.cget("values"))
-            self.assertEqual("Keep typed value", self.tab.live_tag_var.get())
-            self.assertEqual("My Group", self.tab.live_group_var.get())
+            self.assertIn("My Group", batch.group_entry.cget("values"))
+            self.assertNotIn("Format", batch.group_entry.cget("values"))
+            self.assertEqual("Keep typed value", batch.tag_var.get())
+            self.assertEqual("My Group", batch.group_var.get())
             self.tab._load_live_tag_suggestions()
             read.assert_called_once_with("chosen.db")
-            self.select(self.paths)
-            self.tab.live_batch_button.invoke()
-            batch = self.tab._live_batch_dialog
             batch.load_suggestions()
-            self.assertEqual(self.tab.live_tag_entry.cget("values"), batch.tag_entry.cget("values"))
             self.assertIn("My Group", batch.group_entry.cget("values"))
-            batch.close()
-            self.tab._open_live_tags()
-            dialogs = [child for child in self.tab.winfo_children() if isinstance(child, tk.Toplevel)]
-            self.assertEqual(1, len(dialogs))
-            choices = [
-                child.cget("values") for child in dialogs[0].winfo_children()
-                if child.winfo_class() == "TCombobox"
-            ]
-            self.assertIn(self.tab.live_tag_entry.cget("values"), choices)
-            self.assertIn(self.tab.live_group_entry.cget("values"), choices)
-            dialogs[0].destroy()
             write.assert_not_called()
         self.assertEqual(before, sorter_engine.list_indexed_tags(library_root=self.temp_dir.name))
 
@@ -251,6 +330,7 @@ class LibraryInspectorTests(unittest.TestCase):
     def test_library_has_one_editable_browser_and_keeps_vocabulary_choice(self):
         self.assertFalse(hasattr(self.tab, "library_source_picker"))
         self.assertFalse(hasattr(self.tab, "_catalog_panel"))
+        self.select(self.paths)
         self.tab._open_tag_editor()
         with mock.patch("tab_tags.filedialog.askopenfilename", return_value="selected.db"), mock.patch(
             "live_catalog.read_vocabulary", return_value=("Genres|Ambient", "Custom|Sub|Tag")
@@ -259,14 +339,14 @@ class LibraryInspectorTests(unittest.TestCase):
             self.wait_for_vocabulary()
         read.assert_called_once_with("selected.db")
         write.assert_not_called()
-        self.assertIn("Custom|Sub|Tag", self.tab.live_tag_entry.cget("values"))
+        self.assertIn("Custom|Sub|Tag", self.tab._live_batch_dialog.tag_entry.cget("values"))
         self.assertEqual("selected.db", self.tab._selected_vocabulary_database)
 
     def test_library_help_does_not_direct_users_to_removed_catalog(self):
         with mock.patch("tab_tags.show_notice") as notice:
             self.tab._explain_tag_sources()
         help_text = notice.call_args.args[2]
-        self.assertIn("Vocabulary source...", help_text)
+        self.assertIn("Tag suggestions source...", help_text)
         self.assertNotIn("Ableton catalog", help_text)
         self.tab._render_tag_browser([])
         self.assertIn("No manual Live assignments", self.tab.tag_browser_status.cget("text"))
@@ -279,13 +359,13 @@ class LibraryInspectorTests(unittest.TestCase):
         self.tab.browser_panes.sash_place(0, before + 30, 0)
         self.root.update()
         self.assertGreater(self.tab.browser_panes.sash_coord(0)[0], before)
-        self.assertEqual("normal", self.tab.add_tag_button.cget("state"))
+        self.assertEqual("normal", self.tab.edit_live_tags_button.cget("state"))
         self.assertIs(self.tab.favorite_button.master, self.tab.unfavorite_button.master)
         self.assertTrue(self.tab.favorite_button.winfo_ismapped())
-        self.assertFalse(self.tab.tag_editor.winfo_ismapped())
+        self.assertIsNone(self.tab._live_batch_dialog)
         self.assertGreater(self.tab.assigned_tags_text.winfo_height(), 20)
         self.assertLess(
-            self.tab.edit_local_tags_button.winfo_rootx() + self.tab.edit_local_tags_button.winfo_width(),
+            self.tab.edit_live_tags_button.winfo_rootx() + self.tab.edit_live_tags_button.winfo_width(),
             self.root.winfo_rootx() + self.root.winfo_width()
         )
         self.tab.inspector_toggle.invoke()
@@ -304,11 +384,11 @@ class LibraryInspectorTests(unittest.TestCase):
         self.assertEqual("No sounds selected", self.tab.selection_count_var.get())
         for control in (
             self.tab.play_button, self.tab.favorite_button, self.tab.unfavorite_button,
-            self.tab.add_tag_button, self.tab.remove_tag_button, self.tab.personal_tag_entry
+            self.tab.edit_live_tags_button
         ):
             self.assertEqual("disabled", control.cget("state"))
         self.assertEqual((), self.tab.waveform_canvas.find_all())
-        self.assertEqual(0, self.tab.personal_tag_list.size())
+        self.assertIsNone(self.tab._live_batch_dialog)
 
     def test_library_hints_are_cached_explainable_and_clear_on_multiselection(self):
         ableton_tags.prepare_edit(self.paths[:1], "Sounds|Snare").commit()
@@ -332,35 +412,6 @@ class LibraryInspectorTests(unittest.TestCase):
         self.assertFalse(hasattr(self.tab, "recommendation_text"))
         self.assertTrue(os.path.isfile(self.paths[0]))
 
-    def test_live_tag_dialog_shared_assignments_and_minimum_layout(self):
-        ableton_tags.prepare_edit(self.paths, "Sounds|Shared").commit()
-        ableton_tags.prepare_edit(self.paths[:1], "Sounds|Only first").commit()
-        self.select(self.paths)
-        self.tab._open_live_tags()
-        self.root.update()
-        dialog = next(child for child in self.tab.winfo_children() if isinstance(child, tk.Toplevel))
-        dialog.geometry("580x420")
-        self.root.update()
-        listing = next(child for child in dialog.winfo_children() if isinstance(child, tk.Listbox))
-        self.assertEqual(("Sounds|Shared",), listing.get(0, "end"))
-        controls = [child for child in dialog.winfo_children() if isinstance(child, tk.Entry)]
-        for frame in dialog.winfo_children():
-            controls.extend(child for child in frame.winfo_children() if isinstance(child, tk.Button))
-        self.assertEqual(6, len(controls))
-        for control in controls:
-            with self.subTest(control=control.winfo_class()):
-                self.assertTrue(control.winfo_ismapped())
-                self.assertGreaterEqual(control.winfo_rootx(), dialog.winfo_rootx())
-                self.assertLessEqual(
-                    control.winfo_rootx() + control.winfo_width(),
-                    dialog.winfo_rootx() + dialog.winfo_width()
-                )
-                self.assertLessEqual(
-                    control.winfo_rooty() + control.winfo_height(),
-                    dialog.winfo_rooty() + dialog.winfo_height()
-                )
-        self.show_error.assert_not_called()
-        dialog.destroy()
 
     def test_inline_custom_tags_round_trip_in_every_verified_group(self):
         self.select(self.paths[:1])
@@ -368,11 +419,11 @@ class LibraryInspectorTests(unittest.TestCase):
             with self.subTest(group=group), mock.patch("tab_tags.ask_confirm", return_value=True):
                 self.tab.live_group_var.set(group)
                 self.tab.live_tag_var.set("Custom label")
-                self.tab._apply_inline_live_tag("add")
+                self.preview_inline("add")
                 self.finish_inline_change()
                 self.assertIn(f"{group}|Custom label", ableton_tags.sample_tags(self.paths[0]))
                 self.assertIn(f"{group}|Custom label", sorter_engine.get_indexed_asset(self.paths[0])["ableton_tags"])
-                self.tab._apply_inline_live_tag("remove")
+                self.preview_inline("remove")
                 self.finish_inline_change()
                 self.assertNotIn(f"{group}|Custom label", ableton_tags.sample_tags(self.paths[0]))
         self.assertEqual([], ableton_tags.sample_tags(self.paths[1]))
@@ -410,55 +461,46 @@ class LibraryInspectorTests(unittest.TestCase):
         for path in self.paths:
             self.assertEqual(["Character|Custom character"], ableton_tags.sample_tags(path))
 
-    def test_single_selection_inline_tagging_and_removal(self):
-        self.select(self.paths[:1])
-        self.assertEqual("1 sound selected", self.tab.selection_count_var.get())
-        self.assertEqual(
-            ("only-first", "shared"), self.tab.personal_tag_list.get(0, "end")
-        )
-        self.tab.new_tag_var.set("  Dark  ")
-        self.tab.add_tag_button.invoke()
-        self.root.update()
-        self.assertIn("dark", sorter_engine.get_asset_tags(self.paths[0]))
-        self.assertNotIn("dark", sorter_engine.get_asset_tags(self.paths[1]))
-        self.assertEqual(self.paths[:1], self.tab._selected_paths())
-        index = self.tab.personal_tag_list.get(0, "end").index("dark")
-        self.tab.personal_tag_list.selection_set(index)
-        self.tab._personal_tag_selected()
-        self.assertEqual("dark", self.tab.new_tag_var.get())
-        self.tab.remove_tag_button.invoke()
-        self.root.update()
-        self.assertNotIn("dark", sorter_engine.get_asset_tags(self.paths[0]))
-        self.tab._request_sidebar_load.assert_called()
-        self.show_error.assert_not_called()
-
-    def test_live_tags_are_displayed_separately_and_cannot_be_edited_locally(self):
-        connection = sorter_engine._asset_index_connection()
-        try:
-            connection.execute(
-                "INSERT INTO asset_tags (asset_path, tag, enabled, source) "
-                "VALUES (?, 'ableton:Sounds|Test Tag', 1, 'ableton')",
-                (self.paths[0],)
-            )
-            connection.commit()
-        finally:
-            connection.close()
-        self.select(self.paths[:1])
-        self.assertIn("Sounds > Test Tag", self.tab.assigned_tags_text.get("1.0", "end"))
-        self.assertNotIn(
-            "ableton:Sounds|Test Tag", self.tab.personal_tag_list.get(0, "end")
-        )
-        self.tab.new_tag_var.set("ableton:Sounds|Test Tag")
-        self.tab.remove_tag_button.invoke()
-        self.show_error.assert_called_once()
-        self.assertEqual(
-            ["Sounds|Test Tag"], sorter_engine.get_indexed_asset(self.paths[0])["ableton_tags"]
-        )
 
     def live_rows(self):
+        text = self.tab.assigned_tags_text.get("1.0", "end")
+        if "Manual Live (shared with Ableton)" not in text:
+            return []
+        section = text.split("Manual Live (shared with Ableton)\n", 1)[1]
+        import re
+        rows = []
+        for line in section.strip().splitlines():
+            if line == "None":
+                continue
+            match = re.fullmatch(r"(.*) \(([\d,]+)/([\d,]+)\)", line)
+            if match:
+                tag, count, total = match.groups()
+                count, total = count.replace(",", ""), total.replace(",", "")
+                rows.append((tag.replace(" > ", "|"), f"{count}/{total} {'all' if count == total else 'some'}"))
+            else:
+                rows.append((line.replace(" > ", "|"), "1/1 all"))
+        return rows
+
+    def preview_inline(self, action="add"):
+        try:
+            tag = ableton_tags.qualify_tag(self.tab.live_tag_var.get(), self.tab.live_group_var.get())
+        except ValueError as error:
+            self.show_error("Live tags", str(error))
+            return
+        self.tab._edit_live_tags(self.tab._selected_paths(), tag, action)
+
+    def suggestion_editor(self):
+        if self.tab._live_batch_dialog is None:
+            self.select(self.paths)
+            self.tab._open_live_batch()
+            self.root.update()
+            self.wait_for_batch(self.tab._live_batch_dialog)
+        return self.tab._live_batch_dialog
+
+    def assigned_rows(self, dialog):
         return [
-            self.tab.live_tag_tree.item(item, "values")
-            for item in self.tab.live_tag_tree.get_children()
+            dialog.assigned_tree.item(item, "values")
+            for item in dialog.assigned_tree.get_children()
         ]
 
     def set_browser_tags_from_index(self):
@@ -503,7 +545,7 @@ class LibraryInspectorTests(unittest.TestCase):
         sorter_engine.refresh_live_tag_cache(self.paths)
         self.select(self.paths)
         self.assertTrue(self.tab._add_discovery_filters(
-            ["ableton:Sounds|Bass", "shared"], "Match any",
+            ["ableton:Sounds|Bass", "category:Snares"], "Match any",
             "Any manual Live tags", "Character"
         ))
         self.root.update()
@@ -638,7 +680,7 @@ class LibraryInspectorTests(unittest.TestCase):
         self.select(self.paths)
         with mock.patch("tab_tags.ask_confirm", return_value=True):
             self.tab.live_tag_var.set("Character|First")
-            self.tab.live_apply_button.invoke()
+            self.preview_inline()
         self.finish_inline_change()
         self.root.update()
         self.assertEqual([("ableton:Character|First", 2, "Live: Character|First")], self.tab._tag_browser_rows)
@@ -721,7 +763,7 @@ class LibraryInspectorTests(unittest.TestCase):
             self.run_metadata_probe()
         self.assertIn("cached assignments retained: Invalid metadata", self.tab.freshness_var.get())
         self.assertEqual([("Sounds|Keep", "2/2 all")], self.live_rows())
-        self.assertEqual("normal", self.tab.live_apply_button.cget("state"))
+        self.assertEqual("normal", self.tab.edit_live_tags_button.cget("state"))
         self.run_metadata_probe()
         self.run_metadata_probe()
         self.assertIn("metadata checked", self.tab.freshness_var.get())
@@ -748,21 +790,6 @@ class LibraryInspectorTests(unittest.TestCase):
         self.assertIn(last_scan, self.tab.freshness_var.get())
         self.show_error.assert_called_once()
 
-    def test_freshness_monitor_toggle_and_success_label_fit_without_hiding_controls(self):
-        self.select(self.paths)
-        self.tab._open_tag_editor()
-        self.run_metadata_probe()
-        self.run_metadata_probe()
-        self.root.update()
-        for control in (self.tab.live_tag_tree, self.tab.live_apply_button, self.tab.live_batch_button):
-            self.assertTrue(control.winfo_ismapped())
-            self.assertGreater(control.winfo_height(), 10)
-        self.tab.monitor_live_var.set(False)
-        self.tab._monitor_toggled()
-        self.assertIn("monitoring paused", self.tab.freshness_var.get())
-        self.tab.monitor_live_var.set(True)
-        self.tab._monitor_toggled()
-        self.assertIn("monitoring enabled", self.tab.freshness_var.get())
 
     def test_monitor_probe_blocks_rescan_and_already_open_dialog_write(self):
         self.tab._metadata_queue = mock.Mock()
@@ -781,6 +808,7 @@ class LibraryInspectorTests(unittest.TestCase):
         self.select(self.paths)
         self.tab._open_live_batch()
         self.root.update()
+        self.wait_for_batch(self.tab._live_batch_dialog)
         return self.tab._live_batch_dialog
 
     def wait_for_batch(self, dialog):
@@ -990,11 +1018,12 @@ class LibraryInspectorTests(unittest.TestCase):
         dialog.tag_var.set("Sounds|First")
         dialog.enqueue()
         dialog.action_var.set("rename")
-        dialog.geometry("680x560")
+        dialog.geometry("680x620")
         self.root.update()
         for control in (
             dialog.action_entry, dialog.tag_entry, dialog.replacement_entry, dialog.queue_button,
-            dialog.remove_button, dialog.review_button, dialog.preview, dialog.close_button, dialog.save_button
+            dialog.remove_button, dialog.review_button, dialog.preview, dialog.close_button, dialog.save_button,
+            dialog.assigned_tree, dialog.refresh_button, dialog.group_entry, dialog.vocabulary_button
         ):
             self.assertTrue(control.winfo_ismapped())
             self.assertGreater(control.winfo_height(), 10)
@@ -1049,14 +1078,15 @@ class LibraryInspectorTests(unittest.TestCase):
         self.assertEqual([
             ("Character|Only first", "1/2 some"), ("Sounds|Shared", "2/2 all")
         ], self.live_rows())
-        first = self.tab.live_tag_tree.get_children()[0]
-        self.tab.live_tag_tree.selection_set(first)
+        dialog = self.suggestion_editor()
+        first = dialog.assigned_tree.get_children()[0]
+        dialog.assigned_tree.selection_set(first)
         self.root.update()
-        self.assertEqual("Character|Only first", self.tab.live_tag_var.get())
+        self.assertEqual("Character|Only first", dialog.tag_var.get())
         self.tab._load_live_tag_suggestions()
         self.wait_for_vocabulary()
         self.assertEqual(
-            ("Character|Only first", "Sounds|Shared"), self.tab.live_tag_entry.cget("values")
+            ("Character|Only first", "Sounds|Shared"), dialog.tag_entry.cget("values")
         )
         self.show_error.assert_not_called()
 
@@ -1112,8 +1142,8 @@ class LibraryInspectorTests(unittest.TestCase):
                                   "generated_counts": {"category:Snares": 1200}, "shared_personal_tags": ["shared"]}
                 ):
                     self.tab._show_selected_asset()
-                    self.assertEqual("disabled", self.tab.live_apply_button.cget("state"))
-                    self.assertEqual("disabled", self.tab.add_tag_button.cget("state"))
+                    self.assertEqual("disabled", self.tab.edit_live_tags_button.cget("state"))
+                    self.assertEqual("disabled", self.tab.favorite_button.cget("state"))
                     deadline = time.monotonic() + 3
                     while self.tab._selection_summary_queue is not None and time.monotonic() < deadline:
                         self.root.update()
@@ -1121,12 +1151,12 @@ class LibraryInspectorTests(unittest.TestCase):
                     self.assertIsNone(self.tab._selection_summary_queue)
                 if error is None:
                     self.assertEqual([("Sounds|Snare", "1200/1200 all")], self.live_rows())
-                    self.assertEqual("normal", self.tab.add_tag_button.cget("state"))
-                    self.assertEqual(("shared",), self.tab.personal_tag_list.get(0, "end"))
+                    self.assertEqual("normal", self.tab.favorite_button.cget("state"))
+                    self.assertNotIn("\nshared", self.tab.assigned_tags_text.get("1.0", "end"))
                 else:
                     self.assertEqual("Selection is out of date", self.tab.selected_asset_var.get())
                     self.assertEqual([], self.live_rows())
-                    self.assertEqual("disabled", self.tab.add_tag_button.cget("state"))
+                    self.assertEqual("disabled", self.tab.favorite_button.cget("state"))
 
     def test_select_page_accumulates_across_pages_and_clear_removes_everything(self):
         self.tab._page_size = 1
@@ -1159,7 +1189,7 @@ class LibraryInspectorTests(unittest.TestCase):
         self.assertEqual(set(self.paths), set(self.tab._selected_paths()))
         self.assertEqual("2 sounds selected (1 off page)", self.tab.selection_count_var.get())
         self.tab.live_tag_var.set("Character|Batch")
-        self.tab.live_apply_button.invoke()
+        self.preview_inline()
         batch = self.tab._live_batch_dialog
         self.wait_for_batch(batch)
         with mock.patch("live_tag_batch.ask_confirm", return_value=True) as confirm:
@@ -1219,23 +1249,6 @@ class LibraryInspectorTests(unittest.TestCase):
         self.assertEqual(self.paths[:1], self.tab._selected_paths())
         self.assertIn("Unavailable", self.show_error.call_args.args[1])
 
-    def test_off_page_local_writes_require_confirmation_and_capture_exact_paths(self):
-        self.tab._page_size = 1
-        self.tab._render_results(load_sidebar=False)
-        self.tab._select_all_matching()
-        self.wait_for_select_all()
-        self.tab.new_tag_var.set("batch-local")
-        with mock.patch("tab_tags.ask_confirm", return_value=False):
-            self.tab.add_tag_button.invoke()
-        for path in self.paths:
-            self.assertNotIn("batch-local", sorter_engine.get_asset_tags(path))
-        self.tab.new_tag_var.set("batch-local")
-        with mock.patch("tab_tags.ask_confirm", return_value=True) as confirm:
-            self.tab.add_tag_button.invoke()
-        self.assertIn("2 selected sounds, including 1 off", confirm.call_args.args[2])
-        for path in self.paths:
-            self.assertIn("batch-local", sorter_engine.get_asset_tags(path))
-        self.assertEqual(set(self.paths), set(self.tab._selected_paths()))
 
     def test_stale_off_page_index_disables_writes_and_library_change_clears_selection(self):
         self.tab._page_size = 1
@@ -1247,8 +1260,8 @@ class LibraryInspectorTests(unittest.TestCase):
             connection.execute("DELETE FROM assets WHERE path = ?", (self.paths[1],))
         connection.close()
         self.tab._show_selected_asset()
-        self.assertEqual("disabled", self.tab.live_apply_button.cget("state"))
-        self.assertEqual("disabled", self.tab.add_tag_button.cget("state"))
+        self.assertEqual("disabled", self.tab.edit_live_tags_button.cget("state"))
+        self.assertEqual("disabled", self.tab.favorite_button.cget("state"))
         self.tab.invalidate_library()
         self.root.update()
         self.assertEqual(set(), self.tab._selection_paths)
@@ -1264,26 +1277,26 @@ class LibraryInspectorTests(unittest.TestCase):
         self.select(self.paths)
         self.tab.live_tag_var.set("Sounds|Partial")
         with mock.patch("tab_tags.ask_confirm", return_value=True):
-            self.tab.live_apply_button.invoke()
+            self.preview_inline()
         self.finish_inline_change()
         self.assertEqual([("Sounds|Partial", "2/2 all")], self.live_rows())
         self.select(self.paths[:1])
         with mock.patch("tab_tags.ask_confirm", return_value=True):
-            self.tab.live_remove_button.invoke()
+            self.preview_inline("remove")
         self.finish_inline_change()
         self.assertEqual([], ableton_tags.sample_tags(self.paths[0]))
         self.assertEqual(["Sounds|Partial"], ableton_tags.sample_tags(self.paths[1]))
-        self.assertIn("only-first", sorter_engine.get_asset_tags(self.paths[0]))
+        self.assertNotIn("only-first", sorter_engine.get_asset_tags(self.paths[0]))
         self.show_error.assert_not_called()
 
     def test_inline_cancel_and_invalid_tag_never_write_sidecars(self):
         self.select(self.paths)
         self.tab.live_tag_var.set("Sounds|Cancelled")
         with mock.patch("tab_tags.ask_confirm", return_value=False):
-            self.tab.live_apply_button.invoke()
+            self.preview_inline()
         self.finish_inline_change(save=False)
         self.tab.live_tag_var.set("Sounds||Invalid")
-        self.tab.live_apply_button.invoke()
+        self.preview_inline()
         self.show_error.assert_called_once()
         self.assertFalse(os.path.isdir(os.path.join(self.temp_dir.name, "Ableton Folder Info")))
 
@@ -1300,14 +1313,16 @@ class LibraryInspectorTests(unittest.TestCase):
             self.tab._live_refresh_queue = None
 
     def test_suggestion_failure_reports_error_and_retains_old_choices(self):
-        self.tab.live_tag_entry.configure(values=("Sounds|Stale",))
+        dialog = self.suggestion_editor()
+        dialog.tag_entry.configure(values=("Sounds|Stale",))
         with mock.patch.object(sorter_engine, "list_indexed_tags", side_effect=ValueError("Unavailable index")):
             self.tab._load_live_tag_suggestions()
             self.wait_for_vocabulary()
-        self.assertEqual(("Sounds|Stale",), self.tab.live_tag_entry.cget("values"))
+        self.assertEqual(("Sounds|Stale",), dialog.tag_entry.cget("values"))
         self.assertIn("Unavailable index", self.show_error.call_args.args[1])
 
     def test_slow_dropdown_query_is_background_single_flight_and_cached(self):
+        dialog = self.suggestion_editor()
         release = threading.Event()
         threads = []
         def read(**_kwargs):
@@ -1330,7 +1345,7 @@ class LibraryInspectorTests(unittest.TestCase):
                 release.set()
             self.wait_for_vocabulary()
             self.assertTrue(all(thread is not threading.main_thread() for thread in threads))
-            self.assertIn("Genres|Ambient", self.tab.live_tag_entry.cget("values"))
+            self.assertIn("Genres|Ambient", dialog.tag_entry.cget("values"))
             self.tab.live_group_var.set("Keep custom group")
             self.tab.live_tag_var.set("Keep typed tag")
             for _ in range(10):
@@ -1343,30 +1358,6 @@ class LibraryInspectorTests(unittest.TestCase):
             self.wait_for_vocabulary()
             self.assertEqual(2, scan.call_count)
 
-    def test_app_only_tag_controls_are_hidden_without_deleting_saved_data(self):
-        self.select(self.paths[:1])
-        before = sorter_engine.get_indexed_asset(self.paths[0])["personal_tags"]
-        self.tab.edit_live_tags_button.invoke()
-        self.root.update()
-        visible_tabs = [
-            self.tab.tag_notebook.tab(tab, "text")
-            for tab in self.tab.tag_notebook.tabs()
-            if self.tab.tag_notebook.tab(tab, "state") != "hidden"
-        ]
-        self.assertEqual(["Ableton Live tags"], visible_tabs)
-        for control in (self.tab.edit_local_tags_button, self.tab.personal_tag_entry, self.tab.add_tag_button):
-            self.assertFalse(control.winfo_ismapped())
-        self.assertNotIn("only-first", self.tab.assigned_tags_text.get("1.0", "end"))
-        self.tab.tag_editor.withdraw()
-        self.tab._open_asset_details()
-        self.root.update()
-        widgets = list(self.tab._details_dialog.winfo_children())
-        while widgets:
-            widget = widgets.pop()
-            widgets.extend(widget.winfo_children())
-            if widget.winfo_class() in ("Button", "Label"):
-                self.assertNotIn(widget.cget("text"), ("Add tag", "Remove tag", "Personal tag:", "only-first"))
-        self.assertEqual(before, sorter_engine.get_indexed_asset(self.paths[0])["personal_tags"])
 
     def test_suggestion_invalidation_discards_stale_read_and_updates_open_editors(self):
         release = threading.Event()
@@ -1393,11 +1384,9 @@ class LibraryInspectorTests(unittest.TestCase):
                 release.set()
             self.wait_for_vocabulary()
             self.assertEqual(2, len(calls))
-            self.assertNotIn("Workflow|Old", self.tab.live_tag_entry.cget("values"))
+            self.assertNotIn("Workflow|Old", batch.tag_entry.cget("values"))
             self.assertIn("Workflow|Current", batch.tag_entry.cget("values"))
-            batch.close()
-            self.tab._open_live_tags()
-            tag_entry, group_entry = self.tab._rename_suggestion_entries
+            tag_entry, group_entry = batch.tag_entry, batch.group_entry
             self.tab._live_vocabulary = ("Genres|Ambient",)
             self.tab._update_tag_suggestion_choices()
             self.assertIn("Genres|Ambient", tag_entry.cget("values"))
@@ -1439,8 +1428,8 @@ class LibraryInspectorTests(unittest.TestCase):
         ableton_tags.prepare_edit(self.paths, "Sounds|External").commit()
         self.select(self.paths[:1])
         with mock.patch.object(ableton_tags.TagEdit, "commit") as write:
-            self.tab.live_refresh_button.invoke()
-            self.assertEqual("disabled", self.tab.live_apply_button.cget("state"))
+            self.tab._refresh_selected_live_tags()
+            self.assertEqual("disabled", self.tab.edit_live_tags_button.cget("state"))
             self.select(self.paths[1:])
             self.wait_for_live_refresh()
             write.assert_not_called()
@@ -1455,36 +1444,12 @@ class LibraryInspectorTests(unittest.TestCase):
         sorter_engine.refresh_live_tag_cache(self.paths)
         self.select(self.paths)
         with mock.patch.object(sorter_engine, "refresh_live_tag_cache", side_effect=ValueError("Invalid XMP")):
-            self.tab.live_refresh_button.invoke()
+            self.tab._refresh_selected_live_tags()
             self.wait_for_live_refresh()
-        self.assertEqual("normal", self.tab.live_apply_button.cget("state"))
+        self.assertEqual("normal", self.tab.edit_live_tags_button.cget("state"))
         self.assertEqual([("Sounds|Keep", "2/2 all")], self.live_rows())
         self.assertIn("Invalid XMP", self.show_error.call_args.args[1])
 
-    def test_live_controls_fit_minimum_width_and_disable_without_selection(self):
-        self.tab._open_tag_editor()
-        self.tab.tag_editor.geometry("620x560")
-        self.select(self.paths)
-        self.root.update()
-        for control in (
-            self.tab.live_tag_tree, self.tab.live_tag_entry,
-            self.tab.live_apply_button, self.tab.live_remove_button,
-            self.tab.live_refresh_button, self.tab.live_tags_button
-        ):
-            self.assertTrue(control.winfo_ismapped())
-            self.assertGreater(control.winfo_height(), 10)
-            self.assertLessEqual(
-                control.winfo_rootx() + control.winfo_width(),
-                self.tab.tag_editor.winfo_rootx() + self.tab.tag_editor.winfo_width()
-            )
-            self.assertLessEqual(
-                control.winfo_rooty() + control.winfo_height(),
-                self.tab.tag_editor.winfo_rooty() + self.tab.tag_editor.winfo_height()
-            )
-        self.select([])
-        self.assertEqual([], self.live_rows())
-        for control in (self.tab.live_apply_button, self.tab.live_remove_button, self.tab.live_refresh_button):
-            self.assertEqual("disabled", control.cget("state"))
 
     def test_explicit_live_edit_confirms_writes_and_refreshes(self):
         self.select(self.paths)
@@ -1494,7 +1459,7 @@ class LibraryInspectorTests(unittest.TestCase):
         with mock.patch("live_tag_batch.ask_confirm", return_value=True) as confirm:
             batch.save()
         self.wait_for_batch(batch)
-        self.assertIn("2 sounds", batch.selection_label.cget("text"))
+        self.assertIn("2 selected sounds", batch.selection_label.cget("text"))
         for path in self.paths:
             self.assertEqual(["Sounds|Shared"], ableton_tags.sample_tags(path))
             self.assertEqual(["Sounds|Shared"], sorter_engine.get_indexed_asset(path)["ableton_tags"])
@@ -1532,85 +1497,10 @@ class LibraryInspectorTests(unittest.TestCase):
         self.assertIn("sidecars were saved", self.show_error.call_args.args[1])
         self.assertEqual(["Sounds|Saved"], ableton_tags.sample_tags(self.paths[0]))
 
-    def test_bulk_tags_and_favorites_preserve_entire_selection(self):
-        self.select(self.paths)
-        self.assertEqual("2 sounds selected", self.tab.selection_count_var.get())
-        self.assertEqual(("shared",), self.tab.personal_tag_list.get(0, "end"))
-        self.assertEqual("disabled", self.tab.play_button.cget("state"))
-        self.tab.new_tag_var.set("gritty")
-        self.tab.add_tag_button.invoke()
-        self.root.update()
-        self.assertEqual(set(self.paths), set(self.tab._selected_paths()))
-        for path in self.paths:
-            self.assertIn("gritty", sorter_engine.get_asset_tags(path))
-        self.tab.favorite_button.invoke()
-        self.root.update()
-        for path in self.paths:
-            self.assertIn("favorite", sorter_engine.get_asset_tags(path))
-        self.tab.unfavorite_button.invoke()
-        self.tab.new_tag_var.set("only-first")
-        self.tab.remove_tag_button.invoke()
-        self.root.update()
-        self.assertNotIn("only-first", sorter_engine.get_asset_tags(self.paths[0]))
-        for path in self.paths:
-            self.assertNotIn("favorite", sorter_engine.get_asset_tags(path))
-            with open(path, "rb") as handle:
-                self.assertEqual(b"unchanged sound", handle.read())
-        self.show_error.assert_not_called()
-
-    def test_single_favorite_toggle_and_disabled_tag_reenable(self):
-        sorter_engine.set_asset_tag_enabled(self.paths[0], "shared", False)
-        self.select(self.paths[:1])
-        self.assertNotIn("shared", self.tab.personal_tag_list.get(0, "end"))
-        self.tab.new_tag_var.set("shared")
-        self.tab.add_tag_button.invoke()
-        self.root.update()
-        self.assertIn("shared", self.tab.personal_tag_list.get(0, "end"))
-        self.tab.favorite_button.invoke()
-        self.root.update()
-        self.assertIn("favorite", sorter_engine.get_asset_tags(self.paths[0]))
-        self.tab.favorite_button.invoke()
-        self.root.update()
-        self.assertNotIn("favorite", sorter_engine.get_asset_tags(self.paths[0]))
-        self.assertEqual(self.paths[:1], self.tab._selected_paths())
-        self.show_error.assert_not_called()
-
-    def test_invalid_and_generated_tags_report_errors_without_changes(self):
-        self.select(self.paths)
-        before = [sorter_engine.get_asset_tags(path) for path in self.paths]
-        for tag in ("", "name:generated", "category:Kicks", "a" * 81):
-            self.tab.new_tag_var.set(tag)
-            self.tab.add_tag_button.invoke()
-        self.assertEqual(4, self.show_error.call_count)
-        self.assertEqual(before, [sorter_engine.get_asset_tags(path) for path in self.paths])
-
-    def test_bulk_changes_do_not_affect_unselected_filtered_results(self):
-        self.tab.search_var.set("first")
-        self.tab._render_results(load_sidebar=False)
-        self.select(self.paths)
-        self.tab.new_tag_var.set("reviewed")
-        self.tab.add_tag_button.invoke()
-        self.root.update()
-        self.assertIn("reviewed", sorter_engine.get_asset_tags(self.paths[0]))
-        self.assertNotIn("reviewed", sorter_engine.get_asset_tags(self.paths[1]))
-
-    def test_removing_active_tag_filter_updates_results_and_selection(self):
-        self.tab.active_tag_filter = "shared"
-        self.tab._render_results(load_sidebar=False)
-        self.select(self.paths)
-        self.tab.new_tag_var.set("shared")
-        self.tab.remove_tag_button.invoke()
-        self.root.update()
-        self.assertEqual({}, self.tab._asset_paths)
-        self.assertEqual("2 sounds selected (2 off page)", self.tab.selection_count_var.get())
-        self.assertEqual("normal", self.tab.add_tag_button.cget("state"))
-        self.tab._clear_selection()
-        self.assertEqual("No sounds selected", self.tab.selection_count_var.get())
-        self.assertEqual("disabled", self.tab.add_tag_button.cget("state"))
 
     def test_saved_collection_round_trip_updates_sidebar_and_results(self):
         self.tab.search_var.set("first")
-        self.tab.active_tag_filter = "shared"
+        self.tab.active_tag_filter = "category:Kicks"
         with mock.patch("tab_tags.ask_fields", return_value=["First sounds"]):
             self.tab.save_collection_button.invoke()
         self.assertEqual(("First sounds",), self.tab.saved_collection_list.get(0, "end"))
@@ -1626,7 +1516,7 @@ class LibraryInspectorTests(unittest.TestCase):
         self.tab.saved_collection_list.event_generate("<<ListboxSelect>>")
         self.root.update()
         self.assertEqual("first", self.tab.search_var.get())
-        self.assertEqual("shared", self.tab.active_tag_filter)
+        self.assertEqual("category:Kicks", self.tab.active_tag_filter)
         self.assertEqual([self.paths[0]], list(self.tab._asset_paths.values()))
         self.assertEqual((0,), self.tab.saved_collection_list.curselection())
         self.show_error.assert_not_called()
@@ -1693,7 +1583,7 @@ class LibraryInspectorTests(unittest.TestCase):
         self.assertEqual([], self.tab._load_saved_searches())
         for path in self.paths:
             self.assertTrue(os.path.isfile(path))
-            self.assertIn("shared", sorter_engine.get_asset_tags(path))
+            self.assertTrue(any(tag.startswith("category:") for tag in sorter_engine.get_asset_tags(path)))
         self.show_error.assert_not_called()
 
     def test_corrupt_saved_views_are_reported_and_not_overwritten(self):

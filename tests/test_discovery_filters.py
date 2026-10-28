@@ -17,9 +17,9 @@ class DiscoveryFilterTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.paths = []
         for filename, local, live in (
-            ("deep_kick.wav", ["favorite", "review"], ["Sounds|Bass", "Character|Warm"]),
-            ("bright_kick.wav", ["review"], ["Sounds|Bass"]),
-            ("raw_kick.wav", ["review"], []),
+            ("deep_kick.wav", ["favorite", "category:Review"], ["Sounds|Bass", "Character|Warm"]),
+            ("bright_kick.wav", ["category:Review"], ["Sounds|Bass"]),
+            ("raw_kick.wav", ["category:Review"], []),
             ("loose_kick.wav", [], ["Character|Bright"]),
         ):
             path = os.path.join(self.root, "One-Shots", filename)
@@ -57,7 +57,7 @@ class DiscoveryFilterTests(unittest.TestCase):
         self.assert_query("live:tagged", [self.paths[0], self.paths[1], self.paths[3]])
         self.assert_query("missing-group:Character", self.paths[1:3])
         self.assert_query("missing-group:Sounds", self.paths[2:])
-        self.assert_query("type:one-shot missing-group:Character tag:review", self.paths[1:3])
+        self.assert_query("type:one-shot missing-group:Character tag:category:review", self.paths[1:3])
         self.assert_query("live:tagged missing-group:Character", self.paths[1:2])
         self.assert_query("live:none live:tagged", [])
 
@@ -65,14 +65,19 @@ class DiscoveryFilterTests(unittest.TestCase):
         self.assert_query('"tag:ableton:Sounds|Bass" "tag:ableton:Character|Warm"', self.paths[:1])
         self.assert_query('"anytag:ableton:Sounds|Bass" anytag:favorite', self.paths[:2])
         self.assert_query('"anytag:ableton:Sounds|Bass" "anytag:ableton:Character|Bright"', [self.paths[0], self.paths[1], self.paths[3]])
-        self.assert_query('anytag:review anytag:favorite -tag:favorite', self.paths[1:3])
-        self.assert_query('anytag:review missing-group:Character', self.paths[1:3])
-        self.assert_query('anytag:review', self.paths[:1], favorites_only=True)
-        self.assert_query('live:none', self.paths[2:3], tag_filter="review")
+        self.assert_query('anytag:category:review anytag:favorite -tag:favorite', self.paths[1:3])
+        self.assert_query('anytag:category:review missing-group:Character', self.paths[1:3])
+        self.assert_query('anytag:category:review', self.paths[:1], favorites_only=True)
+        self.assert_query('live:none', self.paths[2:3], tag_filter="category:Review")
 
     def test_group_matching_is_case_insensitive_literal_and_source_specific(self):
         path = self.paths[2]
-        sorter_engine.add_asset_tag(path, "Character|Local does not count")
+        connection = sorter_engine._asset_index_connection()
+        with connection:
+            connection.execute(
+                "INSERT INTO asset_tags VALUES (?, 'Character|Local does not count', 1, 'personal')", (path,)
+            )
+        connection.close()
         ableton_tags.prepare_edit([path], "Char_acter|Special").commit()
         sorter_engine.refresh_live_tag_cache([path])
         self.assert_query("missing-group:CHARACTER", self.paths[1:3])

@@ -42,10 +42,10 @@ class IndexReconciliationTests(unittest.TestCase):
         ])
         self.assertIsNone(sorter_engine.get_indexed_asset(deleted))
         self.assertEqual([], sorter_engine.get_asset_tags(deleted))
-        self.assertEqual(["favorite", "keep"], sorter_engine.get_asset_tags(kept))
+        self.assertEqual(["favorite"], sorter_engine.get_asset_tags(kept))
         self.assertIsNotNone(sorter_engine.get_indexed_asset(outside))
         self.assertEqual(
-            [("favorite", 1), ("keep", 1)],
+            [("favorite", 1)],
             sorter_engine.list_indexed_tags(self.library)
         )
 

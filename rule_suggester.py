@@ -58,13 +58,12 @@ def suggest_rules(library_root, min_files=sorter_engine.MIN_RULE_EVIDENCE, min_s
             stem_tokens.append((path, sound_type, words))
 
     manual = ableton_tags.read_sample_assignments(manual_samples)
-    indexed = sorter_engine.get_all_indexed_asset_tags()
     word_files = defaultdict(int)
     word_types = defaultdict(Counter)
     examples = defaultdict(list)
     for path, sound_type, words in stem_tokens:
         evidence = tag_evidence.interpret_manual_tags(manual.get(os.path.normcase(os.path.abspath(path)), ()))
-        if evidence.assignments or sorter_engine.resolve_routing_tags(indexed.get(os.path.normpath(path), [])) != (None, None):
+        if evidence.assignments:
             continue
         filename = os.path.basename(path)
         for word in words:
@@ -100,8 +99,6 @@ def suggest_rules(library_root, min_files=sorter_engine.MIN_RULE_EVIDENCE, min_s
         evidence = tag_evidence.interpret_manual_tags(manual.get(os.path.normcase(os.path.abspath(path)), ()))
         # Contradictory or unmapped sound assignments are not labels for learning.
         filename = os.path.basename(path)
-        if sorter_engine.resolve_routing_tags(indexed.get(os.path.normpath(path), [])) != (None, None):
-            continue
         if evidence.is_loop or not evidence.one_shot_eligible or re.search(r"\b(loop|loops)\b", filename.replace("_", " "), re.IGNORECASE):
             continue
         words = set(re.findall(r"[a-z]{3,}", os.path.splitext(filename)[0].lower()))

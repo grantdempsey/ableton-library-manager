@@ -64,22 +64,6 @@ def serialized_config(function):
             return function(*args, **kwargs)
     return synchronized
 
-ROUTING_TAG_FOLDERS = {
-    "role:kick": "Kicks",
-    "role:snare": "Snares",
-    "role:hat": "Hi-Hats",
-    "role:clap": "Claps",
-    "role:tom": "Toms",
-    "role:perc": "Percussion",
-    "role:shaker": "Percussion/Shakers",
-    "role:vocal": "Vocals & Chants",
-    "role:fx": "Sound FX",
-    "instrument:bass": "Synth Bass One-Shots",
-    "instrument:808": "808 Sub Bass",
-    "instrument:synth": "Melodic & Synth One-Shots",
-    "instrument:ambient": "Cinematic & Ambience",
-}
-
 NESTING_GUARD_FOLDERS = {
     "samples", "one-shots", "loops", "percussion", "midi",
     "serum presets", "live instrument racks", "max for live devices",
@@ -419,11 +403,20 @@ def undo_move_log(log_path, progress=None):
                                 snapshot["confidence"], snapshot["tags"] + snapshot["disabled_tags"],
                                 _connection=connection,
                             )
-                            for tag in snapshot["disabled_tags"]:
-                                connection.execute(
-                                    "UPDATE asset_tags SET enabled = 0 WHERE asset_path = ? AND tag = ?",
-                                    (path, tag),
-                                )
+                            stored_tags = snapshot.get("stored_tags")
+                            if stored_tags is None:
+                                stored_tags = [
+                                    (tag, enabled,
+                                     "ableton" if tag.startswith(ableton_tags.CACHE_PREFIX) else
+                                     "generated" if tag.startswith(("category:", "name:")) else "personal")
+                                    for enabled, values in ((1, snapshot["tags"]), (0, snapshot["disabled_tags"]))
+                                    for tag in values
+                                ]
+                            connection.executemany(
+                                "INSERT OR REPLACE INTO asset_tags (asset_path, tag, enabled, source) "
+                                "VALUES (?, ?, ?, ?)",
+                                [(path, tag, enabled, source) for tag, enabled, source in stored_tags],
+                            )
                             _cache_ableton_tags(connection, path, {
                                 os.path.normcase(os.path.abspath(path)): ableton_tags.sample_tags(path)
                             })
@@ -500,7 +493,7 @@ def load_sidebar_snapshot(library_root):
         if (
             data.get("fingerprint") == _index_fingerprint()
             and data.get("library_root") == str(library_root)
-            and data.get("version") == 1
+            and data.get("version") == 2
         ):
             return {
                 "static_counts": data["static_counts"],
@@ -516,7 +509,7 @@ def save_sidebar_snapshot(library_root, static_counts, favorites, tags, fingerpr
     if fingerprint is None:
         return
     payload = {
-        "version": 1, "fingerprint": fingerprint, "library_root": str(library_root),
+        "version": 2, "fingerprint": fingerprint, "library_root": str(library_root),
         "static_counts": static_counts, "favorites": favorites,
         "tags": [[tag, count] for tag, count in tags],
     }
@@ -579,6 +572,10 @@ def _asset_index_connection():
     connection.execute(
         "UPDATE asset_tags SET source = 'generated' "
         "WHERE tag LIKE 'category:%' OR tag LIKE 'name:%'"
+    )
+    connection.execute(
+        "CREATE VIEW IF NOT EXISTS visible_asset_tags AS "
+        "SELECT * FROM asset_tags WHERE source IN ('generated', 'ableton') OR tag = 'favorite'"
     )
     connection.commit()
     with _ASSET_SCHEMA_LOCK:
@@ -664,7 +661,7 @@ def index_asset(
             [
                 (normalized_path, tag, "generated" if tag.startswith(("category:", "name:")) else "personal")
                 for tag in sorted(set(tags))
-                if tag and not tag.startswith(("user:", ableton_tags.CACHE_PREFIX))
+                if tag and (tag == "favorite" or tag.startswith(("category:", "name:")))
             ]
         )
         if _connection is None:
@@ -813,7 +810,7 @@ def get_indexed_asset(path):
             return None
         tag_rows = [
             row for row in connection.execute(
-                "SELECT tag, enabled, source FROM asset_tags WHERE asset_path = ? ORDER BY tag",
+                "SELECT tag, enabled, source FROM visible_asset_tags WHERE asset_path = ? ORDER BY tag",
                 (os.path.normpath(path),)
             )
         ]
@@ -828,7 +825,6 @@ def get_indexed_asset(path):
             "modified_time": asset[3], "destination": asset[4],
             "reason": asset[5], "confidence": asset[6],
             "updated_at": asset[7], "tags": tags, "disabled_tags": disabled_tags,
-            "personal_tags": [row[0] for row in tag_rows if row[1] and row[2] == "personal"],
             "ableton_tags": [
                 row[0][len(ableton_tags.CACHE_PREFIX):] for row in tag_rows
                 if row[1] and row[2] == "ableton"
@@ -838,17 +834,31 @@ def get_indexed_asset(path):
         connection.close()
 
 def get_asset_tags(path):
-    """Returns stored tags for a path without treating personal tags as routing rules."""
+    """Returns active classification, Live and favorite tags; legacy app tags stay dormant."""
     connection = _asset_index_connection()
     try:
         return [
             row[0] for row in connection.execute(
-                "SELECT tag FROM asset_tags WHERE asset_path = ? AND enabled = 1 ORDER BY tag",
+                "SELECT tag FROM visible_asset_tags WHERE asset_path = ? AND enabled = 1 ORDER BY tag",
                 (os.path.normpath(path),)
             )
         ]
     finally:
         connection.close()
+
+def _snapshot_indexed_asset(path):
+    """Includes dormant rows only for lossless recovery, never for classification or display."""
+    snapshot = get_indexed_asset(path)
+    if snapshot is not None:
+        connection = _asset_index_connection()
+        try:
+            snapshot["stored_tags"] = connection.execute(
+                "SELECT tag, enabled, source FROM asset_tags WHERE asset_path = ? ORDER BY tag",
+                (os.path.normpath(path),),
+            ).fetchall()
+        finally:
+            connection.close()
+    return snapshot
 
 def get_all_indexed_asset_tags():
     """Loads enabled indexed tags once for a sorter run."""
@@ -856,7 +866,7 @@ def get_all_indexed_asset_tags():
     try:
         tags_by_path = {}
         for asset_path, tag in connection.execute(
-            "SELECT asset_path, tag FROM asset_tags "
+            "SELECT asset_path, tag FROM visible_asset_tags "
             "WHERE enabled = 1 ORDER BY asset_path, tag"
         ):
             tags_by_path.setdefault(asset_path, []).append(tag)
@@ -902,7 +912,7 @@ def _discovery_clauses(parsed):
     clauses, parameters = [], []
     if parsed["any_tags"]:
         clauses.append(
-            "EXISTS (SELECT 1 FROM asset_tags sd WHERE sd.asset_path = a.path "
+            "EXISTS (SELECT 1 FROM visible_asset_tags sd WHERE sd.asset_path = a.path "
             "AND sd.enabled = 1 AND LOWER(sd.tag) IN ("
             + ",".join("?" for _tag in parsed["any_tags"]) + "))"
         )
@@ -910,14 +920,14 @@ def _discovery_clauses(parsed):
     for state in parsed["live_states"]:
         clauses.append(
             ("NOT " if state == "none" else "")
-            + "EXISTS (SELECT 1 FROM asset_tags sl WHERE sl.asset_path = a.path "
+            + "EXISTS (SELECT 1 FROM visible_asset_tags sl WHERE sl.asset_path = a.path "
             "AND sl.enabled = 1 AND sl.source = 'ableton')"
         )
     for group in parsed["missing_groups"]:
         if "|" in group or not group.strip():
             raise ValueError("Missing-group filters require a single Live group name.")
         clauses.append(
-            "NOT EXISTS (SELECT 1 FROM asset_tags sg WHERE sg.asset_path = a.path "
+            "NOT EXISTS (SELECT 1 FROM visible_asset_tags sg WHERE sg.asset_path = a.path "
             "AND sg.enabled = 1 AND sg.source = 'ableton' "
             "AND LOWER(SUBSTR(sg.tag, 1, ?)) = ?)"
         )
@@ -945,7 +955,7 @@ def _asset_rows_with_tags(connection, rows, paths_only=False):
     if paths:
         placeholders = ",".join("?" for _ in paths)
         tag_rows = connection.execute(
-            f"SELECT asset_path, tag FROM asset_tags "
+            f"SELECT asset_path, tag FROM visible_asset_tags "
             f"WHERE enabled = 1 AND asset_path IN ({placeholders}) ORDER BY tag",
             paths
         ).fetchall()
@@ -1075,7 +1085,7 @@ def list_indexed_assets(
                     return connection.execute(
                         f"""
                         SELECT COUNT(*) FROM assets a
-                        JOIN asset_tags tf ON tf.asset_path = a.path
+                        JOIN visible_asset_tags tf ON tf.asset_path = a.path
                             AND tf.enabled = 1 AND LOWER(TRIM(tf.tag)) = ?
                         WHERE {where_sql}
                         """,
@@ -1086,7 +1096,7 @@ def list_indexed_assets(
                     SELECT a.path, a.filename, a.destination,
                            a.classification_reason, a.confidence
                     FROM assets a
-                    JOIN asset_tags tf ON tf.asset_path = a.path
+                    JOIN visible_asset_tags tf ON tf.asset_path = a.path
                         AND tf.enabled = 1 AND LOWER(TRIM(tf.tag)) = ?
                     WHERE {where_sql}
                     ORDER BY a.filename COLLATE NOCASE
@@ -1113,7 +1123,7 @@ def list_indexed_assets(
                 return connection.execute(
                     f"""
                     SELECT COUNT(*) FROM assets a
-                    JOIN asset_tags tf ON tf.asset_path = a.path
+                    JOIN visible_asset_tags tf ON tf.asset_path = a.path
                         AND tf.enabled = 1 AND LOWER(TRIM(tf.tag)) = ?
                     WHERE {where_sql}
                     """,
@@ -1124,7 +1134,7 @@ def list_indexed_assets(
                 SELECT a.path, a.filename, a.destination,
                        a.classification_reason, a.confidence
                 FROM assets a
-                JOIN asset_tags tf ON tf.asset_path = a.path
+                JOIN visible_asset_tags tf ON tf.asset_path = a.path
                     AND tf.enabled = 1 AND LOWER(TRIM(tf.tag)) = ?
                 WHERE {root_clause + ' AND ' if root_clause else ''}
                       ({extension_clauses})
@@ -1152,7 +1162,7 @@ def list_indexed_assets(
                 return connection.execute(
                     f"""
                     SELECT COUNT(*) FROM assets a
-                    JOIN asset_tags tf ON tf.asset_path = a.path
+                    JOIN visible_asset_tags tf ON tf.asset_path = a.path
                         AND tf.enabled = 1 AND LOWER(TRIM(tf.tag)) = 'favorite'
                     WHERE {where_sql}
                     """,
@@ -1163,7 +1173,7 @@ def list_indexed_assets(
                 SELECT a.path, a.filename, a.destination,
                        a.classification_reason, a.confidence
                 FROM assets a
-                JOIN asset_tags tf ON tf.asset_path = a.path
+                JOIN visible_asset_tags tf ON tf.asset_path = a.path
                     AND tf.enabled = 1 AND LOWER(TRIM(tf.tag)) = 'favorite'
                 WHERE {root_clause + ' AND ' if root_clause else ''}
                       ({extension_clauses})
@@ -1201,7 +1211,7 @@ def list_indexed_assets(
             clauses.append(
                 "(LOWER(a.filename) LIKE ? OR LOWER(a.path) LIKE ? OR "
                 "LOWER(a.destination) LIKE ? OR EXISTS ("
-                "SELECT 1 FROM asset_tags ts WHERE ts.asset_path = a.path "
+                "SELECT 1 FROM visible_asset_tags ts WHERE ts.asset_path = a.path "
                 "AND ts.enabled = 1 AND LOWER(ts.tag) LIKE ?))"
             )
             parameters.extend([pattern, pattern, pattern, pattern])
@@ -1210,19 +1220,19 @@ def list_indexed_assets(
             clauses.append(
                 "NOT (LOWER(a.filename) LIKE ? OR LOWER(a.path) LIKE ? OR "
                 "LOWER(a.destination) LIKE ? OR EXISTS ("
-                "SELECT 1 FROM asset_tags tx WHERE tx.asset_path = a.path "
+                "SELECT 1 FROM visible_asset_tags tx WHERE tx.asset_path = a.path "
                 "AND tx.enabled = 1 AND LOWER(tx.tag) LIKE ?))"
             )
             parameters.extend([pattern, pattern, pattern, pattern])
         for tag in parsed["tags"]:
             clauses.append(
-                "EXISTS (SELECT 1 FROM asset_tags st WHERE st.asset_path = a.path "
+                "EXISTS (SELECT 1 FROM visible_asset_tags st WHERE st.asset_path = a.path "
                 "AND st.enabled = 1 AND LOWER(st.tag) = ?)"
             )
             parameters.append(tag.lower())
         for tag in parsed["excluded_tags"]:
             clauses.append(
-                "NOT EXISTS (SELECT 1 FROM asset_tags sx WHERE sx.asset_path = a.path "
+                "NOT EXISTS (SELECT 1 FROM visible_asset_tags sx WHERE sx.asset_path = a.path "
                 "AND sx.enabled = 1 AND LOWER(sx.tag) = ?)"
             )
             parameters.append(tag.lower())
@@ -1230,7 +1240,7 @@ def list_indexed_assets(
             pattern = f"%{value}%"
             clauses.append(
                 "(LOWER(a.path) LIKE ? OR LOWER(a.destination) LIKE ? OR EXISTS "
-                "(SELECT 1 FROM asset_tags sv WHERE sv.asset_path = a.path "
+                "(SELECT 1 FROM visible_asset_tags sv WHERE sv.asset_path = a.path "
                 "AND sv.enabled = 1 AND LOWER(sv.tag) LIKE ?))"
             )
             parameters.extend([pattern, pattern, pattern])
@@ -1241,13 +1251,13 @@ def list_indexed_assets(
         tag_join_parameters = []
         if tag_filter.strip():
             tag_join += (
-                " JOIN asset_tags tf ON tf.asset_path = a.path "
+                " JOIN visible_asset_tags tf ON tf.asset_path = a.path "
                 "AND tf.enabled = 1 AND LOWER(TRIM(tf.tag)) = ?"
             )
             tag_join_parameters.append(tag_filter.strip().lower())
         if favorites_only:
             tag_join += (
-                " JOIN asset_tags tfav ON tfav.asset_path = a.path "
+                " JOIN visible_asset_tags tfav ON tfav.asset_path = a.path "
                 "AND tfav.enabled = 1 AND LOWER(TRIM(tfav.tag)) = 'favorite'"
             )
         where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
@@ -1276,7 +1286,6 @@ def summarize_asset_selection(paths):
     """Aggregates cached assignments in bounded queries, rejecting stale selections."""
     paths = list(dict.fromkeys(os.path.normpath(path) for path in paths))
     live_counts = Counter()
-    personal_counts = Counter()
     generated_counts = Counter()
     connection = _asset_index_connection()
     try:
@@ -1293,23 +1302,17 @@ def summarize_asset_selection(paths):
             if missing:
                 raise ValueError(f"Selection is out of date; sound no longer indexed: {sorted(missing)[0]}")
             for tag, source, count in connection.execute(
-                f"SELECT tag, source, COUNT(*) FROM asset_tags "
+                f"SELECT tag, source, COUNT(*) FROM visible_asset_tags "
                 f"WHERE enabled = 1 AND asset_path IN ({placeholders}) GROUP BY tag, source",
                 batch
             ):
                 if source == "ableton":
                     live_counts[tag[len(ableton_tags.CACHE_PREFIX):]] += count
-                elif source == "personal":
-                    personal_counts[tag] += count
-                else:
+                elif source == "generated":
                     generated_counts[tag] += count
         return {
             "live_counts": dict(live_counts),
-            "personal_counts": dict(personal_counts),
             "generated_counts": dict(generated_counts),
-            "shared_personal_tags": sorted(
-                tag for tag, count in personal_counts.items() if count == len(paths)
-            )
         }
     finally:
         connection.close()
@@ -1337,7 +1340,7 @@ def list_indexed_tags(library_root=None, search_text="", favorites_only=False):
             clauses.append(
                 "(LOWER(a.filename) LIKE ? OR LOWER(a.path) LIKE ? OR "
                 "LOWER(a.destination) LIKE ? OR EXISTS ("
-                "SELECT 1 FROM asset_tags st WHERE st.asset_path = a.path "
+                "SELECT 1 FROM visible_asset_tags st WHERE st.asset_path = a.path "
                 "AND st.enabled = 1 AND LOWER(st.tag) LIKE ?))"
             )
             parameters.extend([pattern, pattern, pattern, pattern])
@@ -1346,19 +1349,19 @@ def list_indexed_tags(library_root=None, search_text="", favorites_only=False):
             clauses.append(
                 "NOT (LOWER(a.filename) LIKE ? OR LOWER(a.path) LIKE ? OR "
                 "LOWER(a.destination) LIKE ? OR EXISTS ("
-                "SELECT 1 FROM asset_tags sx WHERE sx.asset_path = a.path "
+                "SELECT 1 FROM visible_asset_tags sx WHERE sx.asset_path = a.path "
                 "AND sx.enabled = 1 AND LOWER(sx.tag) LIKE ?))"
             )
             parameters.extend([pattern, pattern, pattern, pattern])
         for tag in parsed["tags"]:
             clauses.append(
-                "EXISTS (SELECT 1 FROM asset_tags st WHERE st.asset_path = a.path "
+                "EXISTS (SELECT 1 FROM visible_asset_tags st WHERE st.asset_path = a.path "
                 "AND st.enabled = 1 AND LOWER(st.tag) = ?)"
             )
             parameters.append(tag.lower())
         for tag in parsed["excluded_tags"]:
             clauses.append(
-                "NOT EXISTS (SELECT 1 FROM asset_tags sx WHERE sx.asset_path = a.path "
+                "NOT EXISTS (SELECT 1 FROM visible_asset_tags sx WHERE sx.asset_path = a.path "
                 "AND sx.enabled = 1 AND LOWER(sx.tag) = ?)"
             )
             parameters.append(tag.lower())
@@ -1366,13 +1369,13 @@ def list_indexed_tags(library_root=None, search_text="", favorites_only=False):
             pattern = f"%{value}%"
             clauses.append(
                 "(LOWER(a.path) LIKE ? OR LOWER(a.destination) LIKE ? OR EXISTS "
-                "(SELECT 1 FROM asset_tags st WHERE st.asset_path = a.path "
+                "(SELECT 1 FROM visible_asset_tags st WHERE st.asset_path = a.path "
                 "AND st.enabled = 1 AND LOWER(st.tag) LIKE ?))"
             )
             parameters.extend([pattern, pattern, pattern])
         if favorites_only:
             clauses.append(
-                "EXISTS (SELECT 1 FROM asset_tags sf WHERE sf.asset_path = a.path "
+                "EXISTS (SELECT 1 FROM visible_asset_tags sf WHERE sf.asset_path = a.path "
                 "AND sf.enabled = 1 AND LOWER(TRIM(sf.tag)) = 'favorite')"
             )
         if root_clause:
@@ -1381,7 +1384,7 @@ def list_indexed_tags(library_root=None, search_text="", favorites_only=False):
         return connection.execute(
             "WITH a AS MATERIALIZED (SELECT * FROM assets a "
             f"WHERE {extension_clauses}) "
-            "SELECT t.tag, COUNT(*) FROM asset_tags t "
+            "SELECT t.tag, COUNT(*) FROM visible_asset_tags t "
             "JOIN a ON a.path = t.asset_path "
             f"WHERE t.enabled = 1 AND {' AND '.join(clauses)} "
             "GROUP BY t.tag ORDER BY t.tag COLLATE NOCASE",
@@ -1415,14 +1418,10 @@ def count_indexed_assets(
         connection.close()
 
 def add_asset_tag(path, tag):
-    """Adds one normalized user tag to an indexed asset."""
+    """Updates the favorite marker; arbitrary app-only tags are no longer supported."""
     normalized_tag = tag.strip().lower()
-    if normalized_tag.startswith(ableton_tags.CACHE_PREFIX):
-        raise ValueError("Ableton tags are read-only here. Use Live tags... or edit in Live and rescan.")
-    if not normalized_tag:
-        raise ValueError("Tag cannot be empty.")
-    if len(normalized_tag) > 80 or "\n" in normalized_tag:
-        raise ValueError("Tag must be 80 characters or fewer and contain no newlines.")
+    if normalized_tag != "favorite":
+        raise ValueError("App-only tags have been removed. Use Edit Live tags instead.")
     connection = _asset_index_connection()
     try:
         if connection.execute(
@@ -1439,9 +1438,9 @@ def add_asset_tag(path, tag):
         connection.close()
 
 def remove_asset_tag(path, tag):
-    """Removes one user-visible tag from an indexed asset."""
-    if tag.strip().lower().startswith(ableton_tags.CACHE_PREFIX):
-        raise ValueError("Ableton tags are read-only here. Use Live tags... or edit in Live and rescan.")
+    """Removes the favorite marker from an indexed asset."""
+    if tag.strip().lower() != "favorite":
+        raise ValueError("App-only tags have been removed. Use Edit Live tags instead.")
     connection = _asset_index_connection()
     try:
         connection.execute(
@@ -1453,14 +1452,10 @@ def remove_asset_tag(path, tag):
         connection.close()
 
 def bulk_update_asset_tags(paths, tag, enabled=True, remove=False):
-    """Applies one personal tag change to several indexed assets atomically."""
+    """Updates favorites for several indexed assets atomically."""
     normalized_tag = tag.strip().lower()
-    if normalized_tag.startswith(ableton_tags.CACHE_PREFIX):
-        raise ValueError("Ableton tags are read-only here. Use Live tags... or edit in Live and rescan.")
-    if not normalized_tag:
-        raise ValueError("Tag cannot be empty.")
-    if len(normalized_tag) > 80 or "\n" in normalized_tag:
-        raise ValueError("Tag must be 80 characters or fewer and contain no newlines.")
+    if normalized_tag != "favorite":
+        raise ValueError("App-only tags have been removed. Use Edit Live tags instead.")
     normalized_paths = sorted({os.path.normpath(path) for path in paths})
     if not normalized_paths:
         raise ValueError("Select at least one indexed sound.")
@@ -1495,6 +1490,8 @@ def set_asset_tag_enabled(path, tag, enabled):
     """Enables or disables an existing tag without deleting its assignment."""
     if tag.strip().lower().startswith(ableton_tags.CACHE_PREFIX):
         raise ValueError("Ableton tags are read-only here. Use Live tags... or edit in Live and rescan.")
+    if not tag.strip().lower().startswith(("category:", "name:")) and tag.strip().lower() != "favorite":
+        raise ValueError("App-only tags have been removed. Use Edit Live tags instead.")
     connection = _asset_index_connection()
     try:
         result = connection.execute(
@@ -1513,21 +1510,6 @@ def derive_filename_tags(filename):
     tokens = re.findall(r"[a-z0-9]+", stem)
     ignored = {"sample", "audio", "sound", "version", "final", "edit", "processed"}
     return [f"name:{token}" for token in tokens if len(token) >= 3 and token not in ignored]
-
-def resolve_routing_tags(tags):
-    """Resolves explicit routing tags; ordinary descriptive/personal tags are ignored."""
-    tag_set = {tag.strip().lower() for tag in tags}
-    if "type:loop" in tag_set:
-        return "loop", None
-    if "type:one-shot" in tag_set or "type:oneshot" in tag_set:
-        for tag, folder in ROUTING_TAG_FOLDERS.items():
-            if tag in tag_set:
-                return "one-shot", folder
-        return "one-shot", None
-    for tag, folder in ROUTING_TAG_FOLDERS.items():
-        if tag in tag_set:
-            return "one-shot", folder
-    return None, None
 
 def find_nested_folder_repairs(root_path):
     """Finds files whose canonical organization folders repeat in their relative path."""
@@ -2312,17 +2294,16 @@ class ParallelLibrarySorter:
             shutil.copy2(source, recovery)
             source_tags = ableton_tags.sample_tags(source)
             destination_tags = ableton_tags.sample_tags(destination)
-            source_index = get_indexed_asset(source)
-            destination_index = get_indexed_asset(destination)
+            source_index = _snapshot_indexed_asset(source)
+            destination_index = _snapshot_indexed_asset(destination)
             expected_personal = {}
             for snapshot in (source_index, destination_index):
                 if snapshot is not None:
-                    for enabled, values in ((1, snapshot["tags"]), (0, snapshot["disabled_tags"])):
-                        for tag in values:
-                            if not tag.startswith(("category:", "name:", ableton_tags.CACHE_PREFIX)):
-                                expected_personal[tag] = enabled
+                    for tag, enabled, tag_source in snapshot["stored_tags"]:
+                        if tag_source == "personal":
+                            expected_personal[tag] = enabled
             for tag in tags:
-                if not tag.startswith(("category:", "name:", ableton_tags.CACHE_PREFIX, "user:")):
+                if tag == "favorite":
                     expected_personal.setdefault(tag, 1)
             self.log_move(
                 source, destination, operation="duplicate", recovery=recovery,
@@ -2383,9 +2364,6 @@ class ParallelLibrarySorter:
                 tag for tag in list(self.harvested_metadata.get(f_lower, [])) + indexed_tags
                 if not tag.startswith(("category:", "name:"))
             ]
-            routing_type, routing_folder = resolve_routing_tags(indexed_tags)
-            force_loop = routing_type == "loop"
-            force_one_shot = routing_type == "one-shot"
             
             f_normalized = re.sub(r'[_#\-]', ' ', f_lower)
             
@@ -2429,11 +2407,7 @@ class ParallelLibrarySorter:
 
             # 1. KEYWORD GRID OVERRIDE PATTERN SCAN
             grid_matched_folder = None
-            if not is_already_sorted and routing_folder and ext in AUDIO_EXTS:
-                grid_matched_folder = routing_folder
-                classification_reason = "routing_tag"
-                classification_confidence = 0.98
-            elif not is_already_sorted and not force_loop:
+            if not is_already_sorted:
                 for pattern, folder, metadata in iter_active_drum_rules():
                     excluded = any(
                         re.search(exclusion, f_normalized) or
@@ -2516,9 +2490,9 @@ class ParallelLibrarySorter:
                     has_bpm = re.search(r'\b\d{2,3}\s*(bpm|BPM)\b', f_normalized)
                     is_text_loop = any(k in f_normalized or k in root_lower for k in ['loop', 'fill', 'roll', 'groove']) or has_bpm
                     
-                    if force_loop or (not force_one_shot and (is_meta_loop or is_text_loop)):
-                        classification_reason = "routing_tag" if force_loop else "loop_name_or_metadata"
-                        classification_confidence = 0.98 if force_loop else 0.80
+                    if is_meta_loop or is_text_loop:
+                        classification_reason = "loop_name_or_metadata"
+                        classification_confidence = 0.80
                         target_dir = os.path.join(
                             self.dest, "Samples", "Loops", *loop_subfolders(f_normalized, f_lower))
                         stat_key = "Loops Separated by BPM & Key"
@@ -2562,8 +2536,6 @@ class ParallelLibrarySorter:
                         status = "manual role only; no sound type inferred"
                     elif not manual.sound_type:
                         status = "conflicting manual sound types: " + ", ".join(manual.alternatives)
-                    elif routing_type is not None or routing_folder is not None:
-                        status = "explicit routing retained"
                     elif manual.is_loop or stat_key == "Loops Separated by BPM & Key":
                         status = "loop routing retained; one-shot suggestion not applicable"
                         if manual.is_loop and stat_key != "Loops Separated by BPM & Key":

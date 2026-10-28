@@ -91,7 +91,7 @@ class AssetPagingTests(unittest.TestCase):
         connection.close()
         summary = sorter_engine.summarize_asset_selection(paths + paths[:1])
         self.assertEqual({"Sounds|Shared": 1101, "Character|Some": 1}, summary["live_counts"])
-        self.assertEqual(["shared-local"], summary["shared_personal_tags"])
+        self.assertNotIn("personal_counts", summary)
         with self.assertRaisesRegex(ValueError, "no longer indexed"):
             sorter_engine.summarize_asset_selection(paths + ["missing.wav"])
         connect = sorter_engine._asset_index_connection
@@ -100,17 +100,17 @@ class AssetPagingTests(unittest.TestCase):
             connection.setlimit(sorter_engine.sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 600)
             return connection
         with mock.patch.object(sorter_engine, "_asset_index_connection", side_effect=limited_connection):
-            sorter_engine.bulk_update_asset_tags(paths, "batch")
-            self.assertEqual(["batch", "shared-local"], sorter_engine.summarize_asset_selection(paths)["shared_personal_tags"])
-            sorter_engine.bulk_update_asset_tags(paths, "batch", remove=True)
-            self.assertEqual(["shared-local"], sorter_engine.summarize_asset_selection(paths)["shared_personal_tags"])
+            sorter_engine.bulk_update_asset_tags(paths, "favorite")
+            self.assertEqual(1101, sorter_engine.count_indexed_assets(self.temp_dir, favorites_only=True))
+            sorter_engine.bulk_update_asset_tags(paths, "favorite", remove=True)
+            self.assertEqual(0, sorter_engine.count_indexed_assets(self.temp_dir, favorites_only=True))
             for remove in (False, True):
                 with self.assertRaisesRegex(ValueError, "no longer indexed"):
                     sorter_engine.bulk_update_asset_tags(
                         paths + [os.path.join(self.temp_dir, "zzz-missing.wav")],
-                        "shared-local" if remove else "never-committed", remove=remove
+                        "favorite", remove=remove
                     )
-            self.assertEqual(["shared-local"], sorter_engine.summarize_asset_selection(paths)["shared_personal_tags"])
+            self.assertEqual(0, sorter_engine.count_indexed_assets(self.temp_dir, favorites_only=True))
 
 
 if __name__ == "__main__":

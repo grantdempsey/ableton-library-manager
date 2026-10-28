@@ -130,10 +130,12 @@ class WindowsReleaseAcceptanceTests(unittest.TestCase):
             self.assert_inside(browser.asset_tree, self.app)
             browser._open_tag_editor()
             self.app.update()
-            for widget in (browser.live_tag_entry, browser.live_group_entry, browser.live_apply_button):
-                self.assert_inside(widget, browser.tag_editor)
+            editor = browser._live_batch_dialog
+            self.wait(lambda: not editor.busy)
+            for widget in (editor.tag_entry, editor.group_entry, editor.assigned_tree, editor.review_button):
+                self.assert_inside(widget, editor)
             self.wait(lambda: browser._tag_suggestions_queue is None and browser._live_vocabulary_queue is None)
-            browser.tag_editor.withdraw()
+            editor.close()
             self.assertTrue(browser._edit_live_tags([str(self.sample)], "Drums|Kick", "add"))
             batch = browser._live_batch_dialog
             self.wait(lambda: not batch.busy)
@@ -194,14 +196,15 @@ class WindowsReleaseAcceptanceTests(unittest.TestCase):
         self.app.update()
         browser._open_tag_editor()
         self.wait(lambda: browser._tag_suggestions_queue is None and browser._live_vocabulary_queue is None)
-        browser.live_group_var.set("Genres")
-        browser.live_tag_var.set("Release fixture")
-        browser.live_apply_button.invoke()
         batch = browser._live_batch_dialog
         self.wait(lambda: not batch.busy)
+        batch.group_var.set("Genres")
+        batch.tag_var.set("Release fixture")
+        batch.review_button.invoke()
+        self.wait(lambda: not batch.busy)
         self.assertEqual([], ableton_tags.sample_tags(str(self.sample)))
-        with mock.patch("live_tag_batch.ask_confirm", return_value=False):
-            batch.save_button.invoke()
+        with mock.patch("live_tag_batch.ask_confirm", return_value=True):
+            batch.close()
         self.assertEqual([], ableton_tags.sample_tags(str(self.sample)))
 
         for action, old_tag, new_tag, expected in (
@@ -209,10 +212,9 @@ class WindowsReleaseAcceptanceTests(unittest.TestCase):
             ("rename", "Genres|Release fixture", "Character|Round trip", ["Character|Round trip"]),
             ("remove", "Character|Round trip", None, []),
         ):
-            if action != "add":
-                self.assertTrue(browser._edit_live_tags([str(self.sample)], old_tag, action, new_tag))
-                batch = browser._live_batch_dialog
-                self.wait(lambda: not batch.busy)
+            self.assertTrue(browser._edit_live_tags([str(self.sample)], old_tag, action, new_tag))
+            batch = browser._live_batch_dialog
+            self.wait(lambda: not batch.busy)
             self.assert_inside(batch.save_button, batch)
             existing_sidecars = {
                 path: batch.plan.originals[path]
@@ -223,7 +225,7 @@ class WindowsReleaseAcceptanceTests(unittest.TestCase):
             with mock.patch("live_tag_batch.ask_confirm", return_value=True):
                 batch.save_button.invoke()
                 self.wait(lambda: not batch.busy)
-            self.assertIn("Batch saved.", batch.status_var.get())
+            self.assertIn("Changes saved.", batch.status_var.get())
             new_backups = set(self.library.rglob("*.bak")) - prior_backups
             self.assertEqual(len(existing_sidecars), len(new_backups))
             for path, original in existing_sidecars.items():
@@ -271,8 +273,8 @@ class WindowsReleaseAcceptanceTests(unittest.TestCase):
             batch.save_button.invoke()
             self.wait(lambda: not batch.busy)
         error.assert_called_once()
-        self.assertEqual("Live Tag Batch Failed", error.call_args.args[0])
-        self.assertIn("Batch failed.", batch.status_var.get())
+        self.assertEqual("Live Tag Edit Failed", error.call_args.args[0])
+        self.assertIn("Tag edit failed.", batch.status_var.get())
         self.assertEqual(["Character|External"], ableton_tags.sample_tags(str(self.sample)))
         self.assertEqual(before, {path: path.read_bytes() for path in self.library.rglob("*.xmp")})
         self.assertEqual([], list(self.library.rglob("*.bak")))

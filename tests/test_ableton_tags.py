@@ -59,7 +59,7 @@ class AbletonTagTests(unittest.TestCase):
         sorter_engine.index_existing_library(self.root)
         self.assertEqual(sorted(tags), sorter_engine.get_indexed_asset(first)["ableton_tags"])
         self.assertEqual(["Sounds|Other"], sorter_engine.get_indexed_asset(second)["ableton_tags"])
-        self.assertEqual([], sorter_engine.get_indexed_asset(first)["personal_tags"])
+        self.assertNotIn("personal_tags", sorter_engine.get_indexed_asset(first))
         self.assertEqual(1, sorter_engine.count_indexed_assets(
             self.root, tag_filter="ableton:Sounds|Bass|Synth Bass"
         ))
@@ -72,7 +72,7 @@ class AbletonTagTests(unittest.TestCase):
         sample = self.sample("test.wav")
         sidecar = self.sidecar([("test.wav", ["Sounds|Old", "Character|Keep"])])
         sorter_engine.index_existing_library(self.root)
-        sorter_engine.add_asset_tag(sample, "local")
+        sorter_engine.add_asset_tag(sample, "favorite")
         self.sidecar([("test.wav", ["Sounds|Renamed", "Character|Keep"])])
         sorter_engine.index_existing_library(self.root)
         self.assertEqual(
@@ -82,13 +82,13 @@ class AbletonTagTests(unittest.TestCase):
         self.sidecar([("test.wav", [])])
         sorter_engine.index_existing_library(self.root)
         self.assertEqual([], sorter_engine.get_indexed_asset(sample)["ableton_tags"])
-        self.assertIn("local", sorter_engine.get_asset_tags(sample))
+        self.assertIn("favorite", sorter_engine.get_asset_tags(sample))
         self.sidecar([("test.wav", ["Sounds|Again"])])
         sorter_engine.index_existing_library(self.root)
         os.remove(sidecar)
         sorter_engine.index_existing_library(self.root)
         self.assertEqual([], sorter_engine.get_indexed_asset(sample)["ableton_tags"])
-        self.assertIn("local", sorter_engine.get_asset_tags(sample))
+        self.assertIn("favorite", sorter_engine.get_asset_tags(sample))
 
     def test_scan_subroot_reads_and_reconciles_ancestor_sidecar_assignments(self):
         sample = self.sample(os.path.join("library", "sample.wav"))
@@ -131,7 +131,7 @@ class AbletonTagTests(unittest.TestCase):
             lambda: sorter_engine.bulk_update_asset_tags([sample], tag, remove=True),
             lambda: sorter_engine.set_asset_tag_enabled(sample, tag, False),
         ):
-            with self.assertRaisesRegex(ValueError, "read-only"):
+            with self.assertRaisesRegex(ValueError, "read-only|App-only tags have been removed"):
                 action()
         self.assertEqual(["Sounds|Keep"], sorter_engine.get_indexed_asset(sample)["ableton_tags"])
 
@@ -139,16 +139,16 @@ class AbletonTagTests(unittest.TestCase):
         sample = self.sample("test.wav")
         self.sidecar([("test.wav", ["Sounds|Keep"])])
         sorter_engine.index_existing_library(self.root)
-        sorter_engine.add_asset_tag(sample, "local")
-        sorter_engine.set_asset_tag_enabled(sample, "local", False)
+        sorter_engine.add_asset_tag(sample, "favorite")
+        sorter_engine.set_asset_tag_enabled(sample, "favorite", False)
         tags = sorter_engine.get_asset_tags(sample)
         moved = os.path.join(self.root, "moved.wav")
         os.replace(sample, moved)
         sorter_engine.index_asset(moved, self.root, "test", 1.0, tags, previous_path=sample)
         record = sorter_engine.get_indexed_asset(moved)
         self.assertEqual([], record["ableton_tags"])
-        self.assertEqual([], record["personal_tags"])
-        self.assertIn("local", record["disabled_tags"])
+        self.assertNotIn("personal_tags", record)
+        self.assertIn("favorite", record["disabled_tags"])
         self.assertIsNone(sorter_engine.get_indexed_asset(sample))
 
     def test_reindex_ignores_cache_as_input_personal_tags(self):

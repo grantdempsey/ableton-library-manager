@@ -409,7 +409,12 @@ class RecoveryUiTests(unittest.TestCase):
 
     def test_discovery_hides_personal_tags_without_removing_stored_data(self):
         browser = self.app.tags_panel
-        sorter_engine.add_asset_tag(str(self.sample), "legacy-label")
+        connection = sorter_engine._asset_index_connection()
+        with connection:
+            connection.execute(
+                "INSERT INTO asset_tags VALUES (?, 'legacy-label', 1, 'personal')", (str(self.sample),)
+            )
+        connection.close()
         browser._open_discovery_filters()
         dialog = next(
             child for child in browser.winfo_children()
@@ -425,7 +430,7 @@ class RecoveryUiTests(unittest.TestCase):
             return None
         choices = find_list(dialog).get(0, "end")
         self.assertFalse(any("legacy-label" in choice for choice in choices))
-        self.assertIn("legacy-label", sorter_engine.get_asset_tags(str(self.sample)))
+        self.assertNotIn("legacy-label", sorter_engine.get_asset_tags(str(self.sample)))
         dialog.destroy()
 
     def test_startup_rescan_defers_without_modal_during_metadata_edit(self):

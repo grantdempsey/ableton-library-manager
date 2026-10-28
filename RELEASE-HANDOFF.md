@@ -2,6 +2,29 @@
 
 Updated: October 27, 2026, release recovery and macOS validation preparation.
 
+## Current tagging redesign
+
+The user requested removal of app-only tagging and one consolidated Live editor.
+This supersedes the earlier hidden-panel and preview-button work below.
+
+- Removed app-only creation/editing controls and the intermediate/rename dialogs.
+  Edit Live tags opens one fixed-selection editor with current assignments and
+  counts, add/remove/rename fields, optional additional edits, and Preview/Save.
+  Opening/reloading reads sidecars in the background without writing assignments.
+- Legacy app-tag database rows remain dormant: excluded from search, facets,
+  classification, rule learning and XO export. New app-tag writes are rejected.
+  Favorites and generated classification/search metadata remain supported.
+  Old sidebar snapshots are invalidated so they cannot expose legacy labels.
+- Recovery snapshots retain complete stored rows separately from visible tags.
+  Duplicate undo preserves enabled/disabled legacy data and still refuses changed
+  metadata; historical snapshots without the new raw-row field remain supported.
+- Windows source suite: 356 tests passed in 49.692s, one POSIX-only skip.
+  Full-app themed editor geometry and preview were also checked at 680x620.
+  The new dormant-tag fixtures are included in bundled-code validation.
+- Native Mac validation must run on this new source; prior CI runs and Windows
+  candidates below do not validate this redesign. No release is published.
+  Human Live acceptance and trusted signing/download validation remain open.
+
 ## Final acceptance preparation
 
 Live tag editing now uses Preview add/remove followed by Save changes, without

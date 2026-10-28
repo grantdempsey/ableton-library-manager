@@ -194,7 +194,7 @@ class FoundationUiTests(unittest.TestCase):
         root.update()
         self.assertGreater(library.search_entry.winfo_width(), 150)
         self.assertGreater(library.tag_list.winfo_height(), 70)
-        self.assertFalse(library.tag_editor.winfo_ismapped())
+        self.assertIsNone(library._live_batch_dialog)
         self.assertGreater(library.assigned_tags_text.winfo_height(), 20)
         root.geometry("1020x620")
         for content in (library.assigned_tags_text,):

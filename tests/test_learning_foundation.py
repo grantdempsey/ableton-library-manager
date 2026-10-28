@@ -231,12 +231,12 @@ class LearningFoundationTests(unittest.TestCase):
 
         sorter_engine.index_asset(asset_path, "Kicks", "filename_rule", 0.95, ["kick", "category:Kicks"])
         sorter_engine.add_asset_tag(asset_path, "favorite")
-        sorter_engine.index_asset(asset_path, "Snares", "ableton_metadata", 0.85, ["snare"])
+        sorter_engine.index_asset(asset_path, "Snares", "ableton_metadata", 0.85, ["category:Snares"])
 
         indexed = sorter_engine.get_indexed_asset(asset_path)
         self.assertEqual("Snares", indexed["destination"])
         self.assertIn("favorite", indexed["tags"])
-        self.assertIn("snare", indexed["tags"])
+        self.assertIn("category:Snares", indexed["tags"])
         self.assertNotIn("category:Kicks", indexed["tags"])
 
     def test_move_migrates_preview_index_record_to_destination(self):
@@ -362,11 +362,9 @@ class LearningFoundationTests(unittest.TestCase):
         )
 
     def test_personal_tags_do_not_change_classification(self):
-        self.assertEqual((None, None), sorter_engine.resolve_routing_tags(
-            ["favorite", "mood:dark", "name:kick"]
-        ))
+        self.assertFalse(hasattr(sorter_engine, "resolve_routing_tags"))
 
-    def test_routing_role_tag_overrides_filename_rule(self):
+    def test_retired_routing_role_does_not_override_classification(self):
         source = os.path.join(self.temp_dir.name, "incoming")
         os.makedirs(source)
         sample_path = os.path.join(source, "mystery.wav")
@@ -388,12 +386,12 @@ class LearningFoundationTests(unittest.TestCase):
         sorter.process_single_file(source, "mystery.wav")
 
         self.assertEqual(
-            os.path.join(self.temp_dir.name, "library", "Samples", "One-Shots", "Snares"),
+            os.path.join(self.temp_dir.name, "library", "Samples", "One-Shots", "Other One-Shots"),
             sorter.preview_records[0]["destination"]
         )
-        self.assertEqual("routing_tag", sorter.preview_records[0]["reason"])
+        self.assertEqual("audio_fallback", sorter.preview_records[0]["reason"])
 
-    def test_loop_routing_tag_uses_bpm_and_key_hierarchy(self):
+    def test_retired_loop_tag_does_not_force_loop_routing(self):
         source = os.path.join(self.temp_dir.name, "incoming")
         os.makedirs(source)
         sample_path = os.path.join(source, "mystery_120bpm_Am.wav")
@@ -415,12 +413,7 @@ class LearningFoundationTests(unittest.TestCase):
         )
         sorter.process_single_file(source, "mystery_120bpm_Am.wav")
 
-        self.assertTrue(
-            sorter.preview_records[0]["destination"].endswith(
-                os.path.join("Samples", "Loops", "115-129 BPM", "AM")
-            )
-        )
-        self.assertEqual("routing_tag", sorter.preview_records[0]["reason"])
+        self.assertNotEqual("routing_tag", sorter.preview_records[0]["reason"])
 
     def test_reorganizing_already_sorted_file_is_a_no_op(self):
         library = os.path.join(self.temp_dir.name, "library")

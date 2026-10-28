@@ -29,10 +29,10 @@ class XoFilterTests(unittest.TestCase):
             kind, _ = xo_filter.classify(os.path.join(self.root, rel), self.root)
             self.assertEqual(kind, expected, rel)
 
-    def test_personal_tag_overrides(self):
+    def test_unknown_sample_has_no_app_tag_override_input(self):
         path = os.path.join(self.root, "Samples", "mystery 1.wav")
-        kind, _ = xo_filter.classify(path, self.root, ["nature"])
-        self.assertEqual(kind, "Nature")
+        kind, _ = xo_filter.classify(path, self.root)
+        self.assertIsNone(kind)
 
     def test_loops_and_unknown_are_skipped_by_default(self):
         self._make("Loops/Drum Loop 1.wav")

@@ -184,7 +184,7 @@ def describe_preview_evidence(record):
     )
 
 
-def describe_library_evidence(path, library_root, tags, routing_type, routing_folder):
+def describe_library_evidence(path, library_root, tags):
     evidence = interpret_manual_tags(tags)
     if not evidence.assignments:
         return (
@@ -195,8 +195,6 @@ def describe_library_evidence(path, library_root, tags, routing_type, routing_fo
             "Your existing sorting rules still apply. No files, tags or rules are changed."
         )
     lines = ["Evidence: " + ", ".join(evidence.assignments)]
-    if routing_type or routing_folder:
-        lines.append("Explicit local routing retained: " + str(routing_folder or routing_type))
     from sorter_engine import AUDIO_EXTS
     if os.path.splitext(path)[1].lower() not in AUDIO_EXTS:
         lines.append("Non-audio item: no audio one-shot destination recommended.")

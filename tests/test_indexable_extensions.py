@@ -23,12 +23,12 @@ class IndexableExtensionTests(unittest.TestCase):
                 path = os.path.join(temp_dir, filename)
                 with open(path, "wb") as asset_file:
                     asset_file.write(b"data")
-                sorter_engine.index_asset(path, "Samples", "test", 1.0, ["test-tag"])
+                sorter_engine.index_asset(path, "Samples", "test", 1.0, ["name:test-tag"])
 
             results = sorter_engine.list_indexed_assets()
             self.assertEqual(["kick.wav"], [result["filename"] for result in results])
             self.assertEqual(1, sorter_engine.count_indexed_assets())
-            self.assertEqual([("test-tag", 1)], sorter_engine.list_indexed_tags())
+            self.assertEqual([("name:test-tag", 1)], sorter_engine.list_indexed_tags())
         sorter_engine.ASSET_INDEX_FILE = original_index
 
     def test_asset_browser_stays_inside_user_library_root(self):
@@ -46,13 +46,13 @@ class IndexableExtensionTests(unittest.TestCase):
                 path = os.path.join(directory, filename)
                 with open(path, "wb") as asset_file:
                     asset_file.write(b"data")
-                sorter_engine.index_asset(path, "Samples", "test", 1.0, ["test-tag"])
+                sorter_engine.index_asset(path, "Samples", "test", 1.0, ["name:test-tag"])
 
             results = sorter_engine.list_indexed_assets(library_root=library_dir)
             self.assertEqual(["library-kick.wav"], [item["filename"] for item in results])
             self.assertEqual(1, sorter_engine.count_indexed_assets(library_dir))
             self.assertEqual(
-                [("test-tag", 1)],
+                [("name:test-tag", 1)],
                 sorter_engine.list_indexed_tags(library_dir)
             )
         sorter_engine.ASSET_INDEX_FILE = original_index
@@ -67,8 +67,8 @@ class IndexableExtensionTests(unittest.TestCase):
             os.makedirs(loop_dir)
             os.makedirs(one_shot_dir)
             for directory, filename, tags in (
-                (loop_dir, "loop.wav", ["category:Loops", "tempo"]),
-                (one_shot_dir, "hit.wav", ["category:One-Shots", "impact"]),
+                (loop_dir, "loop.wav", ["category:Loops", "name:tempo"]),
+                (one_shot_dir, "hit.wav", ["category:One-Shots", "name:impact"]),
             ):
                 path = os.path.join(directory, filename)
                 with open(path, "wb") as asset_file:
@@ -76,7 +76,7 @@ class IndexableExtensionTests(unittest.TestCase):
                 sorter_engine.index_asset(path, directory, "test", 1.0, tags)
 
             self.assertEqual(
-                [("category:Loops", 1), ("tempo", 1)],
+                [("category:Loops", 1), ("name:tempo", 1)],
                 sorter_engine.list_indexed_tags(
                     library_dir, search_text="type:loop"
                 )
@@ -93,8 +93,8 @@ class IndexableExtensionTests(unittest.TestCase):
             os.makedirs(loop_dir)
             os.makedirs(one_shot_dir)
             for directory, filename, tags in (
-                (loop_dir, "loop.wav", ["tempo"]),
-                (one_shot_dir, "hit.wav", ["tempo"]),
+                (loop_dir, "loop.wav", ["name:tempo"]),
+                (one_shot_dir, "hit.wav", ["name:tempo"]),
             ):
                 path = os.path.join(directory, filename)
                 with open(path, "wb") as asset_file:
@@ -102,13 +102,13 @@ class IndexableExtensionTests(unittest.TestCase):
                 sorter_engine.index_asset(path, directory, "test", 1.0, tags)
 
             results = sorter_engine.list_indexed_assets(
-                "type:loop", "tempo", library_root=library_dir
+                "type:loop", "name:tempo", library_root=library_dir
             )
             self.assertEqual(["loop.wav"], [item["filename"] for item in results])
             self.assertEqual(
                 1,
                 sorter_engine.count_indexed_assets(
-                    library_dir, search_text="type:loop", tag_filter="tempo"
+                    library_dir, search_text="type:loop", tag_filter="name:tempo"
                 )
             )
         sorter_engine.ASSET_INDEX_FILE = original_index
@@ -120,8 +120,8 @@ class IndexableExtensionTests(unittest.TestCase):
             library_dir = os.path.join(temp_dir, "User Library")
             os.makedirs(library_dir)
             for filename, tags in (
-                ("bright-kick.wav", ["kick", "bright"]),
-                ("dark-snare.wav", ["snare", "dark"]),
+                ("bright-kick.wav", ["name:kick", "name:bright"]),
+                ("dark-snare.wav", ["name:snare", "name:dark"]),
             ):
                 path = os.path.join(library_dir, filename)
                 with open(path, "wb") as asset_file:
@@ -129,7 +129,7 @@ class IndexableExtensionTests(unittest.TestCase):
                 sorter_engine.index_asset(path, library_dir, "test", 1.0, tags)
 
             self.assertEqual(
-                [("bright", 1), ("kick", 1)],
+                [("name:bright", 1), ("name:kick", 1)],
                 sorter_engine.list_indexed_tags(
                     library_dir, search_text="bright"
                 )

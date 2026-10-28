@@ -35,7 +35,8 @@ and your normal application profile are not modified.
 1. In Library, confirm exactly two sounds. Audition each briefly, stop, and
    check selection, Ctrl/Shift selection, dropdown response and window resizing.
 2. Select **only release_kick.wav**. Open Edit Live tags, choose Genres and enter
-   `ALM Release Test`. Click Preview add and check the sample and added tag.
+   `ALM Release Test` with action add. Click Preview changes and check the sample
+   and added tag. The same editor shows assigned tags, edit fields and preview.
    Close/discard the editor without clicking Save changes.
    Run the `baseline` verification again: nothing should have changed.
 3. Enter and preview the same assignment with Live closed. Click Save changes

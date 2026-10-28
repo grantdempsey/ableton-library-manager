@@ -2,7 +2,7 @@
 
 XO can filter its sample pool by folder name. This module classifies each audio
 file into a sound type (Kicks, Nature, Vocals, ...) from its filename, its
-folders and any personal tags, then mirrors the files into one folder per type.
+folders, then mirrors the files into one folder per type.
 Hard links mean no extra disk space; originals are never modified or moved.
 """
 import hashlib
@@ -243,7 +243,7 @@ def _score_tokens(tokens, weight, scores):
             scores[sound_type] = scores.get(sound_type, 0.0) + points
 
 
-def classify(path, library_root, personal_tags=()):
+def classify(path, library_root):
     """Returns (sound_type or None, is_loop) for one file."""
     rel = os.path.relpath(path, library_root)
     parts = rel.split(os.sep)
@@ -252,15 +252,8 @@ def classify(path, library_root, personal_tags=()):
     folder_tokens = []
     for part in parts[:-1]:
         folder_tokens.extend(_tokens(part))
-    tag_tokens = []
-    for tag in personal_tags:
-        if tag.startswith(("ableton:", "category:", "name:")):
-            continue
-        tag_tokens.extend(_tokens(tag.split(":")[-1]))
-
     scores = {}
     _score_tokens(file_tokens, 2.0, scores)
-    _score_tokens(tag_tokens, 3.0, scores)
     _score_tokens(folder_tokens, 1.0, scores)
     is_loop = bool(LOOP_TOKENS & set(file_tokens + folder_tokens))
     if not scores:
@@ -269,32 +262,9 @@ def classify(path, library_root, personal_tags=()):
     return best, is_loop
 
 
-def _personal_tags_by_path(library_root):
-    """Loads user-added tags from the index so custom tags can steer the folders."""
-    tags = {}
-    index_file = sorter_engine.ASSET_INDEX_FILE
-    if not os.path.exists(index_file):
-        return tags
-    import sqlite3
-    root = os.path.normpath(library_root).lower() + os.sep
-    connection = sqlite3.connect(index_file)
-    try:
-        rows = connection.execute(
-            "SELECT asset_path, tag FROM asset_tags WHERE enabled != 0 "
-            "AND tag NOT LIKE 'category:%' AND tag NOT LIKE 'name:%'"
-        ).fetchall()
-    finally:
-        connection.close()
-    for path, tag in rows:
-        if os.path.normpath(path).lower().startswith(root):
-            tags.setdefault(os.path.normpath(path), []).append(tag)
-    return tags
-
-
 def build_plan(library_root, include_loops=False, selected_types=None, should_cancel=None, *, use_live_tags=False):
     """Walks the library and returns {sound_type: [source paths]} plus summary counts."""
     apply_custom_types()
-    personal = _personal_tags_by_path(library_root)
     plan = {}
     stats: XoPlanStats = {"scanned": 0, "unclassified": 0, "loops_skipped": 0}
     paths = []
@@ -318,19 +288,12 @@ def build_plan(library_root, include_loops=False, selected_types=None, should_ca
         if should_cancel and should_cancel():
             break
         stats["scanned"] += 1
-        sound_type, is_loop = classify(path, library_root, personal.get(path, ()))
+        sound_type, is_loop = classify(path, library_root)
         if use_live_tags:
             evidence = tag_evidence.interpret_manual_tags(manual.get(os.path.normcase(os.path.abspath(path)), ()))
             is_loop = is_loop or evidence.is_loop
-            routing_type, routing_folder = sorter_engine.resolve_routing_tags(personal.get(path, ()))
-            if routing_type == "one-shot":
-                is_loop = False
-            elif routing_type == "loop":
-                is_loop = True
             if evidence.assignments or evidence.is_loop:
-                if routing_type or routing_folder:
-                    status = "local routing override present; Live type not adopted"
-                elif not evidence.one_shot_eligible:
+                if not evidence.one_shot_eligible:
                     status = "manual kit, multisample or impulse-response role; excluded from build"
                     sound_type = None
                 elif not evidence.alternatives:

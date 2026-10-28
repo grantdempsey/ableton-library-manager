@@ -70,6 +70,7 @@ def main():
     suites = (
         "test_release_acceptance",
         "test_release_blockers",
+        "test_retired_app_tags",
         "test_backup_and_undo",
         "test_rules_transactions",
         "test_live_tag_sync",

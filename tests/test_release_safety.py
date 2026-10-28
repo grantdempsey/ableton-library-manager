@@ -174,6 +174,22 @@ class ReleaseSafetyTests(unittest.TestCase):
         self.assertEqual(("Samples", "One-Shots", "Bass"), tag_evidence.suggested_folder(evidence.sound_type))
 
     def test_move_regenerates_category_tags_and_duplicate_undo_preserves_both_files(self):
+        self._assert_duplicate_undo_preserves_data()
+
+    def test_historical_duplicate_snapshot_restores_dormant_enabled_and_disabled_rows(self):
+        original = sorter_engine.ParallelLibrarySorter.log_move
+        def historical_log(sorter, source, destination, **details):
+            for name in ("source_index", "destination_index"):
+                snapshot = details.get(name)
+                if snapshot is not None:
+                    rows = snapshot.pop("stored_tags")
+                    snapshot["tags"] = [tag for tag, enabled, _source in rows if enabled]
+                    snapshot["disabled_tags"] = [tag for tag, enabled, _source in rows if not enabled]
+            return original(sorter, source, destination, **details)
+        with mock.patch.object(sorter_engine.ParallelLibrarySorter, "log_move", historical_log):
+            self._assert_duplicate_undo_preserves_data()
+
+    def _assert_duplicate_undo_preserves_data(self):
         source_dir = self.root / "incoming"
         target_root = self.root / "library"
         target_dir = target_root / "Samples" / "One-Shots" / "Kicks"
@@ -186,7 +202,14 @@ class ReleaseSafetyTests(unittest.TestCase):
         sorter_engine.DRUM_KEYWORDS = {r"\bkick\b": "Kicks"}
         sorter_engine.RULE_METADATA = {}
         sorter_engine.index_asset(str(source), str(source_dir), "test", 1, ["favorite", "category:Incoming"])
-        sorter_engine.index_asset(str(destination), str(target_dir), "test", 1, ["keep-destination"])
+        sorter_engine.index_asset(str(destination), str(target_dir), "test", 1, [])
+        connection = sorter_engine._asset_index_connection()
+        with connection:
+            connection.executemany(
+                "INSERT INTO asset_tags VALUES (?, ?, ?, 'personal')",
+                [(str(destination), "keep-destination", 1), (str(source), "disabled-legacy", 0)]
+            )
+        connection.close()
         ableton_tags.prepare_edit([str(source)], "Drums|Kick").commit()
         ableton_tags.prepare_edit([str(destination)], "Character|Warm").commit()
         window = SimpleNamespace(after=lambda _delay, callback: callback())
@@ -202,11 +225,11 @@ class ReleaseSafetyTests(unittest.TestCase):
         self.assertNotIn("category:Incoming", tags)
         self.assertIn("category:Kicks", tags)
         self.assertEqual(["Character|Warm", "Drums|Kick"], ableton_tags.sample_tags(str(destination)))
-        sorter_engine.add_asset_tag(str(destination), "changed-after-merge")
+        sorter_engine.remove_asset_tag(str(destination), "favorite")
         refused = sorter_engine.undo_move_log(sorter.move_log_path)
         self.assertIn("app tags changed", refused["errors"][0])
         self.assertFalse(source.exists())
-        sorter_engine.remove_asset_tag(str(destination), "changed-after-merge")
+        sorter_engine.add_asset_tag(str(destination), "favorite")
         result = sorter_engine.undo_move_log(sorter.move_log_path)
         self.assertEqual([], result["errors"])
         self.assertEqual(1, result["restored"])
@@ -215,7 +238,19 @@ class ReleaseSafetyTests(unittest.TestCase):
         self.assertEqual(["Drums|Kick"], ableton_tags.sample_tags(str(source)))
         self.assertEqual(["Character|Warm"], ableton_tags.sample_tags(str(destination)))
         self.assertIn("favorite", sorter_engine.get_asset_tags(str(source)))
-        self.assertIn("keep-destination", sorter_engine.get_asset_tags(str(destination)))
+        self.assertNotIn("keep-destination", sorter_engine.get_asset_tags(str(destination)))
+        connection = sorter_engine._asset_index_connection()
+        try:
+            self.assertEqual([(1,)], connection.execute(
+                "SELECT enabled FROM asset_tags WHERE asset_path = ? AND tag = 'keep-destination'",
+                (str(destination),)
+            ).fetchall())
+            self.assertEqual([(0,)], connection.execute(
+                "SELECT enabled FROM asset_tags WHERE asset_path = ? AND tag = 'disabled-legacy'",
+                (str(source),)
+            ).fetchall())
+        finally:
+            connection.close()
         self.assertNotIn("favorite", sorter_engine.get_asset_tags(str(destination)))
 
     def test_duplicate_recovery_refuses_changed_destination(self):

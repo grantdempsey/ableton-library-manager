@@ -93,13 +93,12 @@ class TagEvidenceTests(unittest.TestCase):
             self.assertIsNone(evidence.sound_type)
             self.assertEqual(("Kicks", "Snares"), evidence.alternatives)
 
-    def test_xo_does_not_flatten_live_character_or_generated_cache_into_personal_hints(self):
+    def test_xo_keyword_classification_has_no_app_tag_input(self):
         self.assertIsNone(xo_filter.classify(
-            os.path.join("library", "mystery.wav"), "library",
-            ["ableton:Character|Kick", "category:Snares", "name:clap"]
+            os.path.join("library", "mystery.wav"), "library"
         )[0])
         self.assertEqual("Kicks", xo_filter.classify(
-            os.path.join("library", "mystery.wav"), "library", ["kick"]
+            os.path.join("library", "kick.wav"), "library"
         )[0])
 
 
@@ -343,7 +342,7 @@ class TagEvidenceWorkflowTests(unittest.TestCase):
         proposal = records[paths[0]]["tag_suggestion"]
         self.assertEqual("Snares", proposal["sound_type"])
         self.assertTrue(proposal["destination"].endswith("Snares"))
-        hints = tag_evidence.describe_library_evidence(paths[0], self.source, candidate["evidence_tags"], None, None)
+        hints = tag_evidence.describe_library_evidence(paths[0], self.source, candidate["evidence_tags"])
         self.assertIn("Suggested folder:", hints)
         self.assertIn("Drums|Snare|Rim", hints)
         plan, stats = xo_filter.build_plan(self.source, use_live_tags=True)
@@ -382,7 +381,7 @@ class TagEvidenceWorkflowTests(unittest.TestCase):
         rack = self.sample("mystery.adg", ["Drums|Snare|Rim"])
         records = {record["source"]: record for record in self.run_sorter().preview_records}
         self.assertIsNone(records[rack]["tag_suggestion"])
-        hints = tag_evidence.describe_library_evidence(rack, self.source, ["Drums|Snare|Rim"], None, None)
+        hints = tag_evidence.describe_library_evidence(rack, self.source, ["Drums|Snare|Rim"])
         self.assertIn("Non-audio item", hints)
         self.assertNotIn("Suggested folder:", hints)
 
@@ -420,7 +419,7 @@ class TagEvidenceWorkflowTests(unittest.TestCase):
         self.assertTrue(os.path.isfile(first))
         self.assertFalse(os.path.exists(self.destination))
 
-    def test_conflicts_and_explicit_routing_are_explained_without_overriding(self):
+    def test_conflicts_are_explained_and_removed_routing_tags_are_ignored(self):
         conflict = self.sample("kick.wav", ["Sounds|Snare"])
         ambiguous = self.sample("unknown.wav", ["Sounds|Kick", "Sounds|Snare"])
         routed = self.sample("override.wav", ["Sounds|Snare"])
@@ -430,8 +429,8 @@ class TagEvidenceWorkflowTests(unittest.TestCase):
         self.assertIn("conflicts with existing", records[conflict]["tag_suggestion"]["status"])
         self.assertIsNone(records[ambiguous]["tag_suggestion"]["destination"])
         self.assertIn("conflicting manual sound types", records[ambiguous]["tag_suggestion"]["status"])
-        self.assertEqual("routing_tag", records[routed]["reason"])
-        self.assertEqual("explicit routing retained", records[routed]["tag_suggestion"]["status"])
+        self.assertEqual("audio_fallback", records[routed]["reason"])
+        self.assertEqual("suggested alternative to catch-all", records[routed]["tag_suggestion"]["status"])
 
     def test_real_copy_keeps_old_classification_until_rule_approved_and_preserves_tags(self):
         source = self.sample("mystery.wav", ["Sounds|Snare"])
@@ -517,14 +516,16 @@ class TagEvidenceWorkflowTests(unittest.TestCase):
         self.sample("Quasar 30.wav", (), catch_all)
         self.assertEqual([], rule_suggester.suggest_rules(self.source))
 
-    def test_manual_learning_excludes_filename_loops_and_explicit_overrides(self):
+    def test_manual_learning_excludes_live_loops_but_ignores_removed_app_overrides(self):
         catch_all = os.path.join(self.source, "Samples", "One-Shots", "Other One-Shots")
         for index in range(6):
             self.sample(f"Quasar Loop {index}.wav", ["Sounds|Snare"], catch_all)
             path = self.sample(f"Nebula {index}.wav", ["Sounds|Snare"], catch_all)
             sorter_engine.index_asset(path, catch_all, "test", 1, ["type:loop"])
             self.sample(f"Supernova {index}.wav", ["Sounds|Snare", "Sounds|Loop"], catch_all)
-        self.assertEqual([], rule_suggester.suggest_rules(self.source, min_files=5))
+        candidates = rule_suggester.suggest_rules(self.source, min_files=5)
+        self.assertEqual(["nebula"], [candidate["token"] for candidate in candidates])
+        self.assertEqual(6, candidates[0]["count"])
 
     def test_manual_loop_role_does_not_propose_one_shot_destination(self):
         source = self.sample("mystery.wav", ["Sounds|Snare", "Sounds|Loop"])
@@ -557,17 +558,18 @@ class TagEvidenceWorkflowTests(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(output, "Snares", "kick.wav")))
         self.assertEqual(["Sounds|Snare"], ableton_tags.sample_tags(tagged))
 
-    def test_xo_manual_loop_filter_local_override_and_selected_types(self):
+    def test_xo_manual_loop_filter_ignores_removed_local_override_and_honors_selected_types(self):
         loop = self.sample("unknown.wav", ["Sounds|Snare", "Sounds|Loop"])
         override = self.sample("kick.wav", ["Sounds|Snare"])
         sorter_engine.index_asset(override, self.source, "test", 1, ["type:one-shot"])
         plan, stats = xo_filter.build_plan(self.source, use_live_tags=True)
         self.assertEqual(1, stats["loops_skipped"])
-        self.assertEqual([override], plan["Kicks"])
+        self.assertEqual([override], plan["Snares"])
         included, _ = xo_filter.build_plan(
             self.source, use_live_tags=True, include_loops=True, selected_types={"Snares"}
         )
-        self.assertEqual({"Snares": [loop]}, included)
+        self.assertEqual({loop, override}, set(included["Snares"]))
+        self.assertEqual({"Snares"}, set(included))
 
     def test_xo_loop_role_only_is_explained_without_ambiguity_or_type_invention(self):
         source = self.sample("kick.wav", ["Sounds|Loop", "Character|Warm"])

@@ -108,8 +108,8 @@ percussion role instead of using a leaf such as Bell as a melodic instrument.
 Character, Genres, Function, Format, MIDI Tools, unknown categories, generated labels, and automatic/factory Live classifications
 are not sound-type evidence.
 
-These are **separate recommendations**, not new routing instructions. Explicit local
-routing tags and the existing rules retain their precedence; loop classification is
+These are **separate recommendations**, not new routing instructions. Existing rules
+retain their precedence; loop classification is
 not replaced with a one-shot destination. Preview and actual execution still use the
 same normal routing plan. Organize also shows recommendations for tagged samples
 that would remain in the catch-all folder. Already organized non-catch-all folders
@@ -124,9 +124,9 @@ The Rules catch-all scan can now propose previously unknown filename words using
 manual sound-type evidence. By default, at least 20 samples must support the same
 type and at least 90% of eligible catch-all samples containing that word must agree.
 Untagged and ambiguously tagged samples count against that share, rather than
-quietly strengthening the result. Filename loops and explicit local routing overrides
-and non-one-shot roles are excluded from manual-evidence learning. Filename-only
-fallback proposals cannot bypass mapped manual evidence or local routing overrides.
+quietly strengthening the result. Filename loops and non-one-shot roles are excluded
+from manual-evidence learning. Filename-only fallback proposals cannot bypass
+mapped manual evidence.
 Only manual assignments supply these
 labels, never the app's generated category or name tags. As with other suggestions,
 pack-name coincidences still require human review.
@@ -158,7 +158,7 @@ direct approval. Legacy learning-count candidates use accumulated observations,
 not a reconstructible distinct-file scan. They must reach 20 to appear for review,
 but approval requires refreshing into verified current-file evidence.
 XO no longer flattens cached Live or generated
-tags into personal keyword hints. Its optional manual-evidence mode is described below.
+tags into keyword hints. Its optional manual-evidence mode is described below.
 
 ### Loop-layout tag evidence
 
@@ -184,29 +184,29 @@ This does not delete saved assignments, favorites, searches or routing overrides
 
 The read-only Live database adapter remains behind tag dropdown suggestions, not
 as a separate library browser. It never writes Live's database or turns factory
-content into editable library items. Use **Edit Live tags... → Vocabulary source...**
+content into editable library items. Use **Edit Live tags... → Tag suggestions source...**
 to choose a Live database independently of the removed viewer. A single detected
 database is used automatically; multiple databases require an explicit choice.
 
 ### Library hints and opt-in XO grouping
 
-Custom manual assignments are not limited to Sounds. The dedicated Live tag editor,
-**Rename assignments...**, and **Multiple changes...** offer an editable group selector covering the
+Custom manual assignments are not limited to Sounds. The single Live tag editor
+offers an editable group selector covering the
 verified catalog groups: Character, Clips, Creator, Devices, Drums, Genres, Grooves,
 Key, Sounds, Tunings, and Type. Existing custom groups from indexed manual
 assignments are also suggested, and you can type a group explicitly.
 Opening a tag/group suggestion list loads Live's stored hierarchy vocabulary in
 the background, including unused tags, custom groups/subtags and hierarchy values
-stored in metadata. Suggestions are shared across the Live, rename and batch
-editors; they do not assign tags or count as manual evidence. A single detected
+stored in metadata. Suggestions serve all actions in the same editor;
+they do not assign tags or count as manual evidence. A single detected
 Live database is selected automatically; with multiple databases, use
-**Vocabulary source...** in the Live tag editor to select one.
+**Tag suggestions source...** in the Live tag editor to select one.
 Read errors are reported and retain the previous vocabulary. Derived browser
 fields are not added as writable tag suggestions.
 
 A plain label uses the selected group (`Genres` + `My style` becomes
 `Genres|My style`). An explicit hierarchy always keeps its own group, even when
-the picker differs. In Batch, plain rename targets use the selected group; use a
+the picker differs. Plain rename targets use the selected group; use a
 full hierarchy to rename across groups explicitly. Changing the group invalidates
 the review, and queued actions retain their already-qualified hierarchies.
 
@@ -231,21 +231,19 @@ clearer visual boundaries; option explanations are available on keyboard focus a
 well as hover. These visual updates do not change any options or routing behavior.
 
 **Sound details** (double-click a sound) includes read-only **Folder advice**, explaining mapped manual sound assignments for
-one selected sample, including conflicting types, explicit local routing overrides,
+one selected sample, including conflicting types,
 and differences between its current folder and the suggested one-shot folder.
-Suggestions use the **cached** Live assignments and are read-only. Use **Read tags from disk**
+Suggestions use the **cached** Live assignments and are read-only. Use **Reload assigned tags**
 in **Edit Live tags...** (or the metadata watcher/rescan) to update that cache. Multi-selection
 does not present one sample's advice as representative.
 
 In **Integrations → Build XO filter folder**, enable **Use manual Live sound types**
 before scanning to opt in. Each scan reads current sidecars by full sample path.
 A single mapped manual type takes precedence over keyword grouping; conflicting
-manual types are excluded rather than guessed. Local routing overrides prevent
-adopting the Live type, retaining keyword grouping; explicit loop/one-shot flags
-control the loop filter. Unknown or Character-only assignments use normal keyword
+manual types are excluded rather than guessed. Unknown or Character-only assignments use normal keyword
 grouping. Manual `Type|Loop`, Drums loop hierarchies and `Sounds|Loop` assignments
 participate in loop exclusion. Kits, multisamples and impulse responses are excluded
-from the opt-in audio build unless explicit local routing takes precedence.
+from the opt-in audio build.
 **Edit folders → Find suggestions** inherits the builder's Live-tag option: already
 classified sounds and conflicting/non-one-shot evidence are not mined as new folder
 words. Failed sidecar reads report an error instead of showing an empty success.
@@ -300,7 +298,7 @@ This keeps asset history separate from portable rule configuration:
 The index is updated during preview and real import operations. Re-indexing an asset updates its
 classification-derived tags without removing user-added tags, and replaces stale generated tags
 rather than creating duplicates. When a previewed asset is moved into the library, its existing
-index record and personal tags move with it instead of leaving a duplicate source record. Copies
+index record and favorites move with it instead of leaving a duplicate source record. Copies
 remain represented at both paths because both files still exist. Preview output displays
 the tags for each record, making it possible to inspect how Ableton metadata and routing decisions
 relate before changing files.
@@ -344,7 +342,7 @@ After deleting files with another tool, use **Library > Rescan library** to
 update the index and its counts without moving any files. Rescanning discovers new sounds
 and removes records and tags for confirmed-missing files inside the selected library.
 Completed Import and Organize operations also remove missing records in their destination
-library. Existing files retain their personal tags. Unavailable libraries or access errors
+library. Existing files retain their favorites and dormant legacy data. Unavailable libraries or access errors
 are reported rather than treated as deleted files.
 
 Generated filename tags use the `name:` namespace and remain separate from routing rules. For
@@ -458,7 +456,7 @@ unmanaged. Reload from disk if preferences changed externally.
 - **Previewed Live-tag edits:** Choose add/remove/rename, preview exact assignment changes, then save. Use Add another change for optional multi-edit batches. Planning and saving run in the background with sidecar conflict checks and backups.
 - **Discovery filters:** Find untagged samples or sounds missing a manual Live group; combine exact tags with match-all, match-any, or exclusions, and save those searches as collections.
 - **Metadata freshness:** A visible Live-tag monitor checks sidecars in the background, waits for two stable probes, and updates cached assignments without writing audio or sidecars. Full-scan and library metadata-check times are displayed separately.
-- **Shared Live tags:** Read manual Live 12 sidecars on scans and review cached assignments in the inspector. Use **Edit Live tags...** for labeled group/tag fields, mixed-selection counts, preview/save actions, **Multiple changes...**, and **Rename assignments...**. Existing sidecars receive backups; concurrent changes detected during review abort saving. Close Live during writes.
+- **Shared Live tags:** Read manual Live 12 sidecars on scans and review cached assignments in the inspector. **Edit Live tags...** opens one editor with current assignments, selected-sound counts, add/remove/rename, optional multiple edits, and Preview/Save. Existing sidecars receive backups; concurrent changes detected during review abort saving. Close Live during writes.
 - **Tag-preserving operations:** Manual assignments follow sample copy/move, duplicate merging, nested-folder repair, and undo. See the shared-tag section for limitations and recovery guidance.
 - **Integrations workspace:** The XO folder builder has a dedicated home for third-party workflows. Serum support is not included.
 - **Accurate library counts:** Rescans remove confirmed-missing files after external deletion; operation completion refreshes the browser and its sidebar counts.
@@ -579,14 +577,16 @@ longer a permanent inspector panel.
 visible range. **Auto-refresh Live tags** sits with metadata freshness in the footer;
 it rereads metadata, not audio discovery.
 Use **Edit Live tags...** to open the larger tag editor.
-Live tags are shared via sidecars. App-only custom tagging is no longer exposed
-in the editor, tag browser, summary or Sound details. Existing saved app-only tags,
-favorites and routing overrides are preserved; nothing is deleted or migrated.
+Live tags are shared via sidecars. App-only custom tagging has been removed:
+legacy labels no longer appear in search, filters, routing, rule learning, or XO
+classification. Their database rows remain dormant; nothing is deleted or migrated
+into Live. Favorites and generated classification/search tags remain supported.
 Dropdown choices load in the background and are cached until the index changes;
 opening a group/tag dropdown never waits for the indexed-tag query. Failed reads
 report an error and retain the previous choices.
-Opening or closing the editor does not write tags. Its selection heading follows
-the current Library selection, including sounds on other pages.
+Opening or closing the editor does not write tag assignments. The editor captures
+the current Library selection, including sounds on other pages, and keeps it fixed
+until closed. Reopen it to edit a different selection.
 Select several results with Shift or Ctrl (Command on macOS) to edit them together.
 The selection count is always shown above the results. **Favorite selected** and
 **Unfavorite** apply only to selected sounds, including those off page, not the
@@ -613,7 +613,7 @@ No existing local labels are migrated or deleted automatically.
 `Ableton Folder Info`. It preserves full, case-sensitive hierarchies such as
 `Sounds|Bass|Synth Bass` and matches relative paths, not just filenames. Sidecar
 changes are reread even when the audio file has not changed. Renamed or removed
-Live assignments replace the previous cached assignments; local personal tags
+Live assignments replace the previous cached assignments; dormant legacy rows
 are not removed. Invalid or inaccessible sidecars fail the scan explicitly,
 leaving its uncommitted index updates rolled back.
 
@@ -642,21 +642,22 @@ also read ancestor-folder sidecars that reference samples inside the library.
 Malformed sidecars still fail explicitly rather than clearing cached assignments.
 
 Select one or more samples and choose **Edit Live tags...**. The dedicated editor
-lists every cached manual assignment in the selection, with counts
-such as `18/25 some` or `25/25 all`. Click a row to copy its exact hierarchy into
-the entry. Choose an existing hierarchy from the dropdown, or enter a new one;
+reads the selected sounds' sidecars in the background and lists assigned tags,
+with counts such as `18/25` or `25/25`. Click a row to select its exact hierarchy
+for removal or renaming. Choose **add** to assign a new tag;
 suggestions come from indexed Live assignments and the read-only Live vocabulary.
 The **Group** field qualifies plain labels; an explicit `Group|Tag|Subtag` hierarchy
 overrides that field. Dropdown choices are suggestions, not assigned tags.
-**Preview add...** and **Preview remove...** target only the currently
-selected sounds and open a preview before **Save changes**. **Read tags from disk** refreshes the cache
-without writing. **Rename assignments...** opens the add/remove/rename dialog.
+Choose **add**, **remove**, or **rename** in this same editor, then **Preview changes**
+and **Save changes**. Rename reveals a **Rename to** field and affects only these
+sample assignments, not Live's global vocabulary. **Reload assigned tags** rereads
+sidecars without changing assignments; it invalidates any previous preview.
 
 Use **Select page** to add the visible page to your selection, or **Select all
 matching** to capture the complete current search/filter result in the background.
 The selection persists across pages; deselecting a visible row removes just that
 sound. The selection count explicitly includes sounds off the current page.
-The Live-tag preview describes that off-page scope, and local-tag/favorite
+The Live-tag preview describes that off-page scope, and favorite
 changes require confirmation when off-page sounds are included.
 
 Selections are explicit snapshots, not live queries: newly indexed matches are
@@ -671,10 +672,10 @@ one selected sound.
 
 ### Previewing Live-tag edits
 
-For one tag, use **Preview add...** or **Preview remove...** in **Edit Live tags...**,
-inspect the per-sample changes, then **Save changes**. For more edits, choose
-**Multiple changes...** to capture the current
-selection, including off-page sounds. The editor keeps that exact target list even
+Open **Edit Live tags...**, choose the action, group and tag, then **Preview changes**.
+Inspect the per-sample changes, then **Save changes**. No second editor or rename
+dialog is needed. The editor captures the current selection, including off-page
+sounds, and keeps that exact target list even
 if you subsequently change the browser selection or filters. Choose **add**,
 **remove**, or **rename**, enter the group and tag, then click **Preview changes**.
 No queue step is required for a single edit. For multiple edits, click
@@ -743,7 +744,7 @@ are reported explicitly rather than producing a misleading filter.
 
 Example: `bass missing-group:Character` finds bass-related indexed sounds needing
 Character assignments. Save the search as a collection, capture its matching
-sounds, then open **Edit Live tags... → Multiple changes...** to curate them. Applying discovery constraints clears
+sounds, then open **Edit Live tags...** to curate them. Applying discovery constraints clears
 the old captured selection just like other search changes. Existing collection
 and selected-tag filters remain in effect. Use **Clear all** to start a new search.
 
@@ -752,7 +753,7 @@ automatically tagged can still match `live:none` here; this does not assert that
 Live considers the sound completely untagged. Rescan or refresh selected sounds
 after external sidecar edits before relying on these views.
 
-**Read tags from disk** rereads sidecars in the background and updates only the
+**Reload assigned tags** rereads sidecars in the background and updates only the
 selected sounds' cached Live assignments. It does not write sidecars or audio.
 The targets are captured when refresh starts, so selecting another sound does
 not redirect the operation. Write controls are disabled during that refresh.
@@ -869,27 +870,14 @@ changes. Double-click a sound to open its details. Generated `name:` search-tag
 buttons can enable or disable those terms without changing the sound file.
 App-only custom-tag creation, removal and display are no longer available.
 
-Tags beginning with `name:` or `category:` are created by the app. Other tags are personal
-labels. Tags never move, rename, or delete files. Re-indexing refreshes generated tags while
+Tags beginning with `name:` or `category:` are generated search/classification metadata.
+Manual tags shared with Ableton are edited through **Edit Live tags...**.
+Re-indexing refreshes generated tags while
 preserving their enabled or disabled state.
 
-### Tags that can guide sorting
-
-Most tags are search labels only. To deliberately let a tag guide future classification, use
-one of the explicit routing namespaces:
-
-- `type:loop` — treat the audio as a loop and organize it by BPM and key.
-- `type:one-shot` — prevent loop-name guesses and keep the file in one-shot handling.
-- `role:kick`, `role:snare`, `role:hat`, `role:clap`, `role:tom`
-- `role:perc`, `role:shaker`, `role:vocal`, `role:fx`
-- `instrument:bass`, `instrument:808`, `instrument:synth`, `instrument:ambient`
-
-Routing tags are intentionally opt-in. Tags such as `favorite`, `mood:dark`, `name:kick`, and
-`category:Kicks` do not change file destinations. When multiple routing tags exist, `type:loop`
-or `type:one-shot` defines the broad audio type, then the role or instrument tag defines the
-one-shot destination. A routing tag is only used for a file already present in the local index;
-new files still use filename, metadata, extension, BPM, and key detection during their first
-preview.
+Legacy app-only labels, including `type:`, `role:` and `instrument:` routing
+overrides, are inactive. Use Rules for organization changes; manual Live tags
+still support the reviewed recommendations and optional XO mode described above.
 
 ### Rules in everyday use
 
