@@ -33,6 +33,19 @@ Executable SHA-256:
 This supersedes every earlier candidate below. README status updates after
 this build do not change production code but must accompany final packaging.
 
+The README-current rebuild `candidate-3krq9pdb` passed 220 bundled-code tests
+in 47.482s (one POSIX-only skip), exact archive hashes and private-state checks,
+but **Windows Application Control blocked native process startup** during its
+final smoke. No policy bypass was attempted. This is not a successful native
+smoke, and it is not the recommended distribution artifact. The preceding
+`candidate-ictp6a3t` contains identical production code and passed native smoke,
+but that does not prove a new unsigned binary will be trusted on another PC.
+Windows signing/trust verification is therefore also a distribution gate.
+The blocked rebuild's ZIP SHA-256 is
+`899c02130a939587d0590f0f18583c34ff486f93c2214c7bca0b61c7b303f849`;
+its executable SHA-256 is
+`9cf5e8373faa4e90c50a595b1d6bfb192596e19a01cac727ac5ed081db6f345c`.
+
 ### Remaining publication gates
 
 1. Hands-on acceptance of the final packaged pages, selection/modifier behavior,
@@ -43,6 +56,8 @@ this build do not change production code but must accompany final packaging.
 3. Choose and test the distribution/signing/notarization route for Mac users.
    No Developer ID/notarization or downloaded-app Gatekeeper check was performed.
    Do not advertise older macOS compatibility without additional native testing.
+   Resolve Windows Application Control/code-signing trust for the final binary
+   as well; do not disable protection to manufacture a passing smoke.
 4. Confirm the provisional release version/scope. Full Ableton tagging parity
    remains incomplete; the editable-audio/tagging scope and removed viewer are
    intentional. Do not promise non-audio/global-taxonomy editing.

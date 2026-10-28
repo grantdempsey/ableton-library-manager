@@ -20,6 +20,13 @@ explicit publication authorization. Earlier "Mac untested" statements below
 preserve the development history and no longer describe current automated
 evidence. No claim of full taxonomy parity is made.
 
+Distribution follow-up: a README-current Windows rebuild (`candidate-3krq9pdb`)
+passed 220 bundled-code tests but was denied execution by Windows Application
+Control. The preceding `candidate-ictp6a3t`, with identical production code,
+passed native smoke. This distinction must not be hidden: final binary trust/
+signing validation remains open, alongside Mac Gatekeeper/notarization decisions.
+No application-control policy bypass was attempted.
+
 ## Remediation status and macOS gate
 
 The user authorized the full remediation, then made macOS a priority. The current
