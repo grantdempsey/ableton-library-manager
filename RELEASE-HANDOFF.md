@@ -2,6 +2,82 @@
 
 Updated: October 27, 2026, release recovery and macOS validation preparation.
 
+## Current release decision — native automated gates passed
+
+The user authorized commit/push and macOS validation only, **not publication**.
+All production source through `0836eef` is pushed and passes native validation:
+[GitHub run 40620273566](https://github.com/grantdempsey/ableton-library-manager/actions/runs/40620273566).
+
+| Platform | Source suite | Exact executable bundled-code fixtures | Native app smoke |
+|---|---|---|---|
+| Windows / Python 3.14.8 | 349 tests, 54.311s; one POSIX-only skip | 220 tests, 49.552s; same skip | Fresh/upgrade startup, responsiveness, resize, close pass |
+| macOS 15.7.9 Apple Silicon | 349 tests, 45.251s | 220 tests, 34.307s | Fresh/upgrade startup from `/`, Application Support state and native Quit exit 0 pass |
+| macOS 15.7.9 Intel | 349 tests, 73.066s | 220 tests, 60.563s | Same native smoke, both scenarios exit 0 |
+
+Both Mac binaries were built natively and verified as arm64 / x86_64.
+Apple Silicon executable SHA-256:
+`7d1b9d38225a16749f242484539a2eba23f7335700227871e3571127f96c5915`.
+Intel executable SHA-256:
+`6b204908b92931e8ff28ecefd3470dc6c6c7f2496158e4114458108dde1377ae`.
+Python reports a 10.15 deployment target, but this is **not** older-macOS
+certification, and does not imply Apple Silicon support before macOS 11.
+CI creates disposable test apps; it does not retain/publish Mac packages.
+
+Current Windows test ZIP:
+`release_builds\candidate-ictp6a3t\AbletonLibraryManager-v2.1.0-windows-candidate.zip`.
+33 files, 14,812,496 bytes, exact manifest/CRC/archive/extracted-byte verification.
+ZIP SHA-256:
+`b3e7a8b01020718bc831adf6d5d51b54bc70a055e5d55a5f2e96c542ad37de14`.
+Executable SHA-256:
+`113f488ce159a1bfc8c5e00a9f4bd8a5660ab74f5ac86fb104a421cc85d7bbcf`.
+This supersedes every earlier candidate below. README status updates after
+this build do not change production code but must accompany final packaging.
+
+### Remaining publication gates
+
+1. Hands-on acceptance of the final packaged pages, selection/modifier behavior,
+   dropdowns, audio and reviewed writes on disposable content. Automated
+   fixtures do not certify physical input or Live-side acceptance.
+2. Explicitly approve any disposable Live writes and confirm save/reopen behavior.
+   No personal/factory metadata has been written by this validation work.
+3. Choose and test the distribution/signing/notarization route for Mac users.
+   No Developer ID/notarization or downloaded-app Gatekeeper check was performed.
+   Do not advertise older macOS compatibility without additional native testing.
+4. Confirm the provisional release version/scope. Full Ableton tagging parity
+   remains incomplete; the editable-audio/tagging scope and removed viewer are
+   intentional. Do not promise non-audio/global-taxonomy editing.
+5. Only after explicit publication approval: produce final distribution packages,
+   retain both Mac architectures, verify checksums, tag and publish.
+
+All notes below that say CI is only prepared or native Mac runs are unavailable
+are historical and superseded by this section. No tag or release exists from
+this validation work. The unrelated local `AbletonLibraryManager-v2.0.1.zip`
+was deliberately left untracked and untouched.
+
+## Native validation follow-up
+
+Source is now pushed with authorization; no tag or publication is authorized.
+Native CI confirmed and corrected:
+
+- Windows-only permission handling previously stripped POSIX source read bits,
+  breaking copy/move on Macs. It now runs only on Windows; the native mode
+  regression passes alongside copy/move/undo workflows.
+- Library sidebar sizing now retains the existing minimum tag-list height
+  under Aqua. The inactive legacy viewer's Close button also reserves space.
+- An automatic startup rescan could enter a modal wait during metadata edits.
+  Stack traces from real Mac runners identified this reentrancy. Automatic
+  rescans now retry after editing instead of showing a modal; manual rescans
+  retain their explicit busy notice. A regression covers the deferred branch.
+- Apple Silicon at commit `2aefe7e` passed the 348-test source suite and native
+  build. This is intermediate evidence, not final packaged certification.
+  The updated run includes the startup-rescan fix on both architectures.
+- CI has bounded source/smoke stages, diagnostic stack dumps and concurrency
+  cancellation for superseded pushes. All fixtures use disposable home/library
+  content, not personal Live files.
+
+All previously listed Windows ZIPs predate these native-discovered fixes and
+are superseded. Build and verify a new candidate before distribution.
+
 ## Authorized validation push
 
 The user authorized committing and pushing the release source and running

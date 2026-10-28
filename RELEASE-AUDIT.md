@@ -1,5 +1,25 @@
 # Release readiness audit
 
+## Final automated validation update
+
+H1-H8 remediation and native-discovered permission/layout/startup-rescan fixes
+are pushed through production commit `0836eef`. Native macOS 15.7.9 CI
+[run 40620273566](https://github.com/grantdempsey/ableton-library-manager/actions/runs/40620273566)
+passed on Apple Silicon and Intel: 349 source tests, 220 overlapping exact
+bundled-code fixtures, native builds and fresh/upgrade startup/state/native-Quit
+smoke. Windows passes 349 source tests and 220 bundled fixtures (one POSIX-only
+skip each), plus exact ZIP byte verification and native fresh/upgrade smoke.
+The current candidate is `candidate-ictp6a3t`; all earlier artifacts are
+superseded. See the current decision/evidence at the top of
+[RELEASE-HANDOFF.md](RELEASE-HANDOFF.md).
+
+The user authorized source commit/push and validation, explicitly not publication.
+Remaining gates are hands-on packaged/Live acceptance, Mac distribution signing/
+notarization/Gatekeeper decisions, advertised minimum OS/version/scope, and
+explicit publication authorization. Earlier "Mac untested" statements below
+preserve the development history and no longer describe current automated
+evidence. No claim of full taxonomy parity is made.
+
 ## Remediation status and macOS gate
 
 The user authorized the full remediation, then made macOS a priority. The current

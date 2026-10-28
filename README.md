@@ -7,8 +7,10 @@ A high-performance, cross-platform desktop tool designed to automate the categor
 The `v2.1.0` title and build paths are provisional, not a published release or a
 claim of full Ableton tag parity. Windows source tests, isolated whole-app UI
 fixtures and a clean Windows package startup smoke have passed. Native macOS
-builds and hands-on packaged workflows are release gates, not assumed from
-Windows tests or simulated platform branches.
+15.7.9 validation also passed on Apple Silicon and Intel: 349 source tests,
+220 overlapping bundled-code tests, native builds, fresh/upgrade startup and
+native Quit. Hands-on packaged workflows, Live acceptance and distribution
+signing/Gatekeeper checks remain separate release gates.
 Existing executables and ZIPs must not be assumed to contain the current source.
 
 **Full tagging parity is not complete.** Library is an editable sound browser;
@@ -29,7 +31,8 @@ persistence defects that must be resolved before a stable release.
 ## 🏛️ System Features
 - **Platform support:** Includes Windows and macOS path handling. Native Apple Silicon
   and Intel validation is required before recommending this release to Mac users.
-  macOS packaging, Aqua layout/selection and Live acceptance remain unverified.
+  macOS 15.7.9 native builds and startup/Quit pass on both architectures.
+  Native input, older macOS releases and Live acceptance remain unverified.
 - **OneDrive Insulation:** Automatically detects and isolates asset paths to protect local libraries from intrusive OneDrive sync locks.
 - **Background Execution:** Leverages multi-threaded workers to execute tasks without freezing the interface.
   Closing the app requests a safe cancellation and lets the current file finish before shutting down.
@@ -46,6 +49,9 @@ persistence defects that must be resolved before a stable release.
   before persistence. Failed saves leave active rules unchanged and never show
   import success. Unrelated profile fields are retained and concurrent disk
   changes during staging are refused.
+- **Native Mac safeguards:** File operations preserve POSIX read permissions;
+  startup rescans defer while metadata editing is active instead of opening a
+  blocking dialog. Explicit manual rescans still explain when editing is busy.
 
 ---
 
@@ -367,7 +373,9 @@ macOS builds must be produced on a Mac; a Windows build is not a Mac app.
 The manual `macOS release validation` GitHub workflow prepares separate Apple
 Silicon and Intel runs: source tests, native PyInstaller builds, embedded-code
 fixtures, and fresh/upgrade startup plus native Quit smoke. The prepared workflow
-has not yet been run; it does not publish artifacts. On a Mac, after building:
+passed on both architectures in
+[run 40620273566](https://github.com/grantdempsey/ableton-library-manager/actions/runs/40620273566)
+at production commit `0836eef`; it does not publish artifacts. On a Mac, after building:
 
 ```bash
 python3 tests/verify_windows_bundle.py "/path/to/AbletonLibraryManager.app"
