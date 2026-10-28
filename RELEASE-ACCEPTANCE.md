@@ -35,9 +35,11 @@ and your normal application profile are not modified.
 1. In Library, confirm exactly two sounds. Audition each briefly, stop, and
    check selection, Ctrl/Shift selection, dropdown response and window resizing.
 2. Select **only release_kick.wav**. Open Edit Live tags, choose Genres and enter
-   `ALM Release Test`. Queue the change, then cancel its save confirmation.
+   `ALM Release Test`. Click Preview add and check the sample and added tag.
+   Close/discard the editor without clicking Save changes.
    Run the `baseline` verification again: nothing should have changed.
-3. Review and save the same assignment with Live closed. Run:
+3. Enter and preview the same assignment with Live closed. Click Save changes
+   (this writes the reviewed changes without another confirmation). Run:
 
    ```powershell
    python tests\prepare_live_acceptance.py verify "<fixture>" add

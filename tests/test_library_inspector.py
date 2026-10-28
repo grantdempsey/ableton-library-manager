@@ -794,7 +794,7 @@ class LibraryInspectorTests(unittest.TestCase):
     def finish_inline_change(self, save=True):
         dialog = self.tab._live_batch_dialog
         self.wait_for_batch(dialog)
-        with mock.patch("live_tag_batch.ask_confirm", return_value=save):
+        if save:
             dialog.save()
         self.wait_for_batch(dialog)
         with mock.patch("live_tag_batch.ask_confirm", return_value=True):
@@ -820,7 +820,8 @@ class LibraryInspectorTests(unittest.TestCase):
         self.assertIn("Snare", dialog.preview.get("1.0", "end"))
         dialog.tag_var.set("Sounds|Kick")
         check_surfaces()
-        self.assertEqual("", dialog.preview.get("1.0", "end").strip())
+        self.assertIn("Preview changes", dialog.preview.get("1.0", "end"))
+        self.assertNotIn("+ Sounds|Snare", dialog.preview.get("1.0", "end"))
 
     def test_batch_captures_selection_reviews_and_saves_combined_changes_once(self):
         dialog = self.open_batch()
@@ -839,7 +840,7 @@ class LibraryInspectorTests(unittest.TestCase):
         with mock.patch("live_tag_batch.ask_confirm", return_value=True) as confirm:
             dialog.save_button.invoke()
             self.wait_for_batch(dialog)
-        confirm.assert_called_once()
+        confirm.assert_not_called()
         self.assertEqual([], dialog.operations)
         self.assertIsNone(dialog.plan)
         self.assertEqual("disabled", str(dialog.save_button.cget("state")))
@@ -857,7 +858,7 @@ class LibraryInspectorTests(unittest.TestCase):
         dialog.review()
         self.wait_for_batch(dialog)
         with mock.patch("live_tag_batch.ask_confirm", return_value=False):
-            dialog.save()
+            dialog.close()
         self.assertIsNotNone(dialog.plan)
         self.assertFalse(os.path.isdir(os.path.join(self.temp_dir.name, "Ableton Folder Info")))
         dialog.tag_var.set("Character|Changed")
@@ -879,6 +880,7 @@ class LibraryInspectorTests(unittest.TestCase):
         dialog.tag_var.set("Sounds|Cancel")
         dialog.enqueue()
         dialog.action_var.set("remove")
+        dialog.tag_var.set("Sounds|Cancel")
         dialog.enqueue()
         dialog.review()
         with mock.patch("live_tag_batch.show_notice") as notice:
@@ -983,6 +985,11 @@ class LibraryInspectorTests(unittest.TestCase):
 
     def test_batch_dialog_controls_fit_at_minimum_size(self):
         dialog = self.open_batch()
+        self.assertFalse(dialog.replacement_entry.winfo_ismapped())
+        self.assertFalse(dialog.listing.winfo_ismapped())
+        dialog.tag_var.set("Sounds|First")
+        dialog.enqueue()
+        dialog.action_var.set("rename")
         dialog.geometry("680x560")
         self.root.update()
         for control in (
@@ -993,6 +1000,46 @@ class LibraryInspectorTests(unittest.TestCase):
             self.assertGreater(control.winfo_height(), 10)
             self.assertLessEqual(control.winfo_rootx() + control.winfo_width(), dialog.winfo_rootx() + dialog.winfo_width())
             self.assertLessEqual(control.winfo_rooty() + control.winfo_height(), dialog.winfo_rooty() + dialog.winfo_height())
+
+    def test_direct_preview_and_save_needs_no_queue_or_confirmation(self):
+        self.select(self.paths[:1])
+        self.tab._open_live_batch()
+        dialog = self.tab._live_batch_dialog
+        dialog.group_var.set("Genres")
+        dialog.tag_var.set("Release test")
+        dialog.review_button.invoke()
+        self.wait_for_batch(dialog)
+        self.assertEqual([], dialog.operations)
+        self.assertIn(self.paths[0], dialog.preview.get("1.0", "end"))
+        self.assertIn("+ Genres|Release test", dialog.preview.get("1.0", "end"))
+        self.assertEqual([], ableton_tags.sample_tags(self.paths[0]))
+        with mock.patch("live_tag_batch.ask_confirm") as confirm:
+            dialog.save_button.invoke()
+            self.wait_for_batch(dialog)
+        confirm.assert_not_called()
+        self.assertEqual(["Genres|Release test"], ableton_tags.sample_tags(self.paths[0]))
+        self.assertEqual([], ableton_tags.sample_tags(self.paths[1]))
+        self.assertEqual("", dialog.tag_var.get())
+        self.assertEqual("disabled", str(dialog.save_button.cget("state")))
+
+    def test_preview_includes_extra_change_and_current_edit_without_duplicate(self):
+        dialog = self.open_batch()
+        dialog.tag_var.set("Sounds|First")
+        dialog.enqueue()
+        self.assertEqual("", dialog.tag_var.get())
+        dialog.tag_var.set("Character|Warm")
+        dialog.review()
+        self.wait_for_batch(dialog)
+        first_preview = dialog.preview.get("1.0", "end")
+        self.assertIn("+ Sounds|First", first_preview)
+        self.assertIn("+ Character|Warm", first_preview)
+        dialog.review()
+        self.wait_for_batch(dialog)
+        self.assertEqual(first_preview, dialog.preview.get("1.0", "end"))
+        self.assertEqual(1, len(dialog.operations))
+        dialog.tag_var.set("Character|Changed")
+        self.assertIsNone(dialog.plan)
+        self.assertEqual("disabled", str(dialog.save_button.cget("state")))
 
     def test_inline_live_summary_counts_mixed_tags_and_keeps_exact_hierarchies(self):
         ableton_tags.prepare_edit(self.paths, "Sounds|Shared").commit()
@@ -1118,7 +1165,7 @@ class LibraryInspectorTests(unittest.TestCase):
         with mock.patch("live_tag_batch.ask_confirm", return_value=True) as confirm:
             batch.save()
         self.wait_for_batch(batch)
-        self.assertIn("1 off page", confirm.call_args.args[2])
+        self.assertIn("1 off page", batch.selection_label.cget("text"))
         batch.close()
         self.assertEqual([("Character|Batch", "2/2 all")], self.live_rows())
         for path in self.paths:
@@ -1447,7 +1494,7 @@ class LibraryInspectorTests(unittest.TestCase):
         with mock.patch("live_tag_batch.ask_confirm", return_value=True) as confirm:
             batch.save()
         self.wait_for_batch(batch)
-        self.assertIn("2 captured sounds", confirm.call_args.args[2])
+        self.assertIn("2 sounds", batch.selection_label.cget("text"))
         for path in self.paths:
             self.assertEqual(["Sounds|Shared"], ableton_tags.sample_tags(path))
             self.assertEqual(["Sounds|Shared"], sorter_engine.get_indexed_asset(path)["ableton_tags"])
@@ -1469,7 +1516,7 @@ class LibraryInspectorTests(unittest.TestCase):
         batch = self.tab._live_batch_dialog
         self.wait_for_batch(batch)
         with mock.patch("live_tag_batch.ask_confirm", return_value=False):
-            batch.save()
+            batch.close()
         self.assertFalse(os.path.isdir(os.path.join(self.temp_dir.name, "Ableton Folder Info")))
         self.show_error.assert_not_called()
 

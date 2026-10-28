@@ -589,17 +589,17 @@ class TagsTab(ttk.Frame):
         ).grid(row=3, column=0, columnspan=2, sticky="w")
         live_actions = tk.Frame(live_panel, bg=theme["bg_field"])
         self.live_apply_button = tk.Button(
-            live_actions, text="Save tag to selected...", command=lambda: self._apply_inline_live_tag("add"),
+            live_actions, text="Preview add...", command=lambda: self._apply_inline_live_tag("add"),
             bg=theme["btn_primary"], fg=theme["btn_primary_fg"], bd=1
         )
         self.live_apply_button.pack(side="left")
         self.live_remove_button = tk.Button(
-            live_actions, text="Remove from selected...", command=lambda: self._apply_inline_live_tag("remove"),
+            live_actions, text="Preview remove...", command=lambda: self._apply_inline_live_tag("remove"),
             bg=theme["btn_danger"], fg="white", bd=1
         )
         self.live_remove_button.pack(side="left", padx=5)
         self.live_batch_button = tk.Button(
-            live_actions, text="Batch review...", command=self._open_live_batch,
+            live_actions, text="Multiple changes...", command=self._open_live_batch,
             bg=theme["btn_secondary"], fg=theme["fg_light"], bd=1
         )
         self.live_batch_button.pack(side="right")
@@ -971,11 +971,9 @@ class TagsTab(ttk.Frame):
         dialog = LiveTagBatchDialog(self, tuple(paths))
         self._live_batch_dialog = dialog
         dialog.title("Review Live tag change")
-        dialog.operations.append(operation)
-        dialog.listing.insert(
-            "end", f"{action}: {operation.tag}"
-            + (f" -> {operation.replacement}" if operation.replacement else "")
-        )
+        dialog.action_var.set(operation.action)
+        dialog.tag_var.set(operation.tag)
+        dialog.replacement_var.set(operation.replacement or "")
         dialog.review()
         return True
 

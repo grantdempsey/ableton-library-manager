@@ -4,6 +4,15 @@ Updated: October 27, 2026, release recovery and macOS validation preparation.
 
 ## Final acceptance preparation
 
+Live tag editing now uses Preview add/remove followed by Save changes, without
+a queue step or second save-confirmation dialog. Multiple changes supports
+optional extra edits plus the current draft; entry edits invalidate the reviewed
+plan. The save warning remains visible, and conflict checks/backups are unchanged.
+Windows suite: 356 tests passed in 51.217s, one POSIX-only skip.
+Human Live acceptance is still pending. The disposable fixture was verified
+unchanged after the user was unsure whether the original workflow had saved.
+Restart the already-open test app to load the new UI before continuing.
+
 Organize's cleanup action now reserves its own column; the backup path wraps
 on a separate row instead of squeezing the button during resizing. A regression
 reproduced the button shrinking to 119px against its requested 139px at 1020x700.

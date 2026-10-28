@@ -191,7 +191,7 @@ database is used automatically; multiple databases require an explicit choice.
 ### Library hints and opt-in XO grouping
 
 Custom manual assignments are not limited to Sounds. The dedicated Live tag editor,
-**Rename assignments...**, and **Batch review...** offer an editable group selector covering the
+**Rename assignments...**, and **Multiple changes...** offer an editable group selector covering the
 verified catalog groups: Character, Clips, Creator, Devices, Drums, Genres, Grooves,
 Key, Sounds, Tunings, and Type. Existing custom groups from indexed manual
 assignments are also suggested, and you can type a group explicitly.
@@ -455,10 +455,10 @@ unmanaged. Reload from disk if preferences changed externally.
 - **Library workspace:** Resizable browsing panes, a focused selection inspector, a separate Live tag editor, bulk favorites, saved collections, removable filter chips, and Clear all. App-only custom-tag controls are removed; existing data, favorites and routing overrides are preserved.
 - **Cross-page curation:** Select a page or capture all matching sounds, keep the selection while paging, and see an explicit off-page count. Changing filters clears selection; edits never automatically include newly indexed matches.
 - **Navigable tag sources:** Live manual assignments appear first rather than being buried under generated category/name labels. Browse by source, exact Live group, or tag-name search. Background list loading continues when you click a tag.
-- **Reviewed Live-tag batches:** Capture a selection, queue add/remove/rename actions, inspect net assignment changes, then save the batch once. Planning and saving run in the background with sidecar conflict checks and backups.
+- **Previewed Live-tag edits:** Choose add/remove/rename, preview exact assignment changes, then save. Use Add another change for optional multi-edit batches. Planning and saving run in the background with sidecar conflict checks and backups.
 - **Discovery filters:** Find untagged samples or sounds missing a manual Live group; combine exact tags with match-all, match-any, or exclusions, and save those searches as collections.
 - **Metadata freshness:** A visible Live-tag monitor checks sidecars in the background, waits for two stable probes, and updates cached assignments without writing audio or sidecars. Full-scan and library metadata-check times are displayed separately.
-- **Shared Live tags:** Read manual Live 12 sidecars on scans and review cached assignments in the inspector. Use **Edit Live tags...** for labeled group/tag fields, mixed-selection counts, confirmed save/remove actions, **Batch review...**, and **Rename assignments...**. Existing sidecars receive backups; concurrent changes detected during review abort saving. Close Live during writes.
+- **Shared Live tags:** Read manual Live 12 sidecars on scans and review cached assignments in the inspector. Use **Edit Live tags...** for labeled group/tag fields, mixed-selection counts, preview/save actions, **Multiple changes...**, and **Rename assignments...**. Existing sidecars receive backups; concurrent changes detected during review abort saving. Close Live during writes.
 - **Tag-preserving operations:** Manual assignments follow sample copy/move, duplicate merging, nested-folder repair, and undo. See the shared-tag section for limitations and recovery guidance.
 - **Integrations workspace:** The XO folder builder has a dedicated home for third-party workflows. Serum support is not included.
 - **Accurate library counts:** Rescans remove confirmed-missing files after external deletion; operation completion refreshes the browser and its sidebar counts.
@@ -648,15 +648,15 @@ the entry. Choose an existing hierarchy from the dropdown, or enter a new one;
 suggestions come from indexed Live assignments and the read-only Live vocabulary.
 The **Group** field qualifies plain labels; an explicit `Group|Tag|Subtag` hierarchy
 overrides that field. Dropdown choices are suggestions, not assigned tags.
-**Save tag to selected...** and **Remove from selected...** target only the currently
-selected sounds and require confirmation. **Read tags from disk** refreshes the cache
+**Preview add...** and **Preview remove...** target only the currently
+selected sounds and open a preview before **Save changes**. **Read tags from disk** refreshes the cache
 without writing. **Rename assignments...** opens the add/remove/rename dialog.
 
 Use **Select page** to add the visible page to your selection, or **Select all
 matching** to capture the complete current search/filter result in the background.
 The selection persists across pages; deselecting a visible row removes just that
 sound. The selection count explicitly includes sounds off the current page.
-Live-tag confirmation describes that off-page scope, and local-tag/favorite
+The Live-tag preview describes that off-page scope, and local-tag/favorite
 changes require confirmation when off-page sounds are included.
 
 Selections are explicit snapshots, not live queries: newly indexed matches are
@@ -669,23 +669,31 @@ including off-page sounds. A delayed select-all result is discarded if you have
 changed filters or selection in the meantime. Playback/details require exactly
 one selected sound.
 
-### Queued Live-tag batches
+### Previewing Live-tag edits
 
-Choose **Batch review...** in **Edit Live tags...** to capture the current
+For one tag, use **Preview add...** or **Preview remove...** in **Edit Live tags...**,
+inspect the per-sample changes, then **Save changes**. For more edits, choose
+**Multiple changes...** to capture the current
 selection, including off-page sounds. The editor keeps that exact target list even
-if you subsequently change the browser selection or filters. Queue **add**,
-**remove**, and **rename** actions; actions run in the listed order. For example,
+if you subsequently change the browser selection or filters. Choose **add**,
+**remove**, or **rename**, enter the group and tag, then click **Preview changes**.
+No queue step is required for a single edit. For multiple edits, click
+**Add another change** to keep an edit and clear the inputs for the next one.
+Preview includes the listed extra changes followed by the current entered edit.
+Actions run in that order. For example,
 adding and then removing the same tag produces no net assignment change.
 Renaming affects only assignments on the captured sounds, not Live's global
 taxonomy. Existing indexed hierarchy suggestions are available in the tag dropdown.
 
-**Review combined changes** reads sidecars in the background without writing
+**Preview changes** reads sidecars in the background without writing
 anything. The review shows changed and unchanged sample counts, the number of
 sidecars to write, and exact additions/removals per changed sample (the first 200
 changed samples are displayed; the totals and save include all targets).
 Editing the queue or entry fields invalidates the review. A no-op review cannot
-be saved. **Save reviewed batch** asks for final confirmation and writes that
-reviewed plan once, rather than saving each queued action individually.
+be saved. Close Live before clicking **Save changes**, which writes that reviewed
+plan once without a second confirmation dialog. The warning and backup/recovery
+limitations remain visible next to Save. Closing/discarding the editor instead
+leaves files unchanged.
 
 Planning and saving disable the editor controls. Other Live-tag writes and
 selected metadata refreshes in this browser are disabled while the batch editor
@@ -735,7 +743,7 @@ are reported explicitly rather than producing a misleading filter.
 
 Example: `bass missing-group:Character` finds bass-related indexed sounds needing
 Character assignments. Save the search as a collection, capture its matching
-sounds, then open **Edit Live tags... → Batch review...** to curate them. Applying discovery constraints clears
+sounds, then open **Edit Live tags... → Multiple changes...** to curate them. Applying discovery constraints clears
 the old captured selection just like other search changes. Existing collection
 and selected-tag filters remain in effect. Use **Clear all** to start a new search.
 

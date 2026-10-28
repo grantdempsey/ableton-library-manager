@@ -22,7 +22,7 @@ class LiveTagBatchDialog(tk.Toplevel):
         self.busy = False
         self.saving = False
         self.results = queue.Queue()
-        self.title("Batch Live tags")
+        self.title("Edit Live tags")
         self.minsize(680, 560)
         browser._place_dialog(self, 760, 650)
         self.configure(bg=gui_theme.THEME["bg_dark"])
@@ -31,16 +31,17 @@ class LiveTagBatchDialog(tk.Toplevel):
         self.tag_var = tk.StringVar(self, value=browser.live_tag_var.get())
         self.group_var = tk.StringVar(self, value=browser.live_group_var.get())
         self.replacement_var = tk.StringVar(self)
-        self.status_var = tk.StringVar(self, value="Queue changes, then review. No files have been changed.")
-        ttk.Label(
+        self._initial_draft = self._draft_values()
+        self.status_var = tk.StringVar(self, value="Choose an edit, then preview changes. No files have been changed.")
+        self.selection_label = ttk.Label(
             self, text=f"Captured selection: {len(paths):,} sounds ({self.off_page:,} off page)"
-        ).pack(anchor="w", padx=12, pady=(12, 4))
+        )
+        self.selection_label.pack(anchor="w", padx=12, pady=(12, 4))
         ttk.Label(
             self, wraplength=640, justify="left",
-            text="Actions run in queue order on this fixed selection. Rename affects these "
-                 "assignments only, not Live's global vocabulary. Close Live before saving. "
-                 "Existing sidecars get backups; audio is unchanged. "
-                 "Plain labels use Tag group; explicit Group|Tag hierarchies keep their group."
+            text="Preview shows exactly which tags will be added or removed from the selected sounds. "
+                 "Rename affects selected assignments, not Live's global vocabulary. "
+                 "For multiple edits, use Add another change before entering the next edit."
         ).pack(fill="x", padx=12)
         controls = ttk.Frame(self)
         controls.pack(fill="x", padx=12, pady=8)
@@ -48,14 +49,15 @@ class LiveTagBatchDialog(tk.Toplevel):
             controls, textvariable=self.action_var, values=("add", "remove", "rename"),
             state="readonly", width=9
         )
-        self.action_entry.grid(row=0, column=0, sticky="w")
+        self.action_entry.grid(row=1, column=0, sticky="w")
         self.tag_entry = ttk.Combobox(controls, textvariable=self.tag_var, width=35)
-        self.tag_entry.grid(row=0, column=1, sticky="ew", padx=6)
-        self.queue_button = ttk.Button(controls, text="Queue", command=self.enqueue)
-        self.queue_button.grid(row=0, column=2)
-        ttk.Label(controls, text="Rename to:").grid(row=1, column=0, pady=5)
+        self.tag_entry.grid(row=1, column=1, sticky="ew", padx=6)
+        self.queue_button = ttk.Button(controls, text="Add another change", command=self.enqueue)
+        self.queue_button.grid(row=1, column=2)
+        self.replacement_label = ttk.Label(controls, text="Rename to:")
+        self.replacement_label.grid(row=3, column=0, pady=5)
         self.replacement_entry = ttk.Entry(controls, textvariable=self.replacement_var)
-        self.replacement_entry.grid(row=1, column=1, columnspan=2, sticky="ew", padx=6)
+        self.replacement_entry.grid(row=3, column=1, columnspan=2, sticky="ew", padx=6)
         controls.columnconfigure(1, weight=1)
         ttk.Label(controls, text="Tag group:").grid(row=2, column=0, pady=4)
         self.group_entry = ttk.Combobox(
@@ -63,6 +65,8 @@ class LiveTagBatchDialog(tk.Toplevel):
             postcommand=self.load_suggestions
         )
         self.group_entry.grid(row=2, column=1, columnspan=2, sticky="ew", padx=6)
+        ttk.Label(controls, text="Action:").grid(row=0, column=0, sticky="w")
+        ttk.Label(controls, text="Tag (or Group|Tag):").grid(row=0, column=1, sticky="w", padx=6)
         theme = gui_theme.THEME
         self.listing = tk.Listbox(
             self, height=5, exportselection=False,
@@ -71,12 +75,11 @@ class LiveTagBatchDialog(tk.Toplevel):
             highlightbackground=theme["border"], highlightcolor=theme["accent_neon"],
             highlightthickness=1, bd=0, font=("Segoe UI", 9)
         )
-        self.listing.pack(fill="x", padx=12)
         actions = ttk.Frame(self)
+        self.actions_frame = actions
         actions.pack(fill="x", padx=12, pady=6)
-        self.remove_button = ttk.Button(actions, text="Remove queued action", command=self.remove)
-        self.remove_button.pack(side="left")
-        self.review_button = ttk.Button(actions, text="Review combined changes", command=self.review)
+        self.remove_button = ttk.Button(actions, text="Remove extra change", command=self.remove)
+        self.review_button = ttk.Button(actions, text="Preview changes", command=self.review)
         self.review_button.pack(side="right")
         ttk.Label(self, textvariable=self.status_var, wraplength=640).pack(fill="x", padx=12, pady=4)
         preview_frame = ttk.Frame(self)
@@ -94,10 +97,16 @@ class LiveTagBatchDialog(tk.Toplevel):
         self.preview.pack(fill="both", expand=True)
         scroll.configure(command=self.preview.yview)
         footer = ttk.Frame(self)
-        footer.pack(fill="x", padx=12, pady=12)
+        footer.pack(side="bottom", fill="x", padx=12, pady=12, before=preview_frame)
+        ttk.Label(
+            footer, wraplength=620, justify="left",
+            text="Close Ableton Live before saving. Save writes only the previewed sidecar changes; "
+                 "audio is unchanged. Existing sidecars receive backups. Concurrent edits abort saving; "
+                 "rollback is best effort, not crash-safe."
+        ).pack(fill="x", pady=(0, 6))
         self.close_button = ttk.Button(footer, text="Close / discard", command=self.close)
         self.close_button.pack(side="left")
-        self.save_button = ttk.Button(footer, text="Save reviewed batch", command=self.save, state="disabled")
+        self.save_button = ttk.Button(footer, text="Save changes", command=self.save, state="disabled")
         self.save_button.pack(side="right")
         self.edit_controls = (
             self.tag_entry, self.replacement_entry, self.queue_button,
@@ -108,6 +117,7 @@ class LiveTagBatchDialog(tk.Toplevel):
         self.action_var.trace_add("write", self.invalidate)
         self.group_var.trace_add("write", self.invalidate)
         self.tag_entry.configure(postcommand=self.load_suggestions)
+        self._show_rename_fields()
 
     def load_suggestions(self):
         self.browser._load_live_tag_suggestions()
@@ -120,15 +130,35 @@ class LiveTagBatchDialog(tk.Toplevel):
         self.preview.insert("1.0", text)
         self.preview.configure(state="disabled")
 
+    def _draft_values(self):
+        return (
+            self.action_var.get(), self.tag_var.get(),
+            self.group_var.get(), self.replacement_var.get(),
+        )
+
     def invalidate(self, *_args):
         self.plan = None
         self.save_button.configure(state="disabled")
-        self.set_preview("")
-        self.status_var.set("Queue or entry changed. Review again before saving.")
+        self.set_preview("Preview changes to see additions (+) and removals (-) for each sound.")
+        self.status_var.set(
+            f"{len(self.operations):,} extra change(s). Preview includes these and the current edit. Nothing saved."
+        )
+        if self.operations:
+            self.listing.pack(fill="x", padx=12, before=self.actions_frame)
+            self.remove_button.pack(side="left")
+        else:
+            self.listing.pack_forget()
+            self.remove_button.pack_forget()
+        self._show_rename_fields()
 
-    def enqueue(self):
-        if self.busy:
-            return
+    def _show_rename_fields(self):
+        for control in (self.replacement_label, self.replacement_entry):
+            if self.action_var.get() == "rename":
+                control.grid()
+            else:
+                control.grid_remove()
+
+    def _current_operation(self):
         try:
             action = self.action_var.get()
             if action not in {"add", "remove", "rename"}:
@@ -139,10 +169,24 @@ class LiveTagBatchDialog(tk.Toplevel):
             )
         except ValueError as error:
             messagebox.showerror("Invalid Live tag action", str(error), parent=self)
+            return None
+        return ableton_tags.TagOperation(action, tag, replacement)
+
+    def enqueue(self):
+        if self.busy:
             return
-        self.operations.append(ableton_tags.TagOperation(action, tag, replacement))
-        self.listing.insert("end", f"{action}: {tag}" + (f" -> {replacement}" if replacement else ""))
+        operation = self._current_operation()
+        if operation is None:
+            return
+        self.operations.append(operation)
+        self.listing.insert(
+            "end", f"{operation.action}: {operation.tag}"
+            + (f" -> {operation.replacement}" if operation.replacement else "")
+        )
+        self.tag_var.set("")
+        self.replacement_var.set("")
         self.invalidate()
+        self.tag_entry.focus_set()
 
     def remove(self):
         if self.busy:
@@ -166,12 +210,18 @@ class LiveTagBatchDialog(tk.Toplevel):
     def review(self):
         if self.busy:
             return
-        if not self.operations:
-            show_notice(self, "Batch Live tags", "Queue at least one action before reviewing.")
+        operations = list(self.operations)
+        if self.tag_var.get().strip() or self.replacement_var.get().strip():
+            operation = self._current_operation()
+            if operation is None:
+                return
+            operations.append(operation)
+        if not operations:
+            show_notice(self, "Edit Live tags", "Enter a tag to preview.")
             return
         self.invalidate()
         self.set_busy(True)
-        operations = tuple(self.operations)
+        operations = tuple(operations)
         self.status_var.set("Reading sidecars and planning combined changes...")
         def worker():
             try:
@@ -188,17 +238,6 @@ class LiveTagBatchDialog(tk.Toplevel):
         if self.busy or self.plan is None:
             return
         plan = self.plan
-        if not ask_confirm(
-            self, "Save reviewed Live tag batch",
-            f"{len(plan.sample_changes):,} changed sounds; {plan.unchanged_count:,} unchanged.\n"
-            f"{len(plan.changes):,} sidecars; {len(self.paths):,} captured sounds "
-            f"({self.off_page:,} off page).\n\n"
-            "Close Live before saving. Existing sidecars receive unique .bak backups. "
-            "Audio is unchanged. Concurrent changes abort saving; rollback is best effort, "
-            "not a crash-safe transaction.",
-            "Save batch"
-        ):
-            return
         self.set_busy(True, saving=True)
         self.status_var.set("Saving reviewed sidecars. Do not close the app...")
         def worker():
@@ -229,6 +268,8 @@ class LiveTagBatchDialog(tk.Toplevel):
             if stage == "cache":
                 self.operations.clear()
                 self.listing.delete(0, "end")
+                self.tag_var.set("")
+                self.replacement_var.set("")
                 self.status_var.set("Sidecars saved. Index refresh failed; rescan the library.")
                 messagebox.showerror(
                     "Batch Saved - Cache Refresh Failed",
@@ -260,6 +301,8 @@ class LiveTagBatchDialog(tk.Toplevel):
             self.plan = None
             self.operations.clear()
             self.listing.delete(0, "end")
+            self.tag_var.set("")
+            self.replacement_var.set("")
             self.set_preview("")
             self.status_var.set(f"Batch saved. {len(result):,} sidecar backup(s) created.")
             try:
@@ -274,8 +317,12 @@ class LiveTagBatchDialog(tk.Toplevel):
         if self.busy:
             show_notice(self, "Batch Live tags", "Wait for the current review or save to finish.")
             return
-        if self.operations and not ask_confirm(
-            self, "Discard queued Live tags", "Discard these queued actions? Unsaved actions change no files.",
+        has_draft = (
+            self._draft_values() != self._initial_draft
+            and (self.tag_var.get().strip() or self.replacement_var.get().strip())
+        )
+        if (self.operations or self.plan is not None or has_draft) and not ask_confirm(
+            self, "Discard Live tag changes", "Discard these unsaved edits? No files will change.",
             "Discard"
         ):
             return
