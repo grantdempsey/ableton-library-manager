@@ -1063,6 +1063,7 @@ class LibraryInspectorTests(unittest.TestCase):
         dialog.action_var.set("rename")
         dialog.geometry("680x620")
         self.root.update()
+        self.assertGreaterEqual(dialog.preview.winfo_height(), 50)
         for control in (
             dialog.action_entry, dialog.tag_entry, dialog.replacement_entry, dialog.queue_button,
             dialog.remove_button, dialog.review_button, dialog.preview, dialog.close_button, dialog.save_button,

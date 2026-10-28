@@ -66,8 +66,7 @@ class LiveTagBatchDialog(tk.Toplevel):
         self.selection_label.pack(anchor="w", padx=12, pady=(12, 4))
         ttk.Label(
             self, wraplength=640, justify="left",
-            text="1. Choose an edit below.  2. Preview the changes.  3. Save when ready.\n"
-                 "This selection stays fixed, even if you change the Library selection."
+            text="1. Choose an edit.  2. Preview.  3. Save. The selected sounds stay fixed."
         ).pack(fill="x", padx=12)
         assigned_frame = tk.LabelFrame(
             self, text=" Assigned Live tags ", bg=self.surface, fg=theme["fg_light"],
@@ -96,7 +95,9 @@ class LiveTagBatchDialog(tk.Toplevel):
             tools, text="Tag suggestions source...", command=browser._choose_live_vocabulary_database
         )
         self.vocabulary_button.pack(side="right")
-        ttk.Label(self, textvariable=browser.tag_suggestions_status, wraplength=640).pack(fill="x", padx=12)
+        ttk.Label(
+            tools, textvariable=browser.tag_suggestions_status, wraplength=260
+        ).pack(side="left", fill="x", expand=True, padx=8)
         controls = tk.LabelFrame(
             self, text=" Edit tags ", bg=self.surface, fg=theme["fg_light"],
             font=(font_family, 10, "bold"), bd=1, relief="solid", padx=8, pady=2,
