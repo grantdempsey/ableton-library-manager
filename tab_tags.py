@@ -295,7 +295,7 @@ class TagsTab(ttk.Frame):
         saved_scroll = ttk.Scrollbar(saved_frame, orient="vertical")
         saved_scroll.pack(side="right", fill="y")
         self.saved_collection_list = tk.Listbox(
-            saved_frame, height=3, exportselection=False, activestyle="none",
+            saved_frame, height=2, exportselection=False, activestyle="none",
             bg=theme["bg_field"], fg=theme["fg_light"], relief="flat",
             highlightthickness=0, selectbackground=theme["tag_enabled"],
             selectforeground="white", yscrollcommand=saved_scroll.set
@@ -318,7 +318,7 @@ class TagsTab(ttk.Frame):
         tk.Label(
             sidebar, text="Tags", bg=theme["bg_field"], fg=theme["fg_muted"],
             font=("Segoe UI", 9, "bold"), anchor="w"
-        ).pack(fill="x", padx=10, pady=(6, 4))
+        ).pack(fill="x", padx=10, pady=(2, 4))
         tag_navigation = tk.Frame(sidebar, bg=theme["bg_field"])
         tag_navigation.pack(fill="x", padx=5)
         self.tag_source_picker = ttk.Combobox(

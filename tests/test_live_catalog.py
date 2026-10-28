@@ -737,7 +737,10 @@ class LiveCatalogTests(unittest.TestCase):
                 if child is dialog.loading_banner:
                     self.assertFalse(child.winfo_ismapped())
                     continue
-                self.assertTrue(child.winfo_ismapped())
+                self.assertTrue(child.winfo_ismapped(),
+                                f"{child}: {child.winfo_class()} {child.winfo_geometry()} "
+                                f"requested={child.winfo_reqwidth()}x{child.winfo_reqheight()} "
+                                f"dialog={dialog.winfo_geometry()}")
                 self.assertLessEqual(child.winfo_y() + child.winfo_height(), dialog.winfo_height())
             widgets = [dialog]
             labels = []
