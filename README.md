@@ -2,9 +2,19 @@
 
 A high-performance, cross-platform desktop tool designed to automate the categorization, sorting, and structural cleanup of Ableton audio libraries, presets, and preferences.
 
-## Release status: unreleased development
+## Release status: v2.1.0 unsigned community release
 
-The `v2.1.0` title and build paths are provisional; no release is published.
+Download [v2.1.0](https://github.com/grantdempsey/ableton-library-manager/releases/tag/v2.1.0)
+for Windows x64, Mac Apple Silicon, or Mac Intel. Compare your archive with the
+release's `SHA256SUMS.txt`, then extract the complete ZIP before running.
+These are unsigned community builds: Windows binaries are not signed, and Mac
+apps are not Developer ID signed or notarized. OS protections may block them.
+**Do not disable or bypass Windows Application Control, Gatekeeper, or other
+protections.** Record any block; the documented Python source workflow is an
+alternative when appropriate. Keep backups and start with disposable content.
+
+The user authorized this release for the project's small community, accepting
+the documented limitations rather than claiming production certification.
 The optional-preview workflow is pushed as `720c418`; its focused
 Windows source suite passes 86 tests. The new Windows test candidate ran 226
 bundled-code tests successfully (one POSIX-only skip), passed archive integrity
@@ -14,10 +24,11 @@ no security policy was bypassed or changed.
 Updated source `e74f77b` passed native macOS 15 validation on Apple Silicon and
 Intel in [run 40925607380](https://github.com/grantdempsey/ableton-library-manager/actions/runs/40925607380):
 source tests, native builds, bundled-code fixtures, startup/profile checks and
-extracted-ZIP smoke. Both unsigned tester artifacts are retained for 14 days.
-Signing credentials are unavailable; these remain unsigned test builds, not
-trusted public distributions. Full hands-on Ableton Live acceptance (deferred
-by the user) and trusted signing/download validation remain open. See
+extracted-ZIP smoke. The matching Mac archives are attached to the release so
+downloads do not depend on temporary CI artifact retention. Signing credentials
+are unavailable; publication does not establish trusted publisher identity.
+Full hands-on Ableton Live acceptance (deferred by the user) and trusted
+signing/download validation remain unverified. See
 [RELEASE-HANDOFF.md](RELEASE-HANDOFF.md) for exact evidence and hashes.
 
 **Full tagging parity is not complete.** Library is an editable sound browser;

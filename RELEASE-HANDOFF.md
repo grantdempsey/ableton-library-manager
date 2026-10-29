@@ -2,6 +2,29 @@
 
 Updated: October 29, 2026, optional-preview Windows and native macOS validation.
 
+## v2.1.0 community release decision
+
+The user authorized tagging and publishing the next release as a small passion
+project, without signing credentials or additional manual acceptance.
+[v2.1.0](https://github.com/grantdempsey/ableton-library-manager/releases/tag/v2.1.0)
+is an explicitly unsigned community release, not signed/trusted or
+production-certified distribution. The deferred checks below remain unverified.
+Do not bypass OS protections.
+
+Release assets reuse the exact verified ZIP bytes; only filenames change:
+
+| Asset | SHA-256 |
+|---|---|
+| `AbletonLibraryManager-v2.1.0-windows-unsigned.zip` | `105fad15c1da6bc9d749c2fccb93f627b8ee8ba4381b4fa91e9dcc92bd2513d0` |
+| `AbletonLibraryManager-v2.1.0-macos-arm64-unsigned.zip` | `fc71536cdec83b5cdb89c75871a08ea3f055ca9b9c9ac7a580691e15539b22d4` |
+| `AbletonLibraryManager-v2.1.0-macos-intel-unsigned.zip` | `a53164712886894709a3e460e74766d9927005fe4a6de14f1c36396cd767121f` |
+
+`SHA256SUMS.txt` accompanies the archives. Windows bytes come from `720c418`;
+Mac bytes come from successful CI source `e74f77b`. Release documentation updates
+do not alter production code or rebuild binaries. Bundled documentation reflects
+the build commits and can still describe test/unreleased status; this decision
+and the release notes supersede those older distribution labels.
+
 ## Latest workflow update
 
 Save changes now prepares and confirms a draft directly; Preview changes is
@@ -9,8 +32,9 @@ optional. The focused Library/release-acceptance suite passes 86 tests.
 The user chose to skip further manual acceptance for now. Those checks remain
 unverified, not passed. The user subsequently authorized pushing the commits and
 updated Apple Silicon/Intel CI validation, and confirmed signing credentials
-are unavailable. Keep artifacts explicitly unsigned test builds; do not bypass
-OS protections. Tagging and release publication remain unauthorized.
+are unavailable. The later community-release authorization above supersedes the
+earlier test-only/no-publication decision; signing and manual-check limitations
+remain unchanged.
 Commits `720c418` and `21ad0af` are pushed. The latter's `[skip ci]` marker
 suppressed push validation; handoff commit `e74f77b` triggered the successful
 native Mac run below.
@@ -29,7 +53,8 @@ and unsigned artifact uploads successfully.
 Artifacts expire November 12, 2026. Each contains the test ZIP, SHA-256 checksum,
 source/runner identity and acceptance guide. They are unsigned/not notarized;
 these CI passes do not establish downloaded-app Gatekeeper trust, older macOS
-support, hands-on native input or Live acceptance. No release was published.
+support, hands-on native input or Live acceptance. The matching archives are now
+also prepared as permanent release downloads rather than relying on CI retention.
 
 ### Latest Windows test package
 
