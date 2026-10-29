@@ -5,13 +5,17 @@ A high-performance, cross-platform desktop tool designed to automate the categor
 ## Release status: unreleased development
 
 The `v2.1.0` title and build paths are provisional; no release is published.
-Final source `2e76076` passes 358 Windows source tests (one POSIX-only skip)
-and native macOS 15 validation on Apple Silicon and Intel, including native
-builds, bundled-code fixtures, startup/profile checks and extracted-ZIP smoke.
-The final Windows candidate passes 224 bundled-code tests and archive integrity
-checks, but Windows Application Control blocked its native launch. Do not bypass
-that policy. Hands-on Ableton Live acceptance, final Windows package launch,
-and trusted signing/download validation remain open. See
+The optional-preview workflow is committed locally as `720c418`; its focused
+Windows source suite passes 86 tests. The new Windows test candidate ran 226
+bundled-code tests successfully (one POSIX-only skip), passed archive integrity
+checks, and passed native fresh/upgrade-profile startup, resize, responsiveness
+and graceful close. This supersedes the older candidate's blocked launch;
+no security policy was bypassed or changed.
+Earlier source `2e76076` passed 358 Windows source tests (one POSIX-only skip)
+and native macOS 15 validation on Apple Silicon and Intel. Those Mac results
+predate the optional-preview change. Full hands-on Ableton Live acceptance
+(deferred by the user), updated Mac validation and trusted signing/download
+validation remain open. See
 [RELEASE-HANDOFF.md](RELEASE-HANDOFF.md) for exact evidence and hashes.
 
 **Full tagging parity is not complete.** Library is an editable sound browser;
@@ -31,8 +35,9 @@ a current unresolved-issue list.
 
 ## 🏛️ System Features
 - **Platform support:** Includes Windows and macOS path handling. Native Apple Silicon
-  and Intel validation passes on macOS 15 for the final source. Native input, older
-  macOS releases and Live acceptance remain unverified.
+  and Intel validation passes on macOS 15 for source `2e76076`, before the
+  optional-preview change. Updated Mac validation, native input, older macOS
+  releases and full Live acceptance remain unverified.
 - **OneDrive Insulation:** Automatically detects and isolates asset paths to protect local libraries from intrusive OneDrive sync locks.
 - **Background Execution:** Leverages multi-threaded workers to execute tasks without freezing the interface.
   Closing the app requests a safe cancellation and lets the current file finish before shutting down.

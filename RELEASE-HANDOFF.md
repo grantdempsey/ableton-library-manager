@@ -1,6 +1,6 @@
 # Release handoff
 
-Updated: October 29, 2026, optional-preview workflow and test-package preparation.
+Updated: October 29, 2026, optional-preview workflow and verified Windows test package.
 
 ## Latest workflow update
 
@@ -9,6 +9,31 @@ optional. The focused Library/release-acceptance suite passes 86 tests.
 The user chose to skip further manual acceptance for now. Those checks remain
 unverified, not passed. A local commit and fresh Windows test package are
 authorized; pushing, tagging and publishing are not.
+
+### Latest Windows test package
+
+- Production source commit: `720c418` (local only; not pushed).
+- Candidate: `release_builds\candidate-o4umhk6n`.
+- ZIP: `release_builds\candidate-o4umhk6n\AbletonLibraryManager-720c418-windows-unsigned-test.zip`.
+  The matching `.zip.sha256` file is beside it.
+- ZIP SHA-256:
+  `105fad15c1da6bc9d749c2fccb93f627b8ee8ba4381b4fa91e9dcc92bd2513d0`.
+- Executable SHA-256:
+  `ef9b6b36f297062fe73f0fa2c7e4c709e79bb2867ef2e8543e4ed7ce4e97018d`.
+- Built with Python 3.14.8 / PyInstaller 6.22.3 on Windows 11.
+  All 33 packaged files passed private/runtime-state checks, ZIP manifest/CRC,
+  and original/archive/extracted SHA-256 comparison.
+- Exact ZIP-extracted executable bundled-code fixtures: 226 tests ran
+  successfully in 41.218s, one POSIX-only skip, exercising 19 production modules.
+  Tcl/Tk fixtures use the host interpreter; native startup is checked separately.
+- Native smoke on copies of the ZIP extraction passed fresh and legacy-profile
+  startup, responsiveness, resize, profile preservation and graceful exit 0.
+  No security-policy bypass or change was used. This supersedes the blocked
+  startup of the older candidate; it is not signed/downloaded distribution
+  acceptance or packaged page-navigation/Live acceptance.
+- No new full source-suite or native macOS run was performed for this change.
+  The bundled README matches source at `720c418`; this later results entry is
+  not part of that already-verified archive.
 
 The platform results for `2e76076` below predate this workflow change and do not
 validate its new package or native macOS behavior.
