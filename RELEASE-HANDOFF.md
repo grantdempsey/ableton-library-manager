@@ -7,12 +7,17 @@ Updated: October 29, 2026, optional-preview workflow and verified Windows test p
 Save changes now prepares and confirms a draft directly; Preview changes is
 optional. The focused Library/release-acceptance suite passes 86 tests.
 The user chose to skip further manual acceptance for now. Those checks remain
-unverified, not passed. A local commit and fresh Windows test package are
-authorized; pushing, tagging and publishing are not.
+unverified, not passed. The user subsequently authorized pushing the commits and
+updated Apple Silicon/Intel CI validation, and confirmed signing credentials
+are unavailable. Keep artifacts explicitly unsigned test builds; do not bypass
+OS protections. Tagging and release publication remain unauthorized.
+Commits `720c418` and `21ad0af` are pushed. The latter's `[skip ci]` marker
+suppressed push validation; this handoff update triggers a fresh run. Updated
+native Mac results are pending, not passed.
 
 ### Latest Windows test package
 
-- Production source commit: `720c418` (local only; not pushed).
+- Production source commit: `720c418` (pushed).
 - Candidate: `release_builds\candidate-o4umhk6n`.
 - ZIP: `release_builds\candidate-o4umhk6n\AbletonLibraryManager-720c418-windows-unsigned-test.zip`.
   The matching `.zip.sha256` file is beside it.
