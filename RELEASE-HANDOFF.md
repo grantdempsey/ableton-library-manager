@@ -1,6 +1,6 @@
 # Release handoff
 
-Updated: October 29, 2026, optional-preview workflow and verified Windows test package.
+Updated: October 29, 2026, optional-preview Windows and native macOS validation.
 
 ## Latest workflow update
 
@@ -12,8 +12,24 @@ updated Apple Silicon/Intel CI validation, and confirmed signing credentials
 are unavailable. Keep artifacts explicitly unsigned test builds; do not bypass
 OS protections. Tagging and release publication remain unauthorized.
 Commits `720c418` and `21ad0af` are pushed. The latter's `[skip ci]` marker
-suppressed push validation; this handoff update triggers a fresh run. Updated
-native Mac results are pending, not passed.
+suppressed push validation; handoff commit `e74f77b` triggered the successful
+native Mac run below.
+
+### Latest native macOS validation
+
+[Run 40925607380](https://github.com/grantdempsey/ableton-library-manager/actions/runs/40925607380)
+passed on source `e74f77b` for both `macos-15` (Apple Silicon) and
+`macos-15-intel`. Both jobs completed source tests, native builds, bundled-code
+fixtures, fresh/legacy-profile native smoke, ZIP integrity/extracted-app smoke
+and unsigned artifact uploads successfully.
+
+- [Apple Silicon unsigned test download](https://github.com/grantdempsey/ableton-library-manager/actions/runs/40925607380/artifacts/12919544691)
+- [Intel unsigned test download](https://github.com/grantdempsey/ableton-library-manager/actions/runs/40925607380/artifacts/12921515049)
+
+Artifacts expire November 12, 2026. Each contains the test ZIP, SHA-256 checksum,
+source/runner identity and acceptance guide. They are unsigned/not notarized;
+these CI passes do not establish downloaded-app Gatekeeper trust, older macOS
+support, hands-on native input or Live acceptance. No release was published.
 
 ### Latest Windows test package
 
@@ -36,7 +52,8 @@ native Mac results are pending, not passed.
   No security-policy bypass or change was used. This supersedes the blocked
   startup of the older candidate; it is not signed/downloaded distribution
   acceptance or packaged page-navigation/Live acceptance.
-- No new full source-suite or native macOS run was performed for this change.
+- No new full Windows source-suite run was performed for this change.
+  Updated native macOS validation is recorded above.
   The bundled README matches source at `720c418`; this later results entry is
   not part of that already-verified archive.
 
