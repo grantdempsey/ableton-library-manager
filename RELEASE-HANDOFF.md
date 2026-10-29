@@ -1,6 +1,17 @@
 # Release handoff
 
-Updated: October 29, 2026, final source and platform validation.
+Updated: October 29, 2026, optional-preview workflow and test-package preparation.
+
+## Latest workflow update
+
+Save changes now prepares and confirms a draft directly; Preview changes is
+optional. The focused Library/release-acceptance suite passes 86 tests.
+The user chose to skip further manual acceptance for now. Those checks remain
+unverified, not passed. A local commit and fresh Windows test package are
+authorized; pushing, tagging and publishing are not.
+
+The platform results for `2e76076` below predate this workflow change and do not
+validate its new package or native macOS behavior.
 
 ## Current tagging redesign
 
@@ -9,7 +20,8 @@ This supersedes the earlier hidden-panel and preview-button work below.
 
 - Removed app-only creation/editing controls and the intermediate/rename dialogs.
   Edit Live tags opens one fixed-selection editor with current assignments and
-  counts, add/remove/rename fields, optional additional edits, and Preview/Save.
+  counts, add/remove/rename fields, optional additional edits, and Save with
+  optional Preview.
   Opening/reloading reads sidecars in the background without writing assignments.
 - Legacy app-tag database rows remain dormant: excluded from search, facets,
   classification, rule learning and XO export. New app-tag writes are rejected.
@@ -21,6 +33,14 @@ This supersedes the earlier hidden-panel and preview-button work below.
 - Live editor polish uses scoped higher-contrast fields, raised sections, clearer
   headings, an emphasized Save action and a separate close-Live warning.
   Contrast ratios and minimum-size multi-edit/rename layout have regression tests.
+- On October 29, the user confirmed that an added tag appeared in Live and that
+  removing it made it disappear. The editor now lets Save changes plan and confirm
+  a draft directly; Preview changes is optional for detailed per-sample inspection.
+  Saving without preview summarizes affected sounds, tags and sidecars before the
+  write. Focused Library/release-acceptance tests pass (86 tests). Rename
+  visibility, untouched-neighbor/audio checks, and the Live/Windows versions were
+  not reported, so full human acceptance remains open. See
+  [RELEASE-ACCEPTANCE.md](RELEASE-ACCEPTANCE.md).
 - Native run 40626941834 exposed an initial idle assignment-read race that could
   invalidate a completed inline preview. Reproduced deterministically on Windows;
   starting a preview now cancels the pending initial read.
@@ -45,8 +65,8 @@ This supersedes the earlier hidden-panel and preview-button work below.
   Both `unsigned-macos-15` and `unsigned-macos-15-intel` tester artifacts are
   retained for 14 days with checksums and the acceptance guide.
   This does not establish downloaded-app Gatekeeper trust or Live visibility.
-- No release is published. Human Live acceptance, final Windows native package
-  acceptance and trusted signing/download validation remain open.
+- No release is published. Full human Live acceptance, final Windows native
+  package acceptance and trusted signing/download validation remain open.
 
 > **Historical notes below:** The remaining sections are retained as an audit
 > trail. Their candidates, feature descriptions, test counts and release

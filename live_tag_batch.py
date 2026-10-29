@@ -22,6 +22,7 @@ class LiveTagBatchDialog(tk.Toplevel):
         self.plan = None
         self.busy = False
         self.saving = False
+        self.save_after_review = False
         self.results = queue.Queue()
         theme = gui_theme.THEME
         font_family = "Helvetica" if self.tk.call("tk", "windowingsystem") == "aqua" else "Segoe UI"
@@ -58,7 +59,9 @@ class LiveTagBatchDialog(tk.Toplevel):
         self.group_var = tk.StringVar(self, value=browser.live_group_var.get())
         self.replacement_var = tk.StringVar(self)
         self._initial_draft = self._draft_values()
-        self.status_var = tk.StringVar(self, value="Choose an edit, then preview changes. No files have been changed.")
+        self.status_var = tk.StringVar(
+            self, value="Choose an edit, then save. Preview first if you want to inspect every change."
+        )
         self.selection_label = ttk.Label(
             self, text=f"Editing {len(paths):,} selected {'sound' if len(paths) == 1 else 'sounds'} "
                        f"({self.off_page:,} off page)", font=(font_family, 11, "bold")
@@ -66,7 +69,7 @@ class LiveTagBatchDialog(tk.Toplevel):
         self.selection_label.pack(anchor="w", padx=12, pady=(12, 4))
         ttk.Label(
             self, wraplength=640, justify="left",
-            text="1. Choose an edit.  2. Preview.  3. Save. The selected sounds stay fixed."
+            text="Choose an edit, then Save changes. Preview first to inspect details. The selected sounds stay fixed."
         ).pack(fill="x", padx=12)
         assigned_frame = tk.LabelFrame(
             self, text=" Assigned Live tags ", bg=self.surface, fg=theme["fg_light"],
@@ -259,10 +262,14 @@ class LiveTagBatchDialog(tk.Toplevel):
 
     def invalidate(self, *_args):
         self.plan = None
-        self.save_button.configure(state="disabled")
-        self.set_preview("Preview changes to see additions (+) and removals (-) for each sound.")
+        self.save_after_review = False
+        has_draft = bool(
+            self.operations or self.tag_var.get().strip() or self.replacement_var.get().strip()
+        )
+        self.save_button.configure(state="normal" if has_draft else "disabled")
+        self.set_preview("Optional: Preview changes to inspect additions (+) and removals (-) for each sound.")
         self.status_var.set(
-            f"{len(self.operations):,} extra change(s). Preview includes these and the current edit. Nothing saved."
+            f"{len(self.operations):,} extra change(s). Save to review and confirm, or preview first. Nothing saved."
         )
         if self.operations:
             self.listing.pack(fill="x", padx=12, before=self.actions_frame)
@@ -331,7 +338,7 @@ class LiveTagBatchDialog(tk.Toplevel):
         self.save_button.configure(state="disabled")
         self.browser._show_selected_asset()
 
-    def review(self):
+    def review(self, save_after_review=False):
         if self.busy:
             return
         operations = list(self.operations)
@@ -341,15 +348,16 @@ class LiveTagBatchDialog(tk.Toplevel):
                 return
             operations.append(operation)
         if not operations:
-            show_notice(self, "Edit Live tags", "Enter a tag to preview.")
+            show_notice(self, "Edit Live tags", "Enter a tag or add an extra change first.")
             return
         if self._initial_refresh_id is not None:
             self.after_cancel(self._initial_refresh_id)
             self._initial_refresh_id = None
         self.invalidate()
+        self.save_after_review = save_after_review
         self.set_busy(True)
         operations = tuple(operations)
-        self.status_var.set("Preparing preview. No tags have been saved.")
+        self.status_var.set("Preparing changes. No tags have been saved.")
         def worker():
             try:
                 sorter_engine.summarize_asset_selection(self.paths)
@@ -362,7 +370,10 @@ class LiveTagBatchDialog(tk.Toplevel):
         self.after(30, self.finish)
 
     def save(self):
-        if self.busy or self.plan is None:
+        if self.busy:
+            return
+        if self.plan is None:
+            self.review(save_after_review=True)
             return
         plan = self.plan
         self.set_busy(True, saving=True)
@@ -393,6 +404,7 @@ class LiveTagBatchDialog(tk.Toplevel):
         self.set_busy(False)
         if error is not None:
             self.plan = None
+            self.save_after_review = False
             if stage == "cache":
                 self.operations.clear()
                 self.listing.delete(0, "end")
@@ -409,8 +421,13 @@ class LiveTagBatchDialog(tk.Toplevel):
                 self.status_var.set("Could not read assigned tags. Reload to retry; no tag assignments were written.")
                 messagebox.showerror("Read Live Tags Failed", str(error), parent=self)
             else:
-                self.status_var.set("Tag edit failed. Preview again before retrying; see error for recovery details.")
+                self.status_var.set("Tag edit failed. Review the error before retrying.")
                 messagebox.showerror("Live Tag Edit Failed", str(error), parent=self)
+                has_draft = bool(
+                    self.operations or self.tag_var.get().strip() or self.replacement_var.get().strip()
+                )
+                if stage == "review" and has_draft:
+                    self.save_button.configure(state="normal")
             return
         if stage == "assignments":
             self.show_assignments(result)
@@ -420,6 +437,8 @@ class LiveTagBatchDialog(tk.Toplevel):
             )
         elif stage == "review":
             self.plan = result
+            save_after_review = self.save_after_review
+            self.save_after_review = False
             self.status_var.set(
                 f"{len(result.sample_changes):,} "
                 f"{'sound' if len(result.sample_changes) == 1 else 'sounds'} will change; "
@@ -435,6 +454,25 @@ class LiveTagBatchDialog(tk.Toplevel):
             self.set_preview("\n".join(lines) or "No net assignment changes. Nothing to save.")
             if result.changes:
                 self.save_button.configure(state="normal")
+                if save_after_review:
+                    additions = sorted({tag for _path, added, _removed in result.sample_changes for tag in added})
+                    removals = sorted({tag for _path, _added, removed in result.sample_changes for tag in removed})
+                    summary_lines = [
+                        f"{len(result.sample_changes):,} sound(s) will change.",
+                        f"{len(result.changes):,} sidecar(s) will be written; existing sidecars are backed up.",
+                    ]
+                    if additions:
+                        summary_lines.append("Add: " + ", ".join(additions))
+                    if removals:
+                        summary_lines.append("Remove: " + ", ".join(removals))
+                    summary_lines.extend((
+                        "Audio files will not change.",
+                        "Close Ableton Live before saving.",
+                    ))
+                    if ask_confirm(self, "Save Live tag changes?", "\n\n".join(summary_lines), "Save changes"):
+                        self.save()
+                    else:
+                        self.status_var.set("Review ready. Nothing saved; select Save changes when ready.")
         else:
             backups, summary = result
             self.plan = None

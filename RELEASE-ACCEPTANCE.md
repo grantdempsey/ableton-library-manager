@@ -39,8 +39,9 @@ and your normal application profile are not modified.
    and added tag. The same editor shows assigned tags, edit fields and preview.
    Close/discard the editor without clicking Save changes.
    Run the `baseline` verification again: nothing should have changed.
-3. Enter and preview the same assignment with Live closed. Click Save changes
-   (this writes the reviewed changes without another confirmation). Run:
+3. With Live closed, enter the same assignment and click Save changes directly.
+   Confirm the summary of affected sounds, tags and sidecars. Preview is optional
+   here; the direct-save path prepares the review in the background. Run:
 
    ```powershell
    python tests\prepare_live_acceptance.py verify "<fixture>" add
@@ -52,10 +53,10 @@ and your normal application profile are not modified.
    is visible on the sample and absent from untouched_neighbor.wav.
    Merely finding XML on disk does not count as a Live acceptance pass.
 5. Close Live. In the manager, rename that assignment to
-   `Character|ALM Round Trip`. Run verification with `rename`, reopen Live and
-   check that the new assignment appears and the old one is absent.
-6. Close Live. Remove the test assignment through the manager. Run verification
-   with `remove`, reopen Live and confirm removal. The neighbor must stay
+   `Character|ALM Round Trip` and save. Run verification with `rename`, reopen
+   Live and check that the new assignment appears and the old one is absent.
+6. Close Live. Remove the test assignment through the manager and save directly.
+   Run verification with `remove`, reopen Live and confirm removal. The neighbor must stay
    unassigned throughout; audio verification must always report unchanged.
 7. Record Live's exact version, Windows version, pass/fail for each step, any
    errors, and whether Live needed a rescan/restart to display changes.
@@ -65,7 +66,12 @@ and your normal application profile are not modified.
    isolated manager before returning to the normal app.
 
 This deliberately does not automate Live or write your existing content.
-Results are not yet filled in: a human must perform and report the checks.
+**Partial result (October 29, 2026):** the user reported seeing the added tag in
+Live and then seeing it disappear after removal. Rename visibility, untouched-
+neighbor/audio checks, and exact Live/Windows versions were not reported; the
+remaining checks above still need to be recorded before full acceptance.
+The user chose to skip further manual acceptance for now, including the updated
+direct-save interaction; these checks remain unverified rather than passed.
 
 ## Mac tester downloads
 

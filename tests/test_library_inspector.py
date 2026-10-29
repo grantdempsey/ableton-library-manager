@@ -463,7 +463,7 @@ class LibraryInspectorTests(unittest.TestCase):
         self.assertIsNotNone(dialog.plan)
         dialog.group_var.set("Character")
         self.assertIsNone(dialog.plan)
-        self.assertEqual("disabled", str(dialog.save_button.cget("state")))
+        self.assertEqual("normal", str(dialog.save_button.cget("state")))
         # A plain rename target uses the chosen group; explicit source keeps its own.
         dialog.action_var.set("rename")
         dialog.tag_var.set("Genres|Custom genre")
@@ -934,7 +934,7 @@ class LibraryInspectorTests(unittest.TestCase):
         self.assertFalse(os.path.isdir(os.path.join(self.temp_dir.name, "Ableton Folder Info")))
         dialog.tag_var.set("Character|Changed")
         self.assertIsNone(dialog.plan)
-        self.assertEqual("disabled", str(dialog.save_button.cget("state")))
+        self.assertEqual("normal", str(dialog.save_button.cget("state")))
         dialog.enqueue()
         dialog.listing.selection_set(0)
         dialog.remove()
@@ -1010,7 +1010,7 @@ class LibraryInspectorTests(unittest.TestCase):
             self.wait_for_batch(dialog)
         self.assertIn("Invalid metadata", error.call_args.args[1])
         self.assertEqual("normal", str(dialog.queue_button.cget("state")))
-        self.assertEqual("disabled", str(dialog.save_button.cget("state")))
+        self.assertEqual("normal", str(dialog.save_button.cget("state")))
 
     def test_batch_rename_and_remove_share_one_review_and_preserve_unselected_sound(self):
         ableton_tags.prepare_edit(self.paths, "Sounds|Old").commit()
@@ -1095,6 +1095,38 @@ class LibraryInspectorTests(unittest.TestCase):
         self.assertEqual("", dialog.tag_var.get())
         self.assertEqual("disabled", str(dialog.save_button.cget("state")))
 
+    def test_save_without_preview_reviews_then_confirms_and_removes_assignment(self):
+        ableton_tags.prepare_edit(self.paths[:1], "Genres|Release test").commit()
+        sorter_engine.refresh_live_tag_cache(self.paths[:1])
+        dialog = self.open_batch()
+        dialog.assigned_tree.selection_set(dialog.assigned_tree.get_children()[0])
+        self.root.update()
+        self.assertEqual("remove", dialog.action_var.get())
+        self.assertEqual("normal", str(dialog.save_button.cget("state")))
+        with mock.patch("live_tag_batch.ask_confirm", return_value=True) as confirm:
+            dialog.save_button.invoke()
+            self.wait_for_batch(dialog)
+        confirm.assert_called_once()
+        self.assertIn("Remove: Genres|Release test", confirm.call_args.args[2])
+        self.assertEqual([], ableton_tags.sample_tags(self.paths[0]))
+        self.assertEqual([], ableton_tags.sample_tags(self.paths[1]))
+        self.assertIn("Changes saved.", dialog.status_var.get())
+
+    def test_canceling_direct_save_confirmation_leaves_assignments_unchanged(self):
+        ableton_tags.prepare_edit(self.paths[:1], "Genres|Keep").commit()
+        sorter_engine.refresh_live_tag_cache(self.paths[:1])
+        dialog = self.open_batch()
+        dialog.assigned_tree.selection_set(dialog.assigned_tree.get_children()[0])
+        self.root.update()
+        with mock.patch("live_tag_batch.ask_confirm", return_value=False) as confirm:
+            dialog.save_button.invoke()
+            self.wait_for_batch(dialog)
+        confirm.assert_called_once()
+        self.assertEqual(["Genres|Keep"], ableton_tags.sample_tags(self.paths[0]))
+        self.assertEqual([], ableton_tags.sample_tags(self.paths[1]))
+        self.assertIsNotNone(dialog.plan)
+        self.assertIn("Nothing saved", dialog.status_var.get())
+
     def test_preview_includes_extra_change_and_current_edit_without_duplicate(self):
         dialog = self.open_batch()
         dialog.tag_var.set("Sounds|First")
@@ -1112,7 +1144,7 @@ class LibraryInspectorTests(unittest.TestCase):
         self.assertEqual(1, len(dialog.operations))
         dialog.tag_var.set("Character|Changed")
         self.assertIsNone(dialog.plan)
-        self.assertEqual("disabled", str(dialog.save_button.cget("state")))
+        self.assertEqual("normal", str(dialog.save_button.cget("state")))
 
     def test_inline_live_summary_counts_mixed_tags_and_keeps_exact_hierarchies(self):
         ableton_tags.prepare_edit(self.paths, "Sounds|Shared").commit()

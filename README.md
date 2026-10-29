@@ -458,15 +458,15 @@ unmanaged. Reload from disk if preferences changed externally.
 ## 🆕 What's new in v2.1.0
 - **Library workspace:** Resizable browsing panes, a focused selection inspector, one consolidated Live tag editor, bulk favorites, saved collections, removable filter chips, and Clear all. App-only custom tags are retired; legacy rows remain dormant, and favorites are preserved.
 - **Cross-page curation:** Select a page or capture all matching sounds, keep the selection while paging, and see an explicit off-page count. Changing filters clears selection; edits never automatically include newly indexed matches.
-- **Assigned Live tags:** The consolidated editor lists current assignments and selected-sound counts, with add/remove/rename and Preview/Save.
-- **Previewed Live-tag edits:** Choose add/remove/rename, preview exact assignment changes, then save. Use Add another change for optional multi-edit batches. Planning and saving run in the background with sidecar conflict checks and backups.
+- **Assigned Live tags:** The consolidated editor lists current assignments and selected-sound counts, with add/remove/rename and optional preview-before-save.
+- **Reviewed Live-tag edits:** Choose add/remove/rename and save directly with a confirmation summary, or preview exact per-sample changes first. Use Add another change for optional multi-edit batches. Planning and saving run in the background with sidecar conflict checks and backups.
 - **Discovery filters:** Find untagged samples or sounds missing a manual Live group; combine exact tags with match-all, match-any, or exclusions, and save those searches as collections.
 - **Metadata freshness:** A visible Live-tag monitor checks sidecars in the background, waits for two stable probes, and updates cached assignments without writing audio or sidecars. Full-scan and library metadata-check times are displayed separately.
-- **Shared Live tags:** Read manual Live 12 sidecars on scans and review cached assignments in the inspector. **Edit Live tags...** opens one editor with current assignments, selected-sound counts, add/remove/rename, optional multiple edits, and Preview/Save. Existing sidecars receive backups; concurrent changes detected during review abort saving. Close Live during writes.
+- **Shared Live tags:** Read manual Live 12 sidecars on scans and review cached assignments in the inspector. **Edit Live tags...** opens one editor with current assignments, selected-sound counts, add/remove/rename, optional multiple edits, and Save with optional Preview. Existing sidecars receive backups; concurrent changes detected during review abort saving. Close Live during writes.
 - **Tag-preserving operations:** Manual assignments follow sample copy/move, duplicate merging, nested-folder repair, and undo. See the shared-tag section for limitations and recovery guidance.
 - **Integrations workspace:** The XO folder builder has a dedicated home for third-party workflows. Serum support is not included.
 - **Accurate library counts:** Rescans remove confirmed-missing files after external deletion; operation completion refreshes the browser and its sidebar counts.
-- **Live acceptance:** Earlier disposable WAV checks were limited to the tested Live 12.4.7 metadata workflow. The current consolidated editor's add/rename/remove visibility round trip remains a human acceptance gate.
+- **Live acceptance:** On October 29, the user confirmed an added tag appeared in Live and disappeared after removal. Rename visibility, untouched-neighbor/audio checks, and exact Live/Windows versions remain unreported; full acceptance is still open.
 - **Focused Library:** Removed the separate read-only Ableton catalog viewer and source switch while retaining shared Live vocabulary and all editing features. Results have explicit page navigation, a source-separated generated/manual tag summary, and detailed folder evidence in Sound details.
 - **Conservative suggestions:** All reviewable suggestions, including historical pending candidates, require at least 20 supporters. Scan revalidation uses at least 20 files and 90% agreement, or stricter saved thresholds. Below-threshold candidates remain stored but are hidden and cannot be approved individually or in bulk. Tag-editor dropdown queries run in the background with cached, single-flight loading and stale-result rejection.
 
@@ -654,10 +654,12 @@ for removal or renaming. Choose **add** to assign a new tag;
 suggestions come from indexed Live assignments and the read-only Live vocabulary.
 The **Group** field qualifies plain labels; an explicit `Group|Tag|Subtag` hierarchy
 overrides that field. Dropdown choices are suggestions, not assigned tags.
-Choose **add**, **remove**, or **rename** in this same editor, then **Preview changes**
-and **Save changes**. Rename reveals a **Rename to** field and affects only these
-sample assignments, not Live's global vocabulary. **Reload assigned tags** rereads
-sidecars without changing assignments; it invalidates any previous preview.
+Choose **add**, **remove**, or **rename** in this same editor. **Save changes**
+reviews the draft and asks for confirmation; **Preview changes** is optional when
+you want to inspect per-sample details first. Rename reveals a **Rename to** field
+and affects only these sample assignments, not Live's global vocabulary.
+**Reload assigned tags** rereads sidecars without changing assignments; it
+invalidates any previous preview.
 
 Use **Select page** to add the visible page to your selection, or **Select all
 matching** to capture the complete current search/filter result in the background.
@@ -676,15 +678,17 @@ including off-page sounds. A delayed select-all result is discarded if you have
 changed filters or selection in the meantime. Playback/details require exactly
 one selected sound.
 
-### Previewing Live-tag edits
+### Saving or previewing Live-tag edits
 
-Open **Edit Live tags...**, choose the action, group and tag, then **Preview changes**.
-Inspect the per-sample changes, then **Save changes**. No second editor or rename
-dialog is needed. The editor captures the current selection, including off-page
-sounds, and keeps that exact target list even
-if you subsequently change the browser selection or filters. Choose **add**,
-**remove**, or **rename**, enter the group and tag, then click **Preview changes**.
-No queue step is required for a single edit. For multiple edits, click
+Open **Edit Live tags...** and choose the action, group and tag. Click **Save
+changes** to review the draft in the background and confirm the summary before
+writing; a separate preview click is not required. Choose **Preview changes**
+first when you want to inspect exact per-sample details before saving. No second
+editor or rename dialog is needed. The editor captures the current selection,
+including off-page sounds, and keeps that exact target list even if you
+subsequently change the browser selection or filters. Choose **add**, **remove**,
+or **rename**, enter the group and tag, then save or preview. No queue step is
+required for a single edit. For multiple edits, click
 **Add another change** to keep an edit and clear the inputs for the next one.
 Preview includes the listed extra changes followed by the current entered edit.
 Actions run in that order. For example,
@@ -697,10 +701,12 @@ anything. The review shows changed and unchanged sample counts, the number of
 sidecars to write, and exact additions/removals per changed sample (the first 200
 changed samples are displayed; the totals and save include all targets).
 Editing the queue or entry fields invalidates the review. A no-op review cannot
-be saved. Close Live before clicking **Save changes**, which writes that reviewed
-plan once without a second confirmation dialog. The warning and backup/recovery
-limitations remain visible next to Save. Closing/discarding the editor instead
-leaves files unchanged.
+be saved. If you save without previewing, the app prepares the same review in the
+background and asks you to confirm the affected sounds, tags, and sidecars before
+writing. If you preview first, **Save changes** writes that reviewed plan once
+without another confirmation dialog. Close Live before saving. The warning and
+backup/recovery limitations remain visible next to Save. Closing/discarding the
+editor instead leaves files unchanged.
 
 Planning and saving disable the editor controls. Other Live-tag writes and
 selected metadata refreshes in this browser are disabled while the batch editor
