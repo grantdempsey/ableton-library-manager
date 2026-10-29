@@ -1,6 +1,6 @@
 # Release handoff
 
-Updated: October 27, 2026, release recovery and macOS validation preparation.
+Updated: October 29, 2026, final source and platform validation.
 
 ## Current tagging redesign
 
@@ -47,6 +47,11 @@ This supersedes the earlier hidden-panel and preview-button work below.
   This does not establish downloaded-app Gatekeeper trust or Live visibility.
 - No release is published. Human Live acceptance, final Windows native package
   acceptance and trusted signing/download validation remain open.
+
+> **Historical notes below:** The remaining sections are retained as an audit
+> trail. Their candidates, feature descriptions, test counts and release
+> assessments predate the final source above and are not current acceptance
+> evidence. Use the current status at the top of this file.
 
 ## Final acceptance preparation
 

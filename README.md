@@ -4,14 +4,15 @@ A high-performance, cross-platform desktop tool designed to automate the categor
 
 ## Release status: unreleased development
 
-The `v2.1.0` title and build paths are provisional, not a published release or a
-claim of full Ableton tag parity. Windows source tests, isolated whole-app UI
-fixtures and a clean Windows package startup smoke have passed. Native macOS
-15.7.9 validation also passed on Apple Silicon and Intel: 349 source tests,
-220 overlapping bundled-code tests, native builds, fresh/upgrade startup and
-native Quit. Hands-on packaged workflows, Live acceptance and distribution
-signing/Gatekeeper checks remain separate release gates.
-Existing executables and ZIPs must not be assumed to contain the current source.
+The `v2.1.0` title and build paths are provisional; no release is published.
+Final source `2e76076` passes 358 Windows source tests (one POSIX-only skip)
+and native macOS 15 validation on Apple Silicon and Intel, including native
+builds, bundled-code fixtures, startup/profile checks and extracted-ZIP smoke.
+The final Windows candidate passes 224 bundled-code tests and archive integrity
+checks, but Windows Application Control blocked its native launch. Do not bypass
+that policy. Hands-on Ableton Live acceptance, final Windows package launch,
+and trusted signing/download validation remain open. See
+[RELEASE-HANDOFF.md](RELEASE-HANDOFF.md) for exact evidence and hashes.
 
 **Full tagging parity is not complete.** Library is an editable sound browser;
 the separate read-only Ableton catalog viewer and source switch have been removed.
@@ -21,18 +22,17 @@ Non-audio write acceptance in Live, virtual device/plugin coverage, full plugin
 Format coverage, and native global custom-group/tag lifecycle operations remain
 open. Serializing a sidecar successfully is not proof that Live accepts it.
 
-For release blockers, safety boundaries, the manual test checklist, and where to
-resume development, see [RELEASE-HANDOFF.md](RELEASE-HANDOFF.md).
-The [holistic audit](RELEASE-AUDIT.md) records additional correctness and
-persistence defects that must be resolved before a stable release.
+For current release blockers, safety boundaries, the manual test checklist, and
+where to resume development, see [RELEASE-HANDOFF.md](RELEASE-HANDOFF.md).
+[RELEASE-AUDIT.md](RELEASE-AUDIT.md) is a historical audit; its findings are not
+a current unresolved-issue list.
 
 ---
 
 ## 🏛️ System Features
 - **Platform support:** Includes Windows and macOS path handling. Native Apple Silicon
-  and Intel validation is required before recommending this release to Mac users.
-  macOS 15.7.9 native builds and startup/Quit pass on both architectures.
-  Native input, older macOS releases and Live acceptance remain unverified.
+  and Intel validation passes on macOS 15 for the final source. Native input, older
+  macOS releases and Live acceptance remain unverified.
 - **OneDrive Insulation:** Automatically detects and isolates asset paths to protect local libraries from intrusive OneDrive sync locks.
 - **Background Execution:** Leverages multi-threaded workers to execute tasks without freezing the interface.
   Closing the app requests a safe cancellation and lets the current file finish before shutting down.
@@ -136,7 +136,7 @@ filenames, Library scope and scan thresholds in the profile. Select **View evide
 in Rules to inspect this evidence. Nothing becomes active until **Use this suggestion** (or **Use all
 suggestions**) is chosen. Approval creates a normal filename rule; it does not write
 Live tags or move sounds immediately. Scan-based candidates are rechecked against
-current files, manual sidecars, routing overrides and rules before approval, using
+current files, manual sidecars and rules before approval, using
 at least 20 supporters and 90% agreement, or stricter saved thresholds. Rechecks run in the background;
 counts/examples are refreshed on successful approval. **Use all suggestions**
 validates the whole selection before saving any rules: one stale candidate blocks
@@ -172,15 +172,16 @@ and their assignments in a read-only, scrollable viewer.
 
 The recommended layout and coverage still describe the existing executable
 filename-based loop routing, not a silently substituted tag-based routing plan.
-Manual roles/keys are an independent review-only audit; selecting a layout does
-not activate them as routing overrides. A failed sidecar read displays an error
+Manual roles/keys are an independent review-only audit; they do not change
+filename-based organization rules. A failed sidecar read displays an error
 and leaves **Use recommended** disabled rather than recommending from partial data.
 
 ### One editable Library, shared Live vocabulary
 
 Library no longer includes a read-only Core Library/Packs viewer or a catalog
 source switch. The workspace stays focused on finding and editing indexed sounds.
-This does not delete saved assignments, favorites, searches or routing overrides.
+Legacy app-only tag rows remain stored but are inactive. Favorites, saved searches,
+and manual Ableton assignments are separate supported data.
 
 The read-only Live database adapter remains behind tag dropdown suggestions, not
 as a separate library browser. It never writes Live's database or turns factory
@@ -292,25 +293,30 @@ This keeps asset history separate from portable rule configuration:
 
 - `assets` records the normalized path, file identity data, destination, classification reason,
   confidence, and last update time.
-- `asset_tags` stores multiple tags per asset, including Ableton browser tags when available and
-  a `category:<folder>` tag for the current routing category.
+- `asset_tags` stores generated classification metadata, manual Ableton assignments
+  read from sidecars, and favorites. Legacy app-only rows remain dormant for
+  recovery compatibility and are excluded from visible tag APIs.
 
-The index is updated during preview and real import operations. Re-indexing an asset updates its
-classification-derived tags without removing user-added tags, and replaces stale generated tags
+The index is updated during scans and file operations. Re-indexing an asset refreshes
+generated tags and manual sidecar assignments, and replaces stale generated tags
 rather than creating duplicates. When a previewed asset is moved into the library, its existing
 index record and favorites move with it instead of leaving a duplicate source record. Copies
 remain represented at both paths because both files still exist. Preview output displays
-the tags for each record, making it possible to inspect how Ableton metadata and routing decisions
-relate before changing files.
+the visible tags for each record, making it possible to inspect Ableton metadata and
+classification before changing files.
 
-The **Library** tab (formerly Sounds & Tags) exposes the indexed User Library directly. It supports:
+The **Library** tab exposes the indexed User Library directly. It supports:
 
 - Searching by filename or path
 - Filtering by an exact tag
 - Viewing the sound folder and all tags in the main preview
 - Viewing the full file location in the optional details popup
-- Adding user tags such as `favorite`, `reference`, or `needs-review`
-- Removing a tag from the selected asset
+- Viewing and filtering visible generated and manual Live tags
+- Marking sounds as favorites
+
+App-only custom tags are not a feature. Legacy app-only tag rows remain dormant
+in the database for recovery compatibility; they are not shown, searchable,
+exported, or used for classification and routing.
 
 The browser only shows sound and MIDI records whose paths are inside the configured Ableton
 User Library. On Windows, the app checks both local Documents and the OneDrive Documents
@@ -450,9 +456,9 @@ unmanaged. Reload from disk if preferences changed externally.
 ---
 
 ## 🆕 What's new in v2.1.0
-- **Library workspace:** Resizable browsing panes, a focused selection inspector, a separate Live tag editor, bulk favorites, saved collections, removable filter chips, and Clear all. App-only custom-tag controls are removed; existing data, favorites and routing overrides are preserved.
+- **Library workspace:** Resizable browsing panes, a focused selection inspector, one consolidated Live tag editor, bulk favorites, saved collections, removable filter chips, and Clear all. App-only custom tags are retired; legacy rows remain dormant, and favorites are preserved.
 - **Cross-page curation:** Select a page or capture all matching sounds, keep the selection while paging, and see an explicit off-page count. Changing filters clears selection; edits never automatically include newly indexed matches.
-- **Navigable tag sources:** Live manual assignments appear first rather than being buried under generated category/name labels. Browse by source, exact Live group, or tag-name search. Background list loading continues when you click a tag.
+- **Assigned Live tags:** The consolidated editor lists current assignments and selected-sound counts, with add/remove/rename and Preview/Save.
 - **Previewed Live-tag edits:** Choose add/remove/rename, preview exact assignment changes, then save. Use Add another change for optional multi-edit batches. Planning and saving run in the background with sidecar conflict checks and backups.
 - **Discovery filters:** Find untagged samples or sounds missing a manual Live group; combine exact tags with match-all, match-any, or exclusions, and save those searches as collections.
 - **Metadata freshness:** A visible Live-tag monitor checks sidecars in the background, waits for two stable probes, and updates cached assignments without writing audio or sidecars. Full-scan and library metadata-check times are displayed separately.
@@ -460,7 +466,7 @@ unmanaged. Reload from disk if preferences changed externally.
 - **Tag-preserving operations:** Manual assignments follow sample copy/move, duplicate merging, nested-folder repair, and undo. See the shared-tag section for limitations and recovery guidance.
 - **Integrations workspace:** The XO folder builder has a dedicated home for third-party workflows. Serum support is not included.
 - **Accurate library counts:** Rescans remove confirmed-missing files after external deletion; operation completion refreshes the browser and its sidebar counts.
-- **Live acceptance:** Generated tags on disposable copied and moved WAVs were confirmed in Live 12.4.7 on Windows. This is not certification for every Live version or metadata type.
+- **Live acceptance:** Earlier disposable WAV checks were limited to the tested Live 12.4.7 metadata workflow. The current consolidated editor's add/rename/remove visibility round trip remains a human acceptance gate.
 - **Focused Library:** Removed the separate read-only Ableton catalog viewer and source switch while retaining shared Live vocabulary and all editing features. Results have explicit page navigation, a source-separated generated/manual tag summary, and detailed folder evidence in Sound details.
 - **Conservative suggestions:** All reviewable suggestions, including historical pending candidates, require at least 20 supporters. Scan revalidation uses at least 20 files and 90% agreement, or stricter saved thresholds. Below-threshold candidates remain stored but are hidden and cannot be approved individually or in bulk. Tag-editor dropdown queries run in the background with cached, single-flight loading and stale-result rejection.
 
@@ -758,8 +764,8 @@ selected sounds' cached Live assignments. It does not write sidecars or audio.
 The targets are captured when refresh starts, so selecting another sound does
 not redirect the operation. Write controls are disabled during that refresh.
 Changes made in Live are also monitored while the Library is visible when
-**Auto-refresh Live tags** is enabled (see below). Existing app-only metadata is
-preserved and is never exported by these actions.
+**Auto-refresh Live tags** is enabled (see below). Legacy app-only tag rows remain
+stored but are not exposed or exported by these actions.
 
 ### Metadata freshness and external changes
 
@@ -875,9 +881,10 @@ Manual tags shared with Ableton are edited through **Edit Live tags...**.
 Re-indexing refreshes generated tags while
 preserving their enabled or disabled state.
 
-Legacy app-only labels, including `type:`, `role:` and `instrument:` routing
-overrides, are inactive. Use Rules for organization changes; manual Live tags
-still support the reviewed recommendations and optional XO mode described above.
+Legacy app-only labels, including `type:`, `role:` and `instrument:`, remain stored
+but are ignored by search, classification, routing and export. Use Rules for
+organization changes; manual Live tags still support reviewed recommendations
+and optional XO mode described above.
 
 ### Rules in everyday use
 
