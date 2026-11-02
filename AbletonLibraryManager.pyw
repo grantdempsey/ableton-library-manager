@@ -19,7 +19,7 @@ import sorter_engine
 class ProductionStudioManagerApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Ableton Production Assets & Sample Studio Manager v2.1.0")
+        self.title("Ableton Production Assets & Sample Studio Manager v2.1.1")
         self.geometry("1180x760")
         self.minsize(1020, 700)
         self.set_application_styling_theme()
@@ -201,7 +201,7 @@ class ProductionStudioManagerApp(tk.Tk):
         self.tags_panel = TagsTab(self.tab_notebook, self.status_lbl)
         self.tab_notebook.add(self.tags_panel, text=" 🏷️  Library ")
         self.after(1500, lambda: self.tags_panel.rescan_library(notify_busy=False))
-        self.bind("<<LibraryChanged>>", self.tags_panel.invalidate_library, add="+")
+        self.bind_all("<<LibraryChanged>>", self.tags_panel.invalidate_library, add="+")
 
         self.integrations_panel = IntegrationsTab(self.tab_notebook)
         self.tab_notebook.add(self.integrations_panel, text=" Integrations ")

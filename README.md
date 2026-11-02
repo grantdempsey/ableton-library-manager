@@ -1,10 +1,10 @@
-# 🎹 Ableton Production Assets & Sample Studio Manager v2.1.0
+# 🎹 Ableton Production Assets & Sample Studio Manager v2.1.1
 
 A high-performance, cross-platform desktop tool designed to automate the categorization, sorting, and structural cleanup of Ableton audio libraries, presets, and preferences.
 
-## Release status: v2.1.0 unsigned community release
+## Release status: v2.1.1 unsigned community release
 
-Download [v2.1.0](https://github.com/grantdempsey/ableton-library-manager/releases/tag/v2.1.0)
+Download [v2.1.1](https://github.com/grantdempsey/ableton-library-manager/releases/tag/v2.1.1)
 for Windows x64, Mac Apple Silicon, or Mac Intel. Compare your archive with the
 release's `SHA256SUMS.txt`, then extract the complete ZIP before running.
 These are unsigned community builds: Windows binaries are not signed, and Mac
@@ -43,6 +43,12 @@ For current release blockers, safety boundaries, the manual test checklist, and
 where to resume development, see [RELEASE-HANDOFF.md](RELEASE-HANDOFF.md).
 [RELEASE-AUDIT.md](RELEASE-AUDIT.md) is a historical audit; its findings are not
 a current unresolved-issue list.
+
+## v2.1.1 hotfix
+
+This release keeps percussion one-shots under `Samples/One-Shots/Percussion`,
+limits learned-rule evidence to the intended catch-all folder, and improves XO
+filter path validation, scan error reporting, and custom-folder handling.
 
 ---
 
