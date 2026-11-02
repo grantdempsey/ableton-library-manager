@@ -60,7 +60,10 @@ try {
                 XO_CUSTOM_TYPES = @{ 'Keep my folder' = @('preserved') }
                 LEARNED_RULE_CANDIDATES = @(@{ token = 'old'; target = 'Snares'; count = 7; status = 'pending' })
             }
-            $legacy | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $profile -Encoding utf8
+            $legacyJson = $legacy | ConvertTo-Json -Depth 8
+            [System.IO.File]::WriteAllText(
+                $profile, $legacyJson, [System.Text.UTF8Encoding]::new($false)
+            )
         }
         $info = [System.Diagnostics.ProcessStartInfo]::new()
         $info.FileName = Join-Path $copy 'AbletonLibraryManager.exe'
@@ -84,7 +87,7 @@ try {
         if ($window -eq [IntPtr]::Zero) { throw "$scenario did not create a window" }
         Start-Sleep -Milliseconds 1000
         $running.Refresh()
-        if ($running.MainWindowTitle -notlike '*Sample Studio Manager v2.1.0*') {
+        if ($running.MainWindowTitle -notlike '*Sample Studio Manager v2.1.1*') {
             throw "$scenario unexpected window: $($running.MainWindowTitle)"
         }
         $reply = [IntPtr]::Zero
@@ -112,7 +115,7 @@ try {
         if ($running.ExitCode -ne 0) { throw "$scenario exit code: $($running.ExitCode)" }
         $results += @{
             scenario = $scenario; startup = 'passed'; responsive = $true; graceful_exit = $running.ExitCode
-            title = 'Ableton Production Assets & Sample Studio Manager v2.1.0'
+            title = 'Ableton Production Assets & Sample Studio Manager v2.1.1'
             profile = 'isolated'
             navigation = 'Not tested by this startup smoke; source UI acceptance is separate.'
         }
