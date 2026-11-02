@@ -401,7 +401,7 @@ class OrganizeTab(ttk.Frame):
         if not approved:
             return
         results = sorter_engine.repair_nested_folder_files(self.nested_repair_suggestions)
-        self.event_generate("<<LibraryChanged>>", when="tail")
+        self.winfo_toplevel().event_generate("<<LibraryChanged>>", when="tail")
         self.write_console_message(
             f"Nested-folder repair complete: {results['moved']} moved, "
             f"{results['skipped']} skipped, {len(results['errors'])} errors."
@@ -515,7 +515,7 @@ class OrganizeTab(ttk.Frame):
         if getattr(self.winfo_toplevel(), "_closing", False) is True:
             self.preview_running = False
             return
-        self.event_generate("<<LibraryChanged>>", when="tail")
+        self.winfo_toplevel().event_generate("<<LibraryChanged>>", when="tail")
         self.btn_cancel.config(state="disabled")
         self.preview_running = False
         for button in (self.btn_execute, self.btn_preview, self.btn_undo):
@@ -604,7 +604,7 @@ class OrganizeTab(ttk.Frame):
         self._start_job("undo", lambda: sorter_engine.undo_move_log(log_path))
 
     def finish_undo(self, result):
-        self.event_generate("<<LibraryChanged>>", when="tail")
+        self.winfo_toplevel().event_generate("<<LibraryChanged>>", when="tail")
         for button in (self.btn_execute, self.btn_preview, self.btn_undo):
             button.config(state="normal")
         message = f"{result['restored']:,} files moved back."
@@ -805,7 +805,7 @@ class OrganizeTab(ttk.Frame):
         self._sort_pending = False
         if getattr(self.winfo_toplevel(), "_closing", False) is True:
             return
-        self.event_generate("<<LibraryChanged>>", when="tail")
+        self.winfo_toplevel().event_generate("<<LibraryChanged>>", when="tail")
         self.btn_cancel.config(state="disabled")
         self.btn_execute.config(state="normal")
         self.btn_preview.config(state="normal")

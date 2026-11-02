@@ -82,7 +82,7 @@ class CompletionNotificationTests(unittest.TestCase):
                     "tab_matrix.messagebox.showinfo"
                 ), mock.patch("tab_organize.show_notice"):
                     getattr(panel_class, method_name)(panel, *arguments)
-                panel.event_generate.assert_called_once_with(
+                panel.winfo_toplevel().event_generate.assert_called_once_with(
                     "<<LibraryChanged>>", when="tail"
                 )
 
@@ -99,7 +99,7 @@ class CompletionNotificationTests(unittest.TestCase):
             return_value={"moved": 1, "skipped": 0, "errors": []}
         ):
             OrganizeTab.repair_nested_folders(panel)
-        panel.event_generate.assert_called_once_with(
+        panel.winfo_toplevel().event_generate.assert_called_once_with(
             "<<LibraryChanged>>", when="tail"
         )
 
@@ -534,7 +534,7 @@ class FoundationUiTests(unittest.TestCase):
             ) as load_sidebar, mock.patch.object(
                 app.tags_panel, "_render_results"
             ) as render:
-                app.import_dashboard.event_generate("<<LibraryChanged>>", when="tail")
+                app.event_generate("<<LibraryChanged>>", when="tail")
                 app.update()
             self.assertEqual({}, app.tags_panel._static_counts)
             self.assertEqual(0, app.tags_panel._page_index)
@@ -559,7 +559,7 @@ class FoundationUiTests(unittest.TestCase):
                     sorter_engine.index_asset(
                         asset_path, self.temp_dir.name, "test", 1.0, ["favorite"]
                     )
-                    app.import_dashboard.event_generate(
+                    app.event_generate(
                         "<<LibraryChanged>>", when="tail"
                     )
                     app.update()
