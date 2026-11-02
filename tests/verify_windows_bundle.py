@@ -80,6 +80,7 @@ def main():
         "test_library_inspector",
         "test_rule_suggester",
         "test_tag_evidence",
+        "test_xo_filter",
     )
     try:
         with mock.patch.object(importlib.machinery, "SourceFileLoader", EntryLoader):
@@ -88,6 +89,7 @@ def main():
         required = {
             "AbletonLibraryManager", "ableton_tags", "sorter_engine", "tab_tags",
             "live_tag_batch", "tab_experimental", "rule_suggester", "tag_evidence",
+            "xo_filter",
         }
         missing = required - loaded
         if missing:

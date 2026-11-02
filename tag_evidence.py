@@ -167,9 +167,17 @@ def interpret_manual_tags(tags):
     )
 
 
+def one_shot_folder(folder):
+    parts = tuple(re.split(r"[/\\]", folder))
+    if parts[0].casefold() in {"shakers", "congas", "bongo"}:
+        return ("Samples", "One-Shots", "Percussion", "Shakers")
+    if len(parts) == 1 or parts[0].casefold() == "percussion":
+        return ("Samples", "One-Shots", *parts)
+    return parts
+
+
 def suggested_folder(sound_type):
-    folder = TYPE_TO_FOLDER[sound_type]
-    return ("Percussion", "Shakers") if folder == "Percussion" else ("Samples", "One-Shots", folder)
+    return one_shot_folder(TYPE_TO_FOLDER[sound_type])
 
 
 def describe_preview_evidence(record):

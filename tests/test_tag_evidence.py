@@ -101,6 +101,17 @@ class TagEvidenceTests(unittest.TestCase):
             os.path.join("library", "kick.wav"), "library"
         )[0])
 
+    def test_percussion_advice_and_legacy_rule_targets_use_one_shot_tree(self):
+        evidence = tag_evidence.interpret_manual_tags(["Drums|Percussion|Bell"])
+        self.assertEqual(
+            ("Samples", "One-Shots", "Percussion"),
+            tag_evidence.suggested_folder(evidence.sound_type),
+        )
+        self.assertEqual(
+            ("Samples", "One-Shots", "Percussion", "Shakers"),
+            tag_evidence.one_shot_folder("Percussion/Shakers"),
+        )
+
 
 class TagEvidenceWorkflowTests(unittest.TestCase):
     def setUp(self):

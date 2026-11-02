@@ -493,8 +493,8 @@ unmanaged. Reload from disk if preferences changed externally.
 - Sounds & Tags: independent category/tag highlights, accurate result counts, waveform strip, Auto-play, saved searches, keyboard shortcuts, favorites, faster startup via cached tag counts.
 - Rules: priorities, shadowed-rule detection, explain-a-filename, backup/restore of rules.
 - Home: library status card and in-app README viewer.
-- XO filter folder: **Integrations > Build XO folder** groups your sounds by type (kicks, snares, nature, foley, vocals, textures...) into one folder per type so XO can filter by folder. Files are hard-linked when possible and copied otherwise (copies use extra disk space). Originals are never moved. Hard links share file contents and are not independent backups. Keep the folder outside OneDrive. This is a folder-based workflow, not direct XO control. Serum preset management is not implemented yet.
-- Rule suggestions: the Rules tab scans your catch-all folder (Other One-Shots) when the app opens and after every Organize or Import, and proposes new keyword rules (e.g. "djembe" → Percussion, "rain" → a new Nature folder). Each suggestion shows the priority it would get; **Use this suggestion** ranks it automatically, and **Use all suggestions** adds them in one go. Nothing changes until you approve.
+- XO filter folder: **Integrations > Build XO folder** groups your sounds by type (kicks, snares, nature, foley, vocals, textures...) into one folder per type so XO can filter by folder. Choose a destination that does not overlap your User Library. Files are hard-linked when possible and copied otherwise (copies use extra disk space). Originals are never moved. Hard links share file contents and are not independent backups. Keep the folder outside OneDrive. This is a folder-based workflow, not direct XO control. Serum preset management is not implemented yet.
+- Rule suggestions: the Rules tab scans your catch-all folder (Other One-Shots) when the app opens and after every Organize or Import, and proposes new keyword rules (e.g. "djembe" → `Samples/One-Shots/Percussion`, "rain" → a new Nature folder). Each suggestion shows the priority it would get; **Use this suggestion** ranks it automatically, and **Use all suggestions** adds them in one go. Nothing changes until you approve.
 - Loop folder layout: on the Rules tab's **Loops** tab, **Edit layout…** lets you choose which levels loops are filed into (Tempo, Key) and reorder them with ▲/▼. The recommendation puts the level with the fewest folders first and leaves out a level most of your loops can't fill. Organize applies the layout to new loops and re-files loops that sit in folders this app created; folders you made yourself are left alone. Use Preview changes first; Undo covers it.
 - The Rules tab is split into **Loops**, **One-shots** and **Presets & racks** tabs, so each kind of file shows where it goes and the controls for changing it.
 - XO folders are editable: **Edit folders…** in the XO builder lets you add your own keywords to any folder, create new folders, and **Find suggestions** learns candidate folder names from words common in sounds no folder recognizes yet.
@@ -543,8 +543,10 @@ index results without modifying a user's library.
 ### Folder nesting safety
 
 The organizer is designed to be safe to run more than once. Files already inside an organized
-top-level structure such as `Samples/One-Shots`, `Samples/Loops`, `Percussion`, `Midi`, or
-Ableton preset/device folders are left where they are. Suspicious repeated structures such as
+top-level structure such as `Samples/One-Shots`, `Samples/Loops`, `Midi`, or Ableton preset/device
+folders are left where they are. One-shot percussion is stored under
+`Samples/One-Shots/Percussion` (with shakers under its `Shakers` folder). Existing legacy
+top-level `Percussion` folders are left untouched. Suspicious repeated structures such as
 `Samples/Loops/.../Loops` are also skipped rather than moved or deleted. This prevents a second
 import or in-place organization pass from creating paths such as
 `Samples/Samples/One-Shots/...`.

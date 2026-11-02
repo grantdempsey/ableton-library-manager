@@ -115,7 +115,12 @@ def open_type_editor(win, anchor, library, on_change, auto_find=False, include_l
         custom[name] = words
         if not words and name in xo_filter.SOUND_TYPES:
             custom.pop(name, None)
-        xo_filter.save_custom_types(custom)
+        try:
+            xo_filter.save_custom_types(custom)
+        except (OSError, ValueError, TypeError) as error:
+            message.config(text=f"Could not save XO folders: {error}", fg=theme["accent_gold"])
+            messagebox.showerror("XO folder save failed", str(error), parent=editor)
+            return
         refill()
         message.config(text=f"Saved '{name}'. The build window is re-scanning.", fg=theme["fg_light"])
         on_change()
@@ -129,7 +134,12 @@ def open_type_editor(win, anchor, library, on_change, auto_find=False, include_l
             message.config(text="Built-in folders can't be deleted; clear your keywords to reset it.")
             return
         custom.pop(name)
-        xo_filter.save_custom_types(custom)
+        try:
+            xo_filter.save_custom_types(custom)
+        except (OSError, ValueError, TypeError) as error:
+            message.config(text=f"Could not save XO folders: {error}", fg=theme["accent_gold"])
+            messagebox.showerror("XO folder save failed", str(error), parent=editor)
+            return
         refill()
         new_type()
         message.config(text=f"Removed '{name}'. The build window is re-scanning.", fg=theme["fg_light"])

@@ -24,7 +24,9 @@ SKIP_TOKENS = xo_filter.WEAK_TOKENS | {"one", "shot", "oneshot", "dry", "wet", "
 
 
 def _in_catch_all(path):
-    return CATCH_ALL_FOLDER in {part.lower() for part in path.split(os.sep)}
+    parts = tuple(part.casefold() for part in path.split(os.sep) if part)
+    expected = ("samples", "one-shots", CATCH_ALL_FOLDER)
+    return parts[:len(expected)] == expected
 
 
 def suggest_rules(library_root, min_files=sorter_engine.MIN_RULE_EVIDENCE, min_share=0.9, should_cancel=None):

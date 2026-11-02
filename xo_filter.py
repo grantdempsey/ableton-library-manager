@@ -119,6 +119,51 @@ _TOKEN_TYPE = {}
 _TYPE_ORDER = {}
 
 
+def _raise_walk_error(error):
+    raise error
+
+
+def _inside(path, root):
+    try:
+        common = os.path.commonpath((path, root))
+        return os.path.normcase(common) == os.path.normcase(root)
+    except ValueError:
+        return False
+
+
+def _validated_type_folder(name):
+    if (
+        not isinstance(name, str) or not name or name in {".", ".."}
+        or name != name.strip() or name.endswith((".", " "))
+        or any(ord(char) < 32 or char in '<>:"/\\|?*' for char in name)
+        or re.match(
+            r"^(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9]|LPT[1-9])(?:\.|$)",
+            name, re.IGNORECASE
+        )
+    ):
+        raise ValueError(f"Invalid XO filter folder name: {name!r}")
+    return name
+
+
+def _validate_custom_types(custom):
+    if not isinstance(custom, dict):
+        raise ValueError("XO custom folders must be an object.")
+    built_in_names = {name.casefold(): name for name in SOUND_TYPES}
+    seen_names = {}
+    for name, words in custom.items():
+        _validated_type_folder(name)
+        if not isinstance(words, list) or any(not isinstance(word, str) for word in words):
+            raise ValueError(f"XO custom folder {name!r} must contain a list of keywords.")
+        folded = name.casefold()
+        existing = built_in_names.get(folded) or seen_names.get(folded)
+        if existing is not None and existing != name:
+            raise ValueError(
+                f"XO folder {name!r} differs only by letter case from {existing!r}."
+            )
+        seen_names[folded] = name
+    return custom
+
+
 def load_custom_types():
     """Returns the user's {folder name: [keywords]} from the config file."""
     try:
@@ -132,6 +177,7 @@ def load_custom_types():
 @sorter_engine.serialized_config
 def save_custom_types(custom):
     """Persists custom types; a built-in name adds keywords to it, a new name creates a folder."""
+    _validate_custom_types(custom)
     data = {}
     if os.path.exists(sorter_engine.CONFIG_FILE):
         with open(sorter_engine.CONFIG_FILE, "r", encoding="utf-8") as handle:
@@ -147,10 +193,13 @@ def parse_keywords(text):
 
 def all_types():
     """Built-in types merged with custom keywords; custom-only types come first so they win ties."""
-    custom = load_custom_types()
-    merged = {name: set(words) for name, words in custom.items() if name not in SOUND_TYPES}
+    custom = _validate_custom_types(load_custom_types())
+    merged = {
+        name: {word.casefold() for word in words}
+        for name, words in custom.items() if name not in SOUND_TYPES
+    }
     for name, words in SOUND_TYPES.items():
-        merged[name] = set(words) | set(custom.get(name, ()))
+        merged[name] = set(words) | {word.casefold() for word in custom.get(name, ())}
     return merged
 
 
@@ -191,7 +240,7 @@ def suggest_types(library_root, min_files=25, should_cancel=None, include_loops=
                 manual_loops.add(item["path"])
             if "excluded from build" in item["status"]:
                 excluded.add(item["path"])
-    for dirpath, dirnames, filenames in os.walk(library_root):
+    for dirpath, dirnames, filenames in os.walk(library_root, onerror=_raise_walk_error):
         if should_cancel and should_cancel():
             break
         dirnames[:] = [d for d in dirnames if d not in sorter_engine.IGNORED_DIRECTORIES]
@@ -268,7 +317,7 @@ def build_plan(library_root, include_loops=False, selected_types=None, should_ca
     plan = {}
     stats: XoPlanStats = {"scanned": 0, "unclassified": 0, "loops_skipped": 0}
     paths = []
-    for dirpath, dirnames, filenames in os.walk(library_root):
+    for dirpath, dirnames, filenames in os.walk(library_root, onerror=_raise_walk_error):
         if should_cancel and should_cancel():
             break
         dirnames[:] = [d for d in dirnames if d not in sorter_engine.IGNORED_DIRECTORIES]
@@ -352,15 +401,22 @@ def _unique_name(dest_dir, source):
 
 def build_folder(plan, dest_root, library_root, progress=None, should_cancel=None):
     """Hard-links (or copies, across drives) each planned file into dest_root/<type>/."""
-    dest_root = os.path.normpath(dest_root)
-    if os.path.normpath(library_root).lower() in (dest_root.lower(), ):
-        raise ValueError("The XO folder cannot be the library itself.")
+    dest_root = os.path.realpath(os.path.abspath(dest_root))
+    library_root = os.path.realpath(os.path.abspath(library_root))
+    if _inside(dest_root, library_root) or _inside(library_root, dest_root):
+        raise ValueError("The XO folder and User Library must not overlap.")
     result = {"linked": 0, "copied": 0, "existing": 0, "failed": 0, "cancelled": False}
     total = sum(len(files) for files in plan.values())
     done = 0
     for sound_type, files in plan.items():
+        sound_type = _validated_type_folder(sound_type)
         dest_dir = os.path.join(dest_root, sound_type)
+        resolved_dest_dir = os.path.realpath(dest_dir)
+        if not _inside(resolved_dest_dir, dest_root):
+            raise ValueError(f"XO filter folder escapes its destination: {sound_type!r}")
         os.makedirs(dest_dir, exist_ok=True)
+        if not _inside(os.path.realpath(dest_dir), dest_root):
+            raise ValueError(f"XO filter folder escapes its destination: {sound_type!r}")
         for source in files:
             if should_cancel and should_cancel():
                 result["cancelled"] = True

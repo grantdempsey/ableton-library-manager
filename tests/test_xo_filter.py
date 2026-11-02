@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 import xo_filter
 
@@ -58,6 +59,58 @@ class XoFilterTests(unittest.TestCase):
     def test_refuses_library_as_destination(self):
         with self.assertRaises(ValueError):
             xo_filter.build_folder({}, self.root, self.root)
+
+    def test_refuses_destinations_that_overlap_the_library(self):
+        with self.assertRaisesRegex(ValueError, "must not overlap"):
+            xo_filter.build_folder({}, os.path.join(self.root, "XO"), self.root)
+        with self.assertRaisesRegex(ValueError, "must not overlap"):
+            xo_filter.build_folder({}, os.path.dirname(self.root), self.root)
+
+    def test_custom_folder_names_cannot_escape_destination(self):
+        source = self._make("Samples/Kick.wav")
+        destination = tempfile.mkdtemp()
+        with self.assertRaisesRegex(ValueError, "Invalid XO filter folder name"):
+            xo_filter.build_folder({"../outside": [source]}, destination, self.root)
+        self.assertFalse(os.path.exists(os.path.join(os.path.dirname(destination), "outside")))
+
+    def test_custom_folder_configuration_requires_valid_shape(self):
+        for custom_types in (
+            [],
+            {"Custom": "kick"},
+            {"Custom": ["kick", 1]},
+        ):
+            with self.subTest(custom_types=custom_types):
+                with self.assertRaisesRegex(ValueError, "XO_CUSTOM_TYPES"):
+                    xo_filter.sorter_engine._validate_config({"XO_CUSTOM_TYPES": custom_types})
+
+    def test_custom_folder_names_reject_platform_collisions_before_saving(self):
+        config = os.path.join(self.root, "profile.json")
+        with mock.patch.object(xo_filter.sorter_engine, "CONFIG_FILE", config):
+            with self.assertRaisesRegex(ValueError, "letter case"):
+                xo_filter.save_custom_types({"Kicks": ["kick"], "kicks": ["thump"]})
+            with self.assertRaisesRegex(ValueError, "Invalid XO filter folder name"):
+                xo_filter.save_custom_types({"CONIN$": ["kick"]})
+        self.assertFalse(os.path.exists(config))
+
+    def test_custom_keywords_are_case_insensitive(self):
+        with mock.patch.object(xo_filter, "load_custom_types", return_value={"My Kicks": ["HeavyKick"]}):
+            xo_filter.apply_custom_types()
+            self.assertEqual(
+                "My Kicks",
+                xo_filter.classify(os.path.join(self.root, "HeavyKick.wav"), self.root)[0],
+            )
+        xo_filter.apply_custom_types()
+
+    def test_library_scan_errors_are_not_silently_ignored(self):
+        def fail_walk(_root, *, onerror):
+            onerror(PermissionError("folder access denied"))
+            return iter(())
+
+        with mock.patch.object(xo_filter.os, "walk", side_effect=fail_walk):
+            with self.assertRaisesRegex(PermissionError, "folder access denied"):
+                xo_filter.build_plan(self.root)
+            with self.assertRaisesRegex(PermissionError, "folder access denied"):
+                xo_filter.suggest_types(self.root)
 
 
 if __name__ == "__main__":

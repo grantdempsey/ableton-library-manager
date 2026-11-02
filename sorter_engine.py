@@ -124,6 +124,13 @@ def _validate_config(data):
         raise ValueError("LEARNING_COUNTS must be an object.")
     if not isinstance(data.get("LEARNED_RULE_CANDIDATES", []), list):
         raise ValueError("LEARNED_RULE_CANDIDATES must be a list.")
+    custom_types = data.get("XO_CUSTOM_TYPES", {})
+    if not isinstance(custom_types, dict) or any(
+        not isinstance(name, str) or not isinstance(words, list)
+        or any(not isinstance(word, str) for word in words)
+        for name, words in custom_types.items()
+    ):
+        raise ValueError("XO_CUSTOM_TYPES must map folder names to lists of keywords.")
     if not isinstance(data.get("RULE_METADATA", {}), dict):
         raise ValueError("RULE_METADATA must be an object.")
     layout = data.get("LOOP_LAYOUT", list(LOOP_LEVELS))
@@ -2426,7 +2433,8 @@ class ParallelLibrarySorter:
                     classification_reason = "filename_rule"
                     classification_confidence = 0.95
                 if "/" in grid_matched_folder or "\\" in grid_matched_folder:
-                    target_dir = os.path.join(self.dest, *re.split(r'[/\\]', grid_matched_folder))
+                    target_dir = os.path.join(
+                        self.dest, *tag_evidence.one_shot_folder(grid_matched_folder))
                 else:
                     if ext in NATIVE_EXTS: 
                         target_dir = os.path.join(self.dest, NATIVE_EXTS.get(ext, "Live Instrument Racks"))
@@ -2435,10 +2443,8 @@ class ParallelLibrarySorter:
                     elif ext == '.mid' or ext == '.midi':
                         target_dir = os.path.join(self.dest, "Midi")
                     else: 
-                        if grid_matched_folder.lower() in ["percussion", "shakers", "congas", "bongo"]:
-                            target_dir = os.path.join(self.dest, "Percussion", "Shakers")
-                        else:
-                            target_dir = os.path.join(self.dest, "Samples", "One-Shots", grid_matched_folder)
+                        target_dir = os.path.join(
+                            self.dest, *tag_evidence.one_shot_folder(grid_matched_folder))
                 
                 if ext in NATIVE_EXTS: stat_key = "Native Live Racks (.adg, .amxd, .alc, .adv)"
                 elif ext in SYNTH_EXTS: stat_key = "Synth Presets & Wavetables (.fxp, .vital)"
@@ -2451,10 +2457,8 @@ class ParallelLibrarySorter:
                 if meta_drum_folder:
                     classification_reason = "ableton_metadata"
                     classification_confidence = 0.85
-                    if meta_drum_folder.lower() in ["percussion", "shakers"]:
-                        target_dir = os.path.join(self.dest, "Percussion", "Shakers")
-                    else:
-                        target_dir = os.path.join(self.dest, "Samples", "One-Shots", meta_drum_folder)
+                    target_dir = os.path.join(
+                        self.dest, *tag_evidence.one_shot_folder(meta_drum_folder))
                     stat_key = "One-Shots Grouped by Drum Type"
                     
                     try:

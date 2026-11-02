@@ -48,6 +48,22 @@ class RuleSuggesterTests(unittest.TestCase):
         self.assertEqual(20, rain[0]["min_files"])
         self.assertEqual(0.9, rain[0]["min_share"])
 
+    def test_scans_only_the_library_catch_all_folder(self):
+        nested_catch_all = os.path.join(self.catch_all, "nested")
+        unrelated_catch_all = os.path.join(
+            self.lib, "Samples", "Packs", "Other One-Shots")
+        os.makedirs(nested_catch_all)
+        os.makedirs(unrelated_catch_all)
+        self._files([f"Pack - Rain {i}.wav" for i in range(20)])
+        self._files(["Pack - Rain nested.wav"], folder=nested_catch_all)
+        self._files([f"Pack - Rain unrelated {i}.wav" for i in range(20)], folder=unrelated_catch_all)
+
+        rain = next(
+            suggestion for suggestion in rule_suggester.suggest_rules(self.lib)
+            if suggestion["token"] == "rain"
+        )
+        self.assertEqual(21, rain["count"])
+
     def test_default_requires_twenty_files_and_explicit_lower_threshold_is_preserved(self):
         self._files([f"Pack - Rain {i}.wav" for i in range(19)])
         self.assertEqual([], rule_suggester.suggest_rules(self.lib))
@@ -128,6 +144,7 @@ class RuleSuggesterTests(unittest.TestCase):
 
     def test_approved_rule_moves_catch_all_files_on_organize(self):
         self._files([f"Pack - Djembe {i}.wav" for i in range(20)])
+        self._files(["Shaker hit.wav"])
         suggestions = rule_suggester.suggest_rules(self.lib)
         rule_suggester.add_suggestions_as_candidates(suggestions)
         sorter_engine.review_learning_candidate("djembe", "Percussion", "approved")
@@ -137,8 +154,15 @@ class RuleSuggesterTests(unittest.TestCase):
             lambda *_: done.set(), copy_mode=False)
         sorter.start_parallel_sort()
         self.assertTrue(done.wait(10))
-        moved = os.path.join(self.lib, "Percussion", "Shakers")
-        self.assertTrue(os.path.isdir(moved) and len(os.listdir(moved)) == 20)
+        percussion = os.path.join(self.lib, "Samples", "One-Shots", "Percussion")
+        self.assertEqual(20, len([
+            name for name in os.listdir(percussion)
+            if os.path.isfile(os.path.join(percussion, name))
+        ]))
+        self.assertTrue(os.path.isfile(os.path.join(percussion, "Pack - Djembe 0.wav")))
+        shakers = os.path.join(percussion, "Shakers")
+        self.assertEqual(["Shaker hit.wav"], os.listdir(shakers))
+        self.assertFalse(os.path.exists(os.path.join(self.lib, "Percussion")))
     def test_loop_layout_applies_to_new_and_existing_loops(self):
         loops = os.path.join(self.lib, "Samples", "Loops", "100-114 BPM", "AMIN")
         custom = os.path.join(self.lib, "Samples", "Loops", "My Favorites")
