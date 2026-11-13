@@ -901,10 +901,11 @@ The importer detects the complete resource root and copies everything inside it 
 `User Library/Serum 2 Presets`, without adding another nested `Serum 2 Presets` folder.
 The source must contain `Presets`, `Tables`, and `Samples`.
 
-All relative paths and empty folders are preserved, including Factory/User presets,
-wavetables, samples, skins, LFO resources, and system files. Resource audio is not
-classified as ordinary Ableton one-shots or loops, and existing preset folders are not
-recategorized. A complete resource import is always copy-only: the original Xfer
+User `.fxp` and `.SerumPreset` files are sorted into
+`Presets/User/<Type>/<Pack>/...`, preserving pack subfolders and preset bytes.
+Factory presets, wavetables, samples, skins, LFO resources, system files, and empty
+resource folders keep their relative paths. Resource audio is not classified as
+ordinary Ableton one-shots or loops. A complete resource import is always copy-only: the original Xfer
 installation is never moved, deleted, or edited. Preview creates no destination files
 or folders and does not index Serum resource audio as library sounds.
 
@@ -915,7 +916,8 @@ Overlapping source/destination paths and linked resource paths are rejected. Eac
 copy is checked against its source; errors stop the import and are reported explicitly.
 Cancellation keeps completed copies and leaves originals untouched.
 After copying, select the new resource location in Serum 2 if you want it to use the
-library copy; the importer does not change Serum's own preferences. A successful
+library copy, then use **Rescan Folders on Disk** in Serum's preset browser.
+The importer does not change Serum's own preferences. A successful
 copy verifies the copied files, not that Serum resolves their dependencies. Open a
 representative preset in Serum 2 and confirm its samples and tables load. The completion
 notice and Activity log show the exact destination and remind you to select the
@@ -940,15 +942,22 @@ Other custom destinations are preserved without category routing. Profiles missi
 Re-running **Organize Library** migrates loose presets from `Serum Presets` and recovers
 `.SerumPreset` files previously misplaced inside `Live Instrument Racks`.
 Preview shows these corrections before moving; normal move logs support undo.
-Leading category prefixes determine the User subfolder: `808` becomes `Bass/808`,
-`ARP` becomes `Arp`, `BASS`/`BS` becomes `Bass`, `CH`/`CHORD` becomes `Chord`,
-`DRUM` becomes `Drum`, `FX` becomes `SFX`, `INSTRUMENT` becomes `Instrument`,
-`KEYS` becomes `Keyboard`, `LD`/`LEAD` becomes `Lead`, `PAD`/`PD` becomes `Pad`,
-`PL`/`PLUCK` becomes `Pluck`, `SEQ` becomes `Seq`, and `SYN` becomes `Synth`.
-Unclear names go to `User/Unsorted`, rather than guessing categories from arbitrary words
-or technical metadata such as Mono or Wavetable. Factory content is never merged with
-user presets. Files and empty resource folders already inside `Serum 2 Presets`
-(including Presets, Tables, Samples, and LFO Shapes) stay untouched, as do actual `.adg` racks.
+The layout is `Presets/User/<Type>/<Pack>/...`. Types are Bass, Lead, Pad, Pluck,
+Arp, Sequence, Keys, Chord, Drums, FX, Synth, Instrument, or Unsorted.
+Recognized native Serum 2 header tags take precedence, followed by explicit type
+folders, leading category prefixes, and exact filename labels. For example,
+`BS`, `808`, `NEUROBASS`, and `WUB` identify Bass; `LD` identifies Lead.
+Conflicting type labels at the selected level remain Unsorted. Mono and Wavetable
+are not sound types. This is label-based organization, not audio analysis or engine-state editing.
+Existing pack hierarchies are preserved without old type/container folders. Loose
+files use an explicit uppercase provider prefix such as ATYYA or SAVEJ as the pack;
+otherwise they use `Loose Presets`. Unlabeled ATYYA presets may therefore remain
+`Unsorted/ATYYA`, rather than inventing their sound type.
+**Organize Library** also reorganizes existing User presets using the reviewed
+move plan and normal undo history. Already correctly placed presets stay put.
+Factory content, non-preset resources, empty resource folders, and actual `.adg`
+racks remain untouched. After applying changes, rescan Serum's preset folders and
+verify representative presets and dependencies in Serum.
 Changing routing does not move an installed resource folder automatically. If your
 resource root is still nested inside `Serum Presets`, move that entire `Serum 2 Presets`
 folder to the User Library root in a separately reviewed migration before organizing
@@ -963,7 +972,7 @@ in Serum 2 if it still points to the former location.
 The organizer is designed to be safe to run more than once. Files already inside an organized
 top-level structure such as `Samples/One-Shots`, `Samples/Loops`, `Midi`, or Ableton preset/device
 folders are left where they are, except for loose Serum presets and misplaced `.SerumPreset`
-files in `Live Instrument Racks` as described above. One-shot percussion is stored under
+files in `Live Instrument Racks`, plus existing Serum User presets as described above. One-shot percussion is stored under
 `Samples/One-Shots/Percussion` (with shakers under its `Shakers` folder). Existing legacy
 top-level `Percussion` folders are left untouched. Suspicious repeated structures such as
 `Samples/Loops/.../Loops` are also skipped rather than moved or deleted. This prevents a second

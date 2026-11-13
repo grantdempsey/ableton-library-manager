@@ -24,6 +24,10 @@ class LibraryJobTests(unittest.TestCase):
         self.addCleanup(lock_directory.cleanup)
         self.lock_path = Path(lock_directory.name) / "library_jobs.lock"
         self.jobs = library_jobs.LibraryJobCoordinator(lock_path=self.lock_path)
+        for name, filename in (("ASSET_INDEX_FILE", "assets.db"), ("CONFIG_FILE", "config.json")):
+            state = mock.patch.object(sorter_engine, name, str(Path(lock_directory.name) / filename))
+            state.start()
+            self.addCleanup(state.stop)
         patcher = mock.patch.object(library_jobs, "coordinator", self.jobs)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -252,6 +256,7 @@ class LibraryJobTests(unittest.TestCase):
             worker.cancel()
             worker.start_parallel_sort()
             worker.worker_thread.join(3)
+            self.assertFalse(worker.worker_thread.is_alive(), "Cancelled worker did not finish")
             done.assert_called_once()
             self.assertIsNone(self.jobs.active_label)
 

@@ -236,14 +236,14 @@ class OrganizeTab(ttk.Frame):
             f_tools_row, text="Export plan…", state="disabled", command=self.export_reviewed_plan,
             bg=t["btn_secondary"], fg=t["fg_light"],
         )
-        self.btn_tools = tk.Menubutton(
+        self.btn_tools = tk.Button(
             f_tools_row, text="More tools ▾",
             bg=t["btn_secondary"], fg=t["fg_light"], relief="raised", padx=10, pady=5,
+            command=self.show_more_tools,
         )
         self.tools_menu = tk.Menu(self.btn_tools, tearoff=False)
         self.tools_menu.add_command(label="Export plan…", command=self.export_reviewed_plan, state="disabled")
         self.tools_menu.add_command(label="Repeated-folder repair…", command=self.toggle_repair_options)
-        self.btn_tools.configure(menu=self.tools_menu)
         self.btn_tools.pack(side="right")
         self.plan_summary_var = tk.StringVar(value="Preview the library to review proposed changes.")
         tk.Label(
@@ -308,8 +308,12 @@ class OrganizeTab(ttk.Frame):
             fg=t["fg_light"] if reviewed or busy else t["btn_primary_fg"],
         )
         self.btn_execute.config(bg=t["btn_primary"] if reviewed and not busy else t["btn_secondary"])
-        self.tools_menu.entryconfigure(0, state="normal" if reviewed and not busy else "disabled")
-        self.tools_menu.entryconfigure(1, state="disabled" if busy else "normal")
+        for index, state in (
+            (0, "normal" if reviewed and not busy else "disabled"),
+            (1, "disabled" if busy else "normal"),
+        ):
+            if self.tools_menu.entrycget(index, "state") != state:
+                self.tools_menu.entryconfigure(index, state=state)
         if busy:
             if not self.progress_bar.winfo_manager():
                 self.btn_cancel.pack(side="right", padx=(8, 0))
@@ -322,6 +326,15 @@ class OrganizeTab(ttk.Frame):
                 self.f_alert_box.pack(fill="x", padx=12, pady=(8, 2), before=self.cb_backup.master.master)
         else:
             self.f_alert_box.pack_forget()
+
+    def show_more_tools(self):
+        try:
+            self.tools_menu.tk_popup(
+                self.btn_tools.winfo_rootx(),
+                self.btn_tools.winfo_rooty() + self.btn_tools.winfo_height(),
+            )
+        finally:
+            self.tools_menu.grab_release()
 
     def toggle_repair_options(self):
         if self.repair_group_open:

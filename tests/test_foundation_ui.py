@@ -276,9 +276,11 @@ class FoundationUiTests(unittest.TestCase):
         except tk.TclError as error:
             self.skipTest(f"Tk display is unavailable: {error}")
         def close_root():
+            nonlocal root
             for callback in root.tk.splitlist(root.tk.call("after", "info")):
                 root.tk.call("after", "cancel", callback)
             root.destroy()
+            del root
             gc.collect()
 
         self.addCleanup(close_root)
@@ -328,7 +330,8 @@ class FoundationUiTests(unittest.TestCase):
         notebook.add(library, text="Library")
         root.update()
         self.assertGreater(library.search_entry.winfo_width(), 150)
-        self.assertGreater(library.tag_list.winfo_height(), 70)
+        row_height = tkfont.Font(font=library.tag_list.cget("font")).metrics("linespace") + 2
+        self.assertGreaterEqual(library.tag_list.winfo_height(), 3 * row_height)
         self.assertIsNone(library._live_batch_dialog)
         self.assertGreater(library.assigned_tags_text.winfo_height(), 20)
         root.geometry("1020x620")
@@ -634,7 +637,8 @@ class FoundationUiTests(unittest.TestCase):
 
     def test_xo_simple_scan_loop_filter_and_failed_rescan_disable_build(self):
         root = self.create_root()
-        xo_dialog.open_xo_builder(root)
+        with mock.patch("xo_dialog.default_destination", return_value=os.path.join(self.temp_dir.name, "XO")):
+            xo_dialog.open_xo_builder(root)
         win = next(widget for widget in root.winfo_children() if isinstance(widget, tk.Toplevel))
         widgets = []
         pending = [win]

@@ -3211,7 +3211,12 @@ class ParallelLibrarySorter:
                 return
             
             s_path = os.path.normpath(os.path.join(root, f))
-            if serum_presets.is_resource_path(root):
+            sort_user_preset = (
+                serum_presets.user_relative_path(s_path) is not None
+                and ext in serum_presets.PRESET_EXTENSIONS and ext in SYNTH_EXTS
+                and serum_presets.is_user_folder(SYNTH_EXTS[ext])
+            )
+            if serum_presets.is_resource_path(root) and not sort_user_preset:
                 self.skipped_records.append({"source": s_path, "reason": "serum_resource_preserved"})
                 return
             target_dir = None
@@ -3274,6 +3279,12 @@ class ParallelLibrarySorter:
             if (is_already_sorted and not relayout_loop and not recover_serum_preset
                     and not migrate_loose_serum_preset):
                 return
+            synth_target = ""
+            if ext in SYNTH_EXTS:
+                synth_target = serum_presets.destination(
+                    f, SYNTH_EXTS[ext], source=s_path,
+                    source_root=self.src if os.path.abspath(self.src) != os.path.abspath(self.dest) else None,
+                )
 
             if relayout_loop:
                 classification_reason = "loop_name_or_metadata"
@@ -3303,7 +3314,7 @@ class ParallelLibrarySorter:
                     target_dir = os.path.join(self.dest, NATIVE_EXTS[ext])
                 elif ext in SYNTH_EXTS:
                     target_dir = os.path.join(
-                        self.dest, serum_presets.destination(f, SYNTH_EXTS[ext]))
+                        self.dest, synth_target)
                 elif ext in ('.mid', '.midi'):
                     target_dir = os.path.join(self.dest, "Midi")
                 else:
@@ -3354,7 +3365,7 @@ class ParallelLibrarySorter:
                     classification_reason = "file_extension"
                     classification_confidence = 0.90
                     target_dir = os.path.join(
-                        self.dest, serum_presets.destination(f, SYNTH_EXTS[ext]))
+                        self.dest, synth_target)
                     stat_key = "Synth Presets & Wavetables (.fxp, .vital)"
                 elif ext == '.mid' or ext == '.midi':
                     classification_reason = "file_extension"
@@ -3473,13 +3484,6 @@ class ParallelLibrarySorter:
         })
 
     def _reserve_destination(self, source, target_dir, filename):
-        folder = Path(target_dir).absolute()
-        folders = {folder, *folder.parents} - self._destination_metadata_folders
-        for metadata_folder in folders:
-            _check_unlinked_path(metadata_folder / "Ableton Folder Info")
-            ableton_tags.read_folder_tags(str(metadata_folder))
-        self._destination_metadata.update(self._folder_metadata_state(folders))
-        self._destination_metadata_folders.update(folders)
         if os.path.islink(source) or not os.path.isfile(source):
             raise ValueError(f"Source must be an existing, unlinked file: {source}")
         directory = Path(os.path.abspath(target_dir))
@@ -3496,6 +3500,13 @@ class ParallelLibrarySorter:
             if directory == library:
                 break
             directory = directory.parent
+        folder = Path(target_dir).absolute()
+        folders = {folder, *folder.parents} - self._destination_metadata_folders
+        for metadata_folder in folders:
+            _check_unlinked_path(metadata_folder / "Ableton Folder Info")
+            ableton_tags.read_folder_tags(str(metadata_folder))
+        self._destination_metadata.update(self._folder_metadata_state(folders))
+        self._destination_metadata_folders.update(folders)
         source_identity = _file_identity(source)
         self._planned_directories.update(directory_keys)
         base, extension = os.path.splitext(filename)
@@ -3605,7 +3616,7 @@ class ParallelLibrarySorter:
 
 
 class SerumResourceImporter(ParallelLibrarySorter):
-    """Copy a complete Serum installation without applying sound-sorting rules."""
+    """Copy resources unchanged while sorting User presets by type and pack."""
 
     def __init__(self, src_path, dest_path, window_el, update_status_callback, done_callback,
                  copy_mode=True, preview_only=False, *, approved_plan=None):
@@ -3645,6 +3656,7 @@ class SerumResourceImporter(ParallelLibrarySorter):
             raise ValueError("Serum source and destination must not overlap; no files were copied.")
         directories = [target]
         files = []
+        planned_paths = set()
         stack = [source]
         while stack:
             if self.cancel_event.is_set():
@@ -3660,6 +3672,20 @@ class SerumResourceImporter(ParallelLibrarySorter):
                         directories.append(destination)
                         stack.append(path)
                     elif entry.is_file(follow_symlinks=False):
+                        relative = path.relative_to(source)
+                        if (tuple(part.casefold() for part in relative.parts[:2]) == ("presets", "user")
+                                and path.suffix.lower() in serum_presets.PRESET_EXTENSIONS):
+                            destination = Path(os.path.abspath(self.dest)) / serum_presets.destination(
+                                path.name, serum_presets.USER_FOLDER,
+                                source=str(path), source_root=str(source / "Presets" / "User"),
+                            ) / path.name
+                            self._check_path(destination)
+                            if destination.parent not in directories:
+                                directories.append(destination.parent)
+                        key = self._destination_key(str(destination))
+                        if key in planned_paths:
+                            raise FileExistsError(f"Multiple Serum resources map to the same destination: {destination}")
+                        planned_paths.add(key)
                         identity = _file_identity(path)
                         duplicate = False
                         if destination.exists():
@@ -3679,6 +3705,8 @@ class SerumResourceImporter(ParallelLibrarySorter):
         for directory in directories:
             self._check_path(directory)
             for parent in (directory, *directory.parents):
+                if self._destination_key(str(parent)) in planned_paths:
+                    raise NotADirectoryError(f"A planned resource folder conflicts with a preset file: {parent}")
                 if parent.exists() and not parent.is_dir():
                     raise NotADirectoryError(f"A resource folder conflicts with a file: {parent}")
         return directories, files
@@ -3741,6 +3769,7 @@ class SerumResourceImporter(ParallelLibrarySorter):
                     "settings": self._routing_state(), "skipped": [],
                     "integration_steps": [
                         "Select the copied Serum 2 Presets root as the plugin resource location.",
+                        "Rescan Folders on Disk in Serum's preset browser after external changes.",
                         "Open a representative preset and verify its dependencies in Serum.",
                         "Original resources are retained; plugin preferences are not changed automatically.",
                     ],
@@ -3804,7 +3833,7 @@ class SerumResourceImporter(ParallelLibrarySorter):
                     if self.cancel_event.is_set() else
                     "Serum 2 resource preview complete; no files changed."
                     if self.preview_only else
-                    "Serum 2 resource import complete; originals kept and relative paths preserved."
+                    "Serum 2 resource import complete; User presets sorted by type and pack, other resource paths preserved."
                 )
                 self.window.after(0, lambda: self.update_status(message))
             except (OSError, ValueError) as error:

@@ -4,7 +4,7 @@ Updated November 12, 2026.
 
 ## Cross-platform candidate preparation
 
-The frozen candidate version is **v2.2.0-rc.3**. The tag-triggered
+The prepared candidate version is **v2.2.0-rc.4**. The tag-triggered
 `release-candidate.yml` workflow calls Windows and both macOS architecture
 validation workflows before creating an unsigned GitHub prerelease. Windows
 tests Python 3.11 and 3.14; packaging uses Python 3.14.
@@ -27,6 +27,16 @@ a second screen-height assertion and native Cocoa menu tracking. The rc.3
 fixture compares restored Activity size with its observed expanded size.
 Menu ownership/repair commands are tested on all platforms; native Cocoa posting
 is explicitly manual acceptance rather than a timer-driven automation claim.
+The rc.3 run remained blocked by Windows 3.11 Tk interpreter teardown and
+macOS fixture/guard failures; its tag is retained and no release was created.
+The rc.4 follow-up uses a regular click-triggered More tools popup and updates
+menu entry states only when they change. Native Windows posting remains stable
+for the regression's observation interval. Fixtures now release destroyed Tk
+roots before main-thread collection, wait for available window geometry and
+enabled Cancel controls, isolate XO destinations, and use host-native paths.
+XO still refuses linked destinations; dedicated-home refusal is checked first.
+Destination folder conflicts are reported before metadata reads.
+Final cross-platform validation and publication are still pending.
 
 ## Candidate scope
 
@@ -44,6 +54,15 @@ fixes More tools menu posting, lets Organize's Activity area grow vertically, an
 reserves space for the global status strip at default and minimum window sizes.
 The Options.txt inspection message uses that shared strip; it is not an
 Organize operation.
+
+Serum User presets now use `Presets/User/<Type>/<Pack>/...` for ordinary imports,
+complete resource copies, and existing User presets. Recognized native header
+tags, explicit type folders, and filename labels determine type; conflicting or
+unknown labels remain Unsorted. Pack hierarchy is preserved, with uppercase
+provider prefixes or `Loose Presets` as the fallback. Factory/non-preset
+resources and preset bytes are unchanged. Existing presets use normal reviewed
+Move/Undo; full resources remain copy-only. New planned file/file and file/folder
+collisions are refused before copies. Rescan Serum after external changes.
 
 XO preserves existing one-shot categories and uses the shared library names for
 uncategorized keyword fallback. This prevents separate 808/cymbal and other
@@ -65,7 +84,7 @@ removed from XO status; phase/file/byte feedback and Cancel remain.
 
 ## Validation and packaging
 
-The current unsigned Windows review candidate is
+The last validated local unsigned Windows review candidate is
 `release_builds/windows-20261112-dialog-buttons/AbletonLibraryManager`.
 Launch `AbletonLibraryManager.exe` from that folder; keep `_internal` beside it.
 The matching `AbletonLibraryManager-windows-20261112-dialog-buttons.zip`, build
@@ -75,7 +94,15 @@ The earlier Organize-fixes build remains as a pre-XO-replacement fallback.
 Compiler/intermediate output for this pass was removed. Three older candidate directories
 contain settings/databases and recovery history only; those files remain in
 their original locations and must not be treated as disposable builds.
+This older local package does not contain rc.4's menu or Serum sorting changes.
 
+- rc.4 source preparation: 67 combined UI/state/review cases passed with one
+  privilege-related skip; the final full source run passed 660 cases with four
+  skips, including resource file/file and file/folder preflight. Cancellation
+  ownership fixtures now use their own index/config; 20 repeated cancellations
+  completed without failures or retained leases. These are local Python
+  3.14 results, not Windows 3.11 or macOS certification. Final tagged CI must
+  validate all supported platform jobs before publication.
 - Current follow-up: 31 targeted source UI cases passed without skips;
   bundled-code suite: 572 cases passed, four skipped, exercising 25 embedded
   production modules. Button label/padding/bounds were checked at three Tk font

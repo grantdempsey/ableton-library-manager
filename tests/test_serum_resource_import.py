@@ -46,6 +46,14 @@ class SerumResourceImportTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content)
         self.original = self.snapshot(self.source)
+        self.copied = dict(self.original)
+        self.copied[os.path.join("Presets", "User", "Bass", "Custom Pack", "BS Mine.fxp")] = self.copied.pop(
+            os.path.join("Presets", "User", "Custom Pack", "BS Mine.fxp")
+        )
+        self.copied_contents = dict(self.contents)
+        self.copied_contents["Presets/User/Bass/Custom Pack/BS Mine.fxp"] = self.copied_contents.pop(
+            "Presets/User/Custom Pack/BS Mine.fxp"
+        )
 
     @staticmethod
     def snapshot(root):
@@ -87,7 +95,7 @@ class SerumResourceImportTests(unittest.TestCase):
             index.assert_not_called()
         self.assertEqual([], copied.operation_errors)
         self.assertEqual(len(self.contents), copied.stats["Serum 2 Resource Files Copied"])
-        self.assertEqual(self.original, self.snapshot(self.target))
+        self.assertEqual(self.copied, self.snapshot(self.target))
         self.assertTrue((self.target / "Curves" / "User").is_dir())
         self.assertFalse((self.target / "Serum 2 Presets").exists())
         self.assertFalse((self.library / "Samples").exists())
@@ -219,9 +227,39 @@ class SerumResourceImportTests(unittest.TestCase):
         self.assertEqual(1, worker.stats["Skipped Duplicate Items"])
         self.assertEqual(len(self.contents) - 1, worker.stats["Serum 2 Resource Files Copied"])
         self.assertEqual(
-            self.contents, {str(p.relative_to(self.target)).replace(os.sep, "/"): p.read_bytes()
+            self.copied_contents, {str(p.relative_to(self.target)).replace(os.sep, "/"): p.read_bytes()
                             for p in self.target.rglob("*") if p.is_file()}
         )
+        self.assert_source_unchanged()
+
+    def test_new_type_pack_collisions_stop_before_any_resource_copy(self):
+        for folder, contents in (("Bass", b"one"), ("BS", b"two")):
+            source = self.source / "Presets" / "User" / folder / "Example Pack" / "Same.fxp"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(contents)
+        before = self.snapshot(self.source)
+        worker = self.run_import()
+        self.assertEqual(1, len(worker.operation_errors))
+        self.assertIn("same destination", worker.operation_errors[0]["error"])
+        self.assertFalse(self.library.exists())
+        self.assertEqual(before, self.snapshot(self.source))
+
+    def test_renamed_resource_root_still_sorts_user_presets_only(self):
+        renamed = self.source.with_name("Custom Xfer Folder")
+        self.source.rename(renamed)
+        worker = self.run_import(source=renamed)
+        self.assertEqual([], worker.operation_errors)
+        self.assertEqual(self.copied, self.snapshot(self.target))
+        self.assertEqual(self.original, self.snapshot(renamed))
+
+    def test_preserved_directory_cannot_collide_with_a_sorted_preset(self):
+        (self.source / "Presets" / "User" / "Bass" / "Custom Pack" / "BS Mine.fxp").mkdir(
+            parents=True
+        )
+        worker = self.run_import()
+        self.assertEqual(1, len(worker.operation_errors))
+        self.assertIn("planned resource folder conflicts", worker.operation_errors[0]["error"])
+        self.assertFalse(self.library.exists())
         self.assert_source_unchanged()
 
     def test_source_links_report_an_explicit_error_even_without_symlink_privilege(self):

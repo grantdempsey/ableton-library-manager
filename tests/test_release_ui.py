@@ -1,4 +1,5 @@
 import os
+import gc
 import importlib.machinery
 import importlib.util
 from pathlib import Path
@@ -62,6 +63,8 @@ class ReleaseUiTests(unittest.TestCase):
             self.root.destroy()
         except tk.TclError:
             pass
+        del self.root
+        gc.collect()
 
     def _destroy_panel(self, panel):
         try:
@@ -347,8 +350,15 @@ class ReleaseUiTests(unittest.TestCase):
                 while not finished.wait(0.02) and time.monotonic() < deadline:
                     info = GuiThreadInfo(cbSize=ctypes.sizeof(GuiThreadInfo))
                     if user32.GetGUIThreadInfo(thread_id, ctypes.byref(info)) and info.flags & 4:
-                        posted.append(True)
-                        user32.PostMessageW(wintypes.HWND(info.hwndMenuOwner), 0x001F, 0, 0)
+                        menu_owner = info.hwndMenuOwner
+                        stable = True
+                        hold_until = time.monotonic() + 0.4
+                        while not finished.wait(0.02) and time.monotonic() < hold_until:
+                            if not user32.GetGUIThreadInfo(thread_id, ctypes.byref(info)) or not info.flags & 4:
+                                stable = False
+                                break
+                        posted.append(stable)
+                        user32.PostMessageW(wintypes.HWND(menu_owner), 0x001F, 0, 0)
                         return
                 user32.PostMessageW(wintypes.HWND(window), 0x001F, 0, 0)
 
@@ -361,7 +371,7 @@ class ReleaseUiTests(unittest.TestCase):
                 finished.set()
             self.root.after(100, dismiss_menu)
         try:
-            self.root.tk.call("tk::MbPost", str(button))
+            button.invoke()
             if os.name != "nt":
                 while not finished.is_set():
                     self.root.update()
@@ -375,16 +385,45 @@ class ReleaseUiTests(unittest.TestCase):
                 dismiss.join(timeout=6)
             self.root.tk.call("tk::MenuUnpost", "")
 
+    def test_organize_more_tools_only_updates_changed_entry_states(self):
+        panel = OrganizeTab(self.root, None)
+        self.addCleanup(self._destroy_panel, panel)
+        panel.pack(fill="both", expand=True)
+        self.root.update()
+        with mock.patch.object(panel.tools_menu, "entryconfigure", wraps=panel.tools_menu.entryconfigure) as update:
+            for _ in range(3):
+                panel._sync_workflow_controls()
+            update.assert_not_called()
+            with mock.patch.object(panel, "has_pending_job", return_value=True):
+                panel._sync_workflow_controls()
+                panel._sync_workflow_controls()
+            panel._sync_workflow_controls()
+            panel._sync_workflow_controls()
+            self.assertEqual(
+                [mock.call(1, state="disabled"), mock.call(1, state="normal")],
+                update.call_args_list,
+            )
+
     def test_organize_activity_grows_with_window_and_short_content_still_scrolls(self):
         panel = OrganizeTab(self.root, None)
         self.addCleanup(self._destroy_panel, panel)
         panel.pack(fill="both", expand=True)
-        self.root.geometry("1020x700")
-        self.root.update()
+        expanded_window_height = min(900, self.root.maxsize()[1], self.root.winfo_screenheight() - 100)
+
+        def resize(height):
+            self.root.geometry(f"1020x{height}")
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                self.root.update()
+                if self.root.winfo_height() == height:
+                    return
+                time.sleep(0.01)
+            self.fail(f"Window did not settle at the available height {height}")
+
+        resize(min(700, expanded_window_height - 120))
         initial_height = panel.console_log.winfo_height()
         initial_window_height = self.root.winfo_height()
-        self.root.geometry("1020x900")
-        self.root.update()
+        resize(expanded_window_height)
         window_growth = self.root.winfo_height() - initial_window_height
         self.assertGreater(window_growth, 0)
         self.assertGreaterEqual(panel.console_log.winfo_height(), initial_height + window_growth - 10)
@@ -407,8 +446,7 @@ class ReleaseUiTests(unittest.TestCase):
             canvas.winfo_rooty() + canvas.winfo_height(),
         )
         panel.toggle_repair_options()
-        self.root.geometry("1020x900")
-        self.root.update()
+        resize(expanded_window_height)
         self.assertEqual(expanded_height, panel.console_log.winfo_height())
 
     def test_organize_preview_cannot_enable_apply_without_a_complete_plan(self):

@@ -333,8 +333,9 @@ class ImportTab(ttk.Frame):
             self.write_console_message(
                 "SERUM 2 RESOURCE IMPORT: copying the complete folder structure to "
                 f"{os.path.join(dest_path, 'Serum 2 Presets')}. "
-                "Factory presets, user presets, tables, samples and other resources "
-                "keep their relative paths. Originals are kept; conflicting files are never replaced."
+                "User presets are sorted by type, then pack. Factory presets, tables, samples "
+                "and other resources keep their relative paths. Originals are kept; "
+                "conflicting files are never replaced."
             )
         
         worker = SerumResourceImporter if resource_import else ParallelLibrarySorter
@@ -611,6 +612,7 @@ class ImportTab(ttk.Frame):
                     "NEXT STEP: In Serum 2 (opened inside Ableton), select this folder as "
                     "the presets/resource location to use the imported copy. Select the "
                     "Serum 2 Presets root, not its Presets/User subfolder.\n"
+                    "Use Rescan Folders on Disk in Serum's preset browser after external changes.\n"
                     "In Ableton's browser, find it under User Library, or add this folder "
                     "to Places if needed.\n"
                     "Serum 2 and Ableton preferences were not changed automatically. "

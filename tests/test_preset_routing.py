@@ -1,6 +1,8 @@
 import copy
 import json
 import os
+from pathlib import Path
+import struct
 import tempfile
 import threading
 import unittest
@@ -72,7 +74,7 @@ class PresetRoutingTests(unittest.TestCase):
         preview = self.run_sorter(source, destination, preview_only=True)
         self.assertEqual(len(filenames), len(preview.preview_records))
         for record in preview.preview_records:
-            self.assertEqual(os.path.join(destination, self.user_folder, "Unsorted"), record["destination"])
+            self.assertEqual(os.path.join(destination, self.user_folder, "Unsorted", "ATYYA"), record["destination"])
             self.assertEqual("file_extension", record["reason"])
             self.assertEqual(0.90, record["confidence"])
         self.assertFalse(os.path.exists(destination))
@@ -86,7 +88,7 @@ class PresetRoutingTests(unittest.TestCase):
                 )
                 self.assertEqual(0, sorter.stats["Native Live Racks (.adg, .amxd, .alc, .adv)"])
                 for filename in filenames:
-                    with open(os.path.join(target, self.user_folder, "Unsorted", filename), "rb") as handle:
+                    with open(os.path.join(target, self.user_folder, "Unsorted", "ATYYA", filename), "rb") as handle:
                         self.assertEqual(filename.encode("ascii"), handle.read())
                     self.assertEqual(copy_mode, os.path.exists(os.path.join(source, filename)))
 
@@ -95,9 +97,9 @@ class PresetRoutingTests(unittest.TestCase):
         destination = os.path.join(self.root, "library")
         os.makedirs(source)
         cases = {
-            "kick.SerumPreset": os.path.join(self.user_folder, "Unsorted"),
-            "shaker.SerumPreset": os.path.join(self.user_folder, "Unsorted"),
-            "shaker.fxp": os.path.join(self.user_folder, "Unsorted"),
+            "kick.SerumPreset": os.path.join(self.user_folder, "Unsorted", "Loose Presets"),
+            "shaker.SerumPreset": os.path.join(self.user_folder, "Unsorted", "Loose Presets"),
+            "shaker.fxp": os.path.join(self.user_folder, "Unsorted", "Loose Presets"),
             "shaker.fxb": "Serum Banks",
             "shaker.adg": "Live Instrument Racks",
             "shaker.amxd": "Max For Live Devices",
@@ -137,7 +139,7 @@ class PresetRoutingTests(unittest.TestCase):
         sorter_engine.load_external_config()
         self.assertEqual("Custom FXP", sorter_engine.SYNTH_EXTS[".fxp"])
         self.assertEqual(
-            serum_presets.USER_FOLDER + "/Unsorted",
+            serum_presets.USER_FOLDER + "/Unsorted/ATYYA",
             sorter_engine.explain_filename("ATYYA_Currents.SerumPreset")["destination"],
         )
 
@@ -148,14 +150,14 @@ class PresetRoutingTests(unittest.TestCase):
             ("Live Instrument Racks", "ATYYA_Currents.SerumPreset"),
             ("Live Instrument Racks", "Serum Rack.adg"),
             ("Live Instrument Racks", "Other.fxp"),
-            (os.path.join(self.user_folder, "Unsorted"), "Already Sorted.SerumPreset"),
+            (os.path.join(self.user_folder, "Unsorted", "Loose Presets"), "Already Sorted.SerumPreset"),
         ):
             directory = os.path.join(library, folder)
             os.makedirs(directory, exist_ok=True)
             with open(os.path.join(directory, filename), "wb") as handle:
                 handle.write(filename.encode("ascii"))
         preview = self.run_sorter(library, library, preview_only=True)
-        target = os.path.join(library, self.user_folder, "Unsorted")
+        target = os.path.join(library, self.user_folder, "Unsorted", "ATYYA")
         self.assertEqual(1, len(preview.preview_records))
         self.assertEqual(misplaced, preview.preview_records[0]["source"])
         self.assertEqual(target, preview.preview_records[0]["destination"])
@@ -196,7 +198,7 @@ class PresetRoutingTests(unittest.TestCase):
         resources = os.path.join(library, "Serum 2 Presets")
         protected = (
             os.path.join("Presets", "Factory", "Bass", "BS Factory.SerumPreset"),
-            os.path.join("Presets", "User", "Bass", "BS Existing.fxp"),
+            os.path.join("Presets", "User", "Bass", "Loose Presets", "BS Existing.fxp"),
             os.path.join("Tables", "User", "wavetable.wav"),
             os.path.join("Samples", "User", "kick.wav"),
             os.path.join("LFO Shapes", "User", "shape.lfo"),
@@ -209,20 +211,20 @@ class PresetRoutingTests(unittest.TestCase):
         empty_resource = os.path.join(resources, "Curves", "User")
         os.makedirs(empty_resource)
         cases = {
-            "808 - Alien.fxp": "Bass/808",
+            "808 - Alien.fxp": "Bass",
             "ARP - Arcade.fxp": "Arp",
             "BS Growl.fxp": "Bass",
             "CH - Chord.fxp": "Chord",
-            "FX_Impact.fxp": "SFX",
-            "KEYS Piano.fxp": "Keyboard",
+            "FX_Impact.fxp": "FX",
+            "KEYS Piano.fxp": "Keys",
             "LD Lead.fxp": "Lead",
             "PD Soft.fxp": "Pad",
             "PL Bright.fxp": "Pluck",
-            "SEQ - Pattern.fxp": "Seq",
+            "SEQ - Pattern.fxp": "Sequence",
             "SYN_Saw.fxp": "Synth",
             "ATYYA_Bossy Flutter.SerumPreset": "Unsorted",
             "SAVEJ - BASS PLUCK.SerumPreset": "Unsorted",
-            "Plucky Bass.fxp": "Unsorted",
+            "Plucky Bass.fxp": "Bass",
         }
         for filename in cases:
             with open(os.path.join(loose, filename), "wb") as handle:
@@ -232,13 +234,17 @@ class PresetRoutingTests(unittest.TestCase):
         records = {record["filename"]: record for record in preview.preview_records}
         self.assertEqual(set(cases), set(records))
         for filename, category in cases.items():
+            pack = ("ATYYA" if filename.startswith("ATYYA") else
+                    "SAVEJ" if filename.startswith("SAVEJ") else "Loose Presets")
             self.assertEqual(
-                os.path.normpath(os.path.join(library, self.user_folder, category)),
+                os.path.normpath(os.path.join(library, self.user_folder, category, pack)),
                 records[filename]["destination"],
             )
         moved = self.run_sorter(library, library)
         for filename, category in cases.items():
-            path = os.path.normpath(os.path.join(library, self.user_folder, category, filename))
+            pack = ("ATYYA" if filename.startswith("ATYYA") else
+                    "SAVEJ" if filename.startswith("SAVEJ") else "Loose Presets")
+            path = os.path.normpath(os.path.join(library, self.user_folder, category, pack, filename))
             with open(path, "rb") as handle:
                 self.assertEqual(filename.encode("ascii"), handle.read())
             self.assertFalse(os.path.exists(os.path.join(loose, filename)))
@@ -250,6 +256,47 @@ class PresetRoutingTests(unittest.TestCase):
         undo = sorter_engine.undo_move_log(moved.move_log_path)
         self.assertEqual(len(cases), undo["restored"])
         self.assertEqual([], undo["errors"])
+
+    def test_user_presets_sort_by_metadata_folder_and_name_without_editing_bytes(self):
+        library = Path(self.root) / "library"
+        user = library / self.user_folder
+        metadata = json.dumps({"tags": ["Bass", "Wavetable", "Mono"]}).encode("utf-8")
+        native = b"XferJson\0" + struct.pack("<II", len(metadata), 0) + metadata + b"opaque-state"
+        cases = {
+            user / "Example Pack" / "Atmosphere.SerumPreset": (native, "Bass/Example Pack"),
+            user / "Example Pack" / "Lead" / "Unlabeled.fxp": (b"preset", "Lead/Example Pack"),
+            user / "Unsorted" / "SAVEJ NEUROBASS Growl.fxp": (b"preset", "Bass/SAVEJ"),
+            user / "Unsorted" / "ATYYA_Mystery.SerumPreset": (b"preset", "Unsorted/ATYYA"),
+        }
+        for source, (contents, _folder) in cases.items():
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_bytes(contents)
+        factory = library / "Serum 2 Presets" / "Presets" / "Factory" / "BS Factory.fxp"
+        factory.parent.mkdir(parents=True)
+        factory.write_bytes(b"factory")
+        preview = self.run_sorter(str(library), str(library), preview_only=True)
+        self.assertEqual(set(map(str, cases)), {record["source"] for record in preview.preview_records})
+        for record in preview.preview_records:
+            contents, folder = cases[Path(record["source"])]
+            self.assertEqual(user / folder, Path(record["destination"]))
+            self.assertEqual(contents, Path(record["source"]).read_bytes())
+        moved = self.run_sorter(str(library), str(library))
+        for source, (contents, folder) in cases.items():
+            self.assertFalse(source.exists())
+            self.assertEqual(contents, (user / folder / source.name).read_bytes())
+        self.assertEqual(b"factory", factory.read_bytes())
+        self.assertEqual([], self.run_sorter(str(library), str(library), preview_only=True).preview_records)
+        self.assertEqual(len(cases), sorter_engine.undo_move_log(moved.move_log_path)["restored"])
+        for source, (contents, _folder) in cases.items():
+            self.assertEqual(contents, source.read_bytes())
+
+    def test_conflicting_or_invalid_native_metadata_is_not_guessed(self):
+        self.assertEqual("Unsorted", serum_presets.category("LD Patch.SerumPreset", tags=["Bass", "Pad"]))
+        self.assertEqual("Unsorted", serum_presets.category("SAVEJ Bass Pluck.fxp"))
+        source = Path(self.root) / "invalid.SerumPreset"
+        source.write_bytes(b"XferJson\0" + struct.pack("<II", 2 * 1024 * 1024, 0))
+        with self.assertRaisesRegex(ValueError, "metadata length"):
+            serum_presets.preset_tags(str(source))
 
     def test_profile_upgrade_persists_only_legacy_serum_destinations(self):
         with open(sorter_engine.CONFIG_FILE, encoding="utf-8") as handle:

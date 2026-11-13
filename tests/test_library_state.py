@@ -25,11 +25,13 @@ class LibraryStateTests(unittest.TestCase):
             connection.commit()
 
     def test_platform_storage_paths_are_stable_per_user(self):
+        home = self.root / "home"
+        local = home / "AppData" / "Local"
         self.assertEqual(
-            os.path.join("C:\\Users\\fixture\\AppData\\Local", "AbletonLibraryManager"),
+            str(local / "AbletonLibraryManager"),
             library_state.user_data_directory(
-                system="win32", home="C:\\Users\\fixture",
-                environment={"LOCALAPPDATA": "C:\\Users\\fixture\\AppData\\Local"},
+                system="win32", home=home,
+                environment={"LOCALAPPDATA": str(local)},
             ),
         )
         self.assertEqual(

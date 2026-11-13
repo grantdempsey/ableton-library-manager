@@ -597,15 +597,15 @@ def review_output_destination(dest_root, library_root, *, digest_cache=None, sho
     """Validate output ownership and return the exact contents reviewed for replacement."""
     destination = Path(os.path.abspath(dest_root))
     library = Path(os.path.realpath(library_root))
-    _unlinked_output_path(destination)
-    if _inside(destination, library) or _inside(library, destination):
-        raise ValueError("The XO folder and User Library must not overlap.")
     canonical_destination = Path(os.path.realpath(destination))
     home = Path(os.path.realpath(Path.home()))
     if canonical_destination == Path(canonical_destination.anchor) or canonical_destination in {
         home, *(home / name for name in ("Desktop", "Documents", "Downloads", "Music", "Pictures", "Videos"))
     }:
         raise ValueError("Choose a dedicated XO output subfolder, not a home or standard user folder.")
+    _unlinked_output_path(destination)
+    if _inside(destination, library) or _inside(library, destination):
+        raise ValueError("The XO folder and User Library must not overlap.")
     if not destination.exists():
         return {"exists": False, "managed": False, "snapshot": None}
     if not destination.is_dir():

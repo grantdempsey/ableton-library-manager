@@ -92,6 +92,7 @@ class WindowsReleaseAcceptanceTests(unittest.TestCase):
         for identifier in self.app.tk.splitlist(self.app.tk.call("after", "info")):
             self.app.tk.call("after", "cancel", identifier)
         self.app.destroy()
+        del self.app
         gc.collect()
 
     def wait(self, predicate):
@@ -404,7 +405,7 @@ class WindowsReleaseAcceptanceTests(unittest.TestCase):
                     if not release.wait(10):
                         raise TimeoutError("Fixture did not release first completed transfer")
         def cancel_when_ready():
-            if transferred.is_set():
+            if transferred.is_set() and cancel_button.cget("state") == "normal":
                 self.click_button(cancel_button)
                 release.set()
             else:

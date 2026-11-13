@@ -1,4 +1,4 @@
-# v2.2.0-rc.3 - Windows and macOS release candidate
+# v2.2.0-rc.4 - Windows and macOS release candidate
 
 This is an **unsigned prerelease for testing**, not a signed/notarized stable
 distribution. Keep normal OS protections enabled. If the app is blocked, record
@@ -10,7 +10,11 @@ the message; do not disable protections or remove quarantine.
   Activity, working More tools, and a visible global status strip.
 - Complete preview-plan export, input revalidation before Apply, conservative
   collision handling, verified transfers, and shared History / Recovery.
-- Correct Serum preset/resource routing and copy-only resource imports.
+- Serum User presets use type / pack organization for imports and existing
+  library presets, with preview and supported Move undo. Recognized header tags,
+  type folders and filename labels guide routing; unclear types stay Unsorted.
+  Preset bytes, Factory content and non-preset resource paths are preserved.
+  Complete resource imports remain copy-only; rescan Serum after changes.
 - Shared active-library state and exclusive library jobs, retained through
   cancellation and backup handoffs.
 - Background startup transfer recovery with explicit unresolved-item reporting.
@@ -20,6 +24,8 @@ the message; do not disable protections or remove quarantine.
 - Responsive XO verification, phase/file/byte feedback, Cancel before
   publication, and safe per-job hash reuse. No elapsed-time display.
 - Confirmation buttons fit their labels, including the XO adoption action.
+- Organize More tools opens on a completed click rather than hover/press menu
+  tracking, and unchanged menu states are not repeatedly rewritten by polling.
 - Persistent per-user settings/index and build version/source identity.
 - Correct XO containment checks when Windows supplies short-name path aliases.
 
