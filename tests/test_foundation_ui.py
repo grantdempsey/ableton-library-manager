@@ -636,8 +636,10 @@ class FoundationUiTests(unittest.TestCase):
             rebuild.assert_not_called()
 
     def test_xo_simple_scan_loop_filter_and_failed_rescan_disable_build(self):
+        output_parent = tempfile.TemporaryDirectory()
+        self.addCleanup(output_parent.cleanup)
         root = self.create_root()
-        with mock.patch("xo_dialog.default_destination", return_value=os.path.join(self.temp_dir.name, "XO")):
+        with mock.patch.object(xo_dialog, "DEFAULT_DEST", os.path.join(output_parent.name, "XO")):
             xo_dialog.open_xo_builder(root)
         win = next(widget for widget in root.winfo_children() if isinstance(widget, tk.Toplevel))
         widgets = []
@@ -700,7 +702,7 @@ class FoundationUiTests(unittest.TestCase):
             "linked": 1, "copied": 0, "existing": 0, "failed": 1,
             "cancelled": False,
             "errors": [{
-                "source": path, "destination": os.path.join(self.temp_dir.name, "XO", "Snares", "unknown.wav"),
+                "source": path, "destination": os.path.join(output_parent.name, "XO", "Snares", "unknown.wav"),
                 "error": "permission denied",
             }],
         }) as build_folder, mock.patch("xo_dialog.show_notice") as failure_notice:
@@ -714,8 +716,6 @@ class FoundationUiTests(unittest.TestCase):
             self.assertIn("Resolve the reported file or destination problem", failure_notice.call_args.args[2])
             self.assertEqual(failure_notice.call_args.kwargs["cards"][0][0], path)
             self.assertIn("permission denied", failure_notice.call_args.kwargs["cards"][0][1])
-        output_parent = tempfile.TemporaryDirectory()
-        self.addCleanup(output_parent.cleanup)
         output = os.path.join(output_parent.name, "old-xo-output")
         os.mkdir(output)
         old_file = os.path.join(output, "keep.txt")

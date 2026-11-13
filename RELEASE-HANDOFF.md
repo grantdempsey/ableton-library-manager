@@ -4,7 +4,7 @@ Updated November 12, 2026.
 
 ## Cross-platform candidate preparation
 
-The prepared candidate version is **v2.2.0-rc.4**. The tag-triggered
+The prepared candidate version is **v2.2.0-rc.5**. The tag-triggered
 `release-candidate.yml` workflow calls Windows and both macOS architecture
 validation workflows before creating an unsigned GitHub prerelease. Windows
 tests Python 3.11 and 3.14; packaging uses Python 3.14.
@@ -37,6 +37,12 @@ enabled Cancel controls, isolate XO destinations, and use host-native paths.
 XO still refuses linked destinations; dedicated-home refusal is checked first.
 Destination folder conflicts are reported before metadata reads.
 Final cross-platform validation and publication are still pending.
+The rc.4 Windows Python 3.11 source job passed. Both macOS source suites reached
+660 cases with only the same XO fixture error: the test patched the default
+helper rather than the already-initialized destination constant. The rc.5
+fixture patches the actual entry default to a separate temporary output root,
+outside the library; production linked-path/overlap guards remain unchanged.
+The rc.4 tag is retained and publication stays gated on all platform jobs.
 
 ## Candidate scope
 
