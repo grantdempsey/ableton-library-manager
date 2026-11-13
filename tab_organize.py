@@ -16,6 +16,8 @@ import hashlib
 import gui_theme
 import sorter_engine
 import tag_evidence
+import ableton_tags
+import performance_log
 
 class OrganizeTab(ttk.Frame):
     def __init__(self, parent, status_label_ref):
@@ -29,14 +31,19 @@ class OrganizeTab(ttk.Frame):
         self.nested_repair_suggestions = []
         self.active_sorter = None
         self.preview_running = False
+        self.reviewed_plan = None
+        self._reviewed_settings = None
         self._volume_results = queue.Queue()
         self._volume_thread = None
         self._job_results = queue.Queue()
         self._job_pending = False
+        self._cleanup_lease = None
         self._sort_pending = False
         self._console_messages = queue.Queue()
         
         self.setup_ui_layout()
+        self.library_dir_var.trace_add("write", self._invalidate_review)
+        self.backup_required_var.trace_add("write", self._invalidate_review)
         self.after(30, self._poll_job_results)
         self.after(50, self.prepopulate_user_library_path)
 
@@ -51,29 +58,41 @@ class OrganizeTab(ttk.Frame):
             self.check_for_new_learned_rules_intercept()
 
     def setup_ui_layout(self):
-        """Draws the single-path routing layout matched perfectly to the Import Dashboard geometry."""
+        """Create a scrollable cleanup workspace that remains usable on short screens."""
         t = gui_theme.THEME
 
-        # 1. Main Action Title Header
-        header_lbl = ttk.Label(self, text="Clean up an existing library", font=("Segoe UI", 12, "bold"))
+        canvas = tk.Canvas(self, bg=t["bg_dark"], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        content = ttk.Frame(canvas)
+        self._organize_canvas = canvas
+        self._organize_content = content
+        self._organize_window = canvas.create_window((0, 0), window=content, anchor="nw")
+        content.bind("<Configure>", self._resize_workspace)
+        canvas.bind("<Configure>", self._resize_workspace)
+
+        header_lbl = ttk.Label(content, text="Clean up an existing library", font=("Segoe UI", 12, "bold"))
         header_lbl.pack(anchor="w", padx=15, pady=15)
         tk.Label(
-            self,
-            text="Use this for a library that is already on your computer. A backup is recommended. "
-                 "Use the normal cleanup for standard organization. Use Repair nested folders separately "
-                 "when you want to review repeated folder names.",
+            content,
+            text="Preview your existing library, review the plan, then apply it. Backups are recommended.",
             font=("Segoe UI", 9), bg=t["bg_dark"], fg=t["fg_muted"],
             justify="left", anchor="w", wraplength=900
         ).pack(fill="x", padx=15, pady=(0, 8))
 
         # 2. TARGET DIRECTORY SELECTION BLOCK
-        src_group = ttk.LabelFrame(self, text=" Step 1: Choose the library ")
-        src_group.pack(fill="x", padx=15, pady=8, ipady=5)
+        src_group = ttk.LabelFrame(content, text=" 1. Choose the library ")
 
         f_src_row = tk.Frame(src_group, bg=t["bg_dark"])
         f_src_row.pack(fill="x", padx=15, pady=8)
 
-        self.ent_src = tk.Entry(f_src_row, font=("Consolas", 9), bg=t["bg_field"], fg=t["accent_gold"], bd=1, relief="solid", textvariable=self.library_dir_var, insertbackground=t["fg_light"])
+        self.ent_src = tk.Entry(
+            f_src_row, font=("Consolas", 9), bg=t["bg_field"], fg=t["accent_gold"],
+            readonlybackground=t["bg_field"], state="readonly", bd=1, relief="solid",
+            textvariable=self.library_dir_var, insertbackground=t["fg_light"],
+        )
         self.ent_src.pack(side="left", fill="x", expand=True, ipady=3)
 
         btn_browse_src = tk.Button(
@@ -85,9 +104,10 @@ class OrganizeTab(ttk.Frame):
 
         # 3. SAFETY CARD: keep the size warning next to the backup choice
         safety_group = tk.Frame(
-            self, bg=t["bg_field"], bd=1, relief="solid",
+            content, bg=t["bg_field"], bd=1, relief="solid",
             highlightbackground=t["bg_panel"], highlightcolor=t["bg_panel"]
         )
+        self.safety_group = safety_group
         safety_group.pack(fill="x", padx=15, pady=10)
         self.f_alert_box = tk.Frame(safety_group, bg=t["bg_field"])
         self.f_alert_box.pack(fill="x", padx=12, pady=(8, 2))
@@ -100,7 +120,7 @@ class OrganizeTab(ttk.Frame):
         )
         self.lbl_alert.pack(fill="x", pady=8)
 
-        repair_group = ttk.LabelFrame(self, text=" Optional: Find repeated folders ")
+        repair_group = ttk.LabelFrame(content, text=" Advanced repair: repeated folders ")
         repair_group.pack(fill="x", padx=15, pady=(0, 8))
         tk.Label(
             repair_group,
@@ -143,6 +163,9 @@ class OrganizeTab(ttk.Frame):
         for column, width in (("Source", 300), ("Destination", 300), ("Reason", 220)):
             self.nested_tree.heading(column, text=column)
             self.nested_tree.column(column, width=width, anchor="w")
+        self.repair_group = repair_group
+        self.repair_group_open = False
+        repair_group.pack_forget()
 
         # 4. UNIFIED DESKTOP ACTION CONTROL ROW
         f_actions_row = tk.Frame(safety_group, bg=t["bg_field"])
@@ -178,49 +201,68 @@ class OrganizeTab(ttk.Frame):
             lambda event: self.lbl_backup_location.configure(wraplength=max(1, event.width)),
         )
 
+        f_tools_row = tk.Frame(content, bg=t["bg_dark"])
+        f_tools_row.pack(fill="x", padx=15, pady=(4, 8))
         self.btn_execute = tk.Button(
-            f_actions_row, text="⚡ Start cleanup", font=("Segoe UI", 9, "bold"),
+            f_tools_row, text="Apply plan", font=("Segoe UI", 9, "bold"),
             bg=t["btn_primary"], fg=t["btn_primary_fg"],
             activebackground=t["btn_primary_hover"], activeforeground=t["btn_primary_fg"],
-            bd=0, padx=20, pady=6, command=self.confirm_and_start
+            disabledforeground=t["fg_muted"],
+            bd=0, padx=14, pady=6, state="disabled", command=self.execute_library_restructure
         )
-        self.btn_execute.grid(row=0, column=1, sticky="e", padx=5)
-
-        f_tools_row = tk.Frame(safety_group, bg=t["bg_field"])
-        f_tools_row.pack(fill="x", padx=12, pady=(0, 10))
         self.btn_preview = tk.Button(
-            f_tools_row, text="Preview changes", font=("Segoe UI", 9),
-            bg=t["btn_secondary"], fg=t["fg_light"],
-            activebackground=t["btn_secondary_hover"], activeforeground=t["accent_neon"],
-            bd=1, padx=12, pady=4, command=self.preview_cleanup
+            f_tools_row, text="Preview plan", font=("Segoe UI", 9, "bold"),
+            bg=t["btn_primary"], fg=t["btn_primary_fg"],
+            activebackground=t["btn_primary_hover"], activeforeground=t["btn_primary_fg"],
+            disabledforeground=t["fg_muted"], bd=0, padx=14, pady=6, command=self.preview_cleanup
         )
-        self.btn_preview.pack(side="left", padx=5)
+        self.btn_preview.pack(side="left")
+        self.btn_execute.pack(side="left", padx=8)
         self.btn_undo = tk.Button(
             f_tools_row, text="Undo last cleanup", font=("Segoe UI", 9),
             bg=t["btn_secondary"], fg=t["fg_light"],
             activebackground=t["btn_secondary_hover"], activeforeground=t["accent_neon"],
             bd=1, padx=12, pady=4, command=self.undo_last_cleanup
         )
-        self.btn_undo.pack(side="left", padx=5)
-        self.btn_cancel = tk.Button(
-            f_tools_row, text="Cancel", font=("Segoe UI", 9),
+        self.btn_undo.pack_forget()
+        self.btn_recover = tk.Button(
+            f_tools_row, text="Recover interrupted transfers", font=("Segoe UI", 9),
             bg=t["btn_secondary"], fg=t["fg_light"],
-            activebackground=t["btn_danger_hover"], activeforeground="white",
-            bd=1, padx=12, pady=4, state="disabled", command=self.cancel_running_job
+            activebackground=t["btn_secondary_hover"], activeforeground=t["accent_neon"],
+            bd=1, padx=8, pady=4, command=self.scan_transfer_recovery,
         )
-        self.btn_cancel.pack(side="left", padx=5)
+        self.btn_recover.pack_forget()
+        self.btn_export_plan = tk.Button(
+            f_tools_row, text="Export plan…", state="disabled", command=self.export_reviewed_plan,
+            bg=t["btn_secondary"], fg=t["fg_light"],
+        )
+        self.btn_tools = tk.Menubutton(
+            f_tools_row, text="More tools ▾",
+            bg=t["btn_secondary"], fg=t["fg_light"], relief="raised", padx=10, pady=5,
+        )
+        self.tools_menu = tk.Menu(self.btn_tools, tearoff=False)
+        self.tools_menu.add_command(label="Export plan…", command=self.export_reviewed_plan, state="disabled")
+        self.tools_menu.add_command(label="Repeated-folder repair…", command=self.toggle_repair_options)
+        self.btn_tools.configure(menu=self.tools_menu)
+        self.btn_tools.pack(side="right")
+        self.plan_summary_var = tk.StringVar(value="Preview the library to review proposed changes.")
         tk.Label(
-            f_tools_row, text="Preview shows what would move. Undo reverses the most recent cleanup.",
-            font=("Segoe UI", 8), bg=t["bg_field"], fg=t["fg_muted"]
-        ).pack(side="left", padx=10)
+            content, textvariable=self.plan_summary_var, bg=t["bg_dark"], fg=t["fg_light"],
+            anchor="w", justify="left", wraplength=900,
+        ).pack(fill="x", padx=15, pady=(0, 8))
 
 # tab_organize.py - Piece 2: Automated Verification Loops & Safeguard Intercept Logic
         # 5. PROGRESS FEEDBACK BAR MATRIX
-        f_progress_row = tk.Frame(self, bg=t["bg_dark"])
+        f_progress_row = tk.Frame(content, bg=t["bg_dark"])
         f_progress_row.pack(fill="x", padx=15, pady=2)
 
         self.progress_bar = ttk.Progressbar(f_progress_row, orient="horizontal", mode="determinate")
-        self.progress_bar.pack(fill="x", pady=(2, 1))
+        self.btn_cancel = tk.Button(
+            f_progress_row, text="Cancel", font=("Segoe UI", 9),
+            bg=t["btn_secondary"], fg=t["fg_light"],
+            activebackground=t["btn_danger_hover"], activeforeground="white",
+            bd=1, padx=12, pady=4, state="disabled", command=self.cancel_running_job,
+        )
         self.progress_text_var = tk.StringVar(value="")
         tk.Label(
             f_progress_row, textvariable=self.progress_text_var, font=("Segoe UI", 9),
@@ -228,7 +270,7 @@ class OrganizeTab(ttk.Frame):
         ).pack(fill="x")
 
         # 6. ACTIVE PIPELINE PROCESSING CONSOLE OUTPUT
-        console_frame = ttk.LabelFrame(self, text=" Step 2: Review activity ")
+        console_frame = ttk.LabelFrame(content, text=" Activity ")
         console_frame.pack(fill="both", expand=True, padx=15, pady=(6, 10))
 
         f_txt_wrapper = tk.Frame(console_frame, bg=t["bg_field"], bd=1, relief="solid")
@@ -240,12 +282,94 @@ class OrganizeTab(ttk.Frame):
         self.console_log = tk.Text(
             f_txt_wrapper, wrap="none", state="disabled", font=("Consolas", 9),
             background=t["bg_field"], foreground=t["fg_light"], insertbackground=t["fg_light"],
-            yscrollcommand=scrollbar.set, bd=0, highlightthickness=0
+            yscrollcommand=scrollbar.set, bd=0, highlightthickness=0, height=8
         )
         self.console_log.pack(side="left", fill="both", expand=True, padx=5, pady=5)
         scrollbar.config(command=self.console_log.yview)
         
         self.focus_set()
+        self.lbl_alert.bind("<Configure>", lambda event: self.lbl_alert.configure(wraplength=max(1, event.width)))
+        self._sync_workflow_controls()
+
+    def _resize_workspace(self, _event=None):
+        canvas = self._organize_canvas
+        canvas.itemconfigure(
+            self._organize_window, width=canvas.winfo_width(),
+            height=max(canvas.winfo_height(), self._organize_content.winfo_reqheight()),
+        )
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    def _sync_workflow_controls(self):
+        busy = self.has_pending_job()
+        reviewed = self.reviewed_plan is not None
+        t = gui_theme.THEME
+        self.btn_preview.config(
+            bg=t["btn_secondary"] if reviewed or busy else t["btn_primary"],
+            fg=t["fg_light"] if reviewed or busy else t["btn_primary_fg"],
+        )
+        self.btn_execute.config(bg=t["btn_primary"] if reviewed and not busy else t["btn_secondary"])
+        self.tools_menu.entryconfigure(0, state="normal" if reviewed and not busy else "disabled")
+        self.tools_menu.entryconfigure(1, state="disabled" if busy else "normal")
+        if busy:
+            if not self.progress_bar.winfo_manager():
+                self.btn_cancel.pack(side="right", padx=(8, 0))
+                self.progress_bar.pack(side="left", fill="x", expand=True, pady=(2, 1))
+        else:
+            self.btn_cancel.pack_forget()
+            self.progress_bar.pack_forget()
+        if self.lbl_alert.cget("text"):
+            if not self.f_alert_box.winfo_manager():
+                self.f_alert_box.pack(fill="x", padx=12, pady=(8, 2), before=self.cb_backup.master.master)
+        else:
+            self.f_alert_box.pack_forget()
+
+    def toggle_repair_options(self):
+        if self.repair_group_open:
+            self.repair_group.pack_forget()
+            self.repair_group_open = False
+            self.tools_menu.entryconfigure(1, label="Repeated-folder repair…")
+        else:
+            self.repair_group.pack(fill="x", padx=15, pady=(0, 8), after=self.safety_group)
+            self.repair_group_open = True
+            self.tools_menu.entryconfigure(1, label="Hide repeated-folder repair")
+        self._organize_canvas.configure(scrollregion=self._organize_canvas.bbox("all"))
+
+    def _settings_snapshot(self):
+        library = self.library_dir_var.get().strip()
+        return (
+            os.path.normcase(os.path.abspath(library)) if library else "",
+            bool(self.backup_required_var.get()),
+        )
+
+    def _invalidate_review(self, *_):
+        had_review = self.reviewed_plan is not None
+        self.reviewed_plan = None
+        self._reviewed_settings = None
+        if hasattr(self, "btn_execute"):
+            self.btn_execute.config(state="disabled")
+            self.btn_export_plan.config(state="disabled")
+            self.plan_summary_var.set("Preview the library to review proposed changes.")
+            self.progress_text_var.set(
+                "Settings changed. Preview the plan again before applying." if had_review else ""
+            )
+            self._sync_workflow_controls()
+
+    def export_reviewed_plan(self):
+        sorter = getattr(self, "preview_sorter", None)
+        if self.reviewed_plan is None or sorter is None:
+            return
+        path = filedialog.asksaveasfilename(
+            parent=self, title="Export approved cleanup plan",
+            defaultextension=".json", filetypes=[("JSON plan", "*.json")],
+        )
+        if not path:
+            return
+        try:
+            sorter.export_plan(path)
+        except (OSError, ValueError, TypeError) as error:
+            messagebox.showerror("Could not export plan", str(error), parent=self)
+            return
+        self.progress_text_var.set(f"Reviewed plan exported to {path}")
 
     def check_for_new_learned_rules_intercept(self):
         """🌟 FIXED INTERCEPT: Explicitly reads local configuration script matrices directly to intercept unverified background rules."""
@@ -262,7 +386,7 @@ class OrganizeTab(ttk.Frame):
             if has_new_rules:
                 # Enforce style modifications cleanly on main loop parameters
                 self.lbl_alert.config(
-                    text="⚠️ SORTER ALERT: New automated naming patterns have been learned! Review them in the Rule Matrix tab or proceed.",
+                    text="New sorting suggestions are available. Review them in Rules before cleanup.",
                     fg="#ff9900"
                 )
                 self.f_alert_box.config(
@@ -271,7 +395,7 @@ class OrganizeTab(ttk.Frame):
                 )
             else:
                 self.lbl_alert.config(
-                        text="⚠️ WARNING: In-Place Restructuring Active! Your library folders will be organized inline. Backup recommended.",
+                        text="Cleanup moves files inside the active library. Keep a backup.",
                         fg="#ff9900"
                 )
                 self.f_alert_box.config(
@@ -314,8 +438,23 @@ class OrganizeTab(ttk.Frame):
                 self._job_results.put((kind, None, error))
             else:
                 self._job_results.put((kind, result, None))
-        if gui_theme.start_background_job(self, worker) is None:
+        labels = {
+            "backup": "Library backup", "undo": "Undo cleanup", "nested": "Nested-folder scan",
+            "recovery_scan": "Transfer recovery scan", "transfer_recovery": "Transfer recovery",
+        }
+        cleanup_lease = self.__dict__.get("_cleanup_lease") if kind == "backup" else None
+        try:
+            thread = gui_theme.start_background_job(
+                self, worker, library_job=labels[kind], lease=cleanup_lease,
+                release_lease=cleanup_lease is None,
+            )
+        except RuntimeError as error:
+            self._job_results.put((kind, None, error))
+            return True
+        if thread is None:
             self._job_pending = False
+            self._release_cleanup_lease()
+            self._restore_job_controls()
             return False
         return True
 
@@ -349,19 +488,79 @@ class OrganizeTab(ttk.Frame):
             elif kind == "backup":
                 if not closing:
                     self.write_backup_success_log(*result)
+                else:
+                    self._release_cleanup_lease()
             elif kind == "undo":
                 if not closing:
                     self.finish_undo(result)
             elif kind == "nested":
                 if not closing:
                     self.show_nested_suggestions(result)
+            elif kind == "recovery_scan":
+                if not closing:
+                    self.show_transfer_recovery(result)
+            elif kind == "transfer_recovery":
+                if not closing:
+                    self.finish_transfer_recovery(result)
+        self._sync_workflow_controls()
         self.after(30, self._poll_job_results)
 
     def _restore_job_controls(self):
-        for button in (self.btn_execute, self.btn_preview, self.btn_undo, self.scan_nested_btn):
+        self.btn_execute.config(state="normal" if self.reviewed_plan is not None else "disabled")
+        self.btn_export_plan.config(state="normal" if self.reviewed_plan is not None else "disabled")
+        for button in (self.btn_preview, self.btn_undo, self.scan_nested_btn, self.btn_recover):
             button.config(state="normal")
         self.cb_backup.config(state="normal")
         self.btn_cancel.config(state="disabled")
+
+    def _release_cleanup_lease(self):
+        lease = self.__dict__.get("_cleanup_lease")
+        if lease is not None:
+            lease.release()
+            self._cleanup_lease = None
+
+    def scan_transfer_recovery(self):
+        if self.has_pending_job() or getattr(self.winfo_toplevel(), "_closing", False):
+            return
+        root = self.library_dir_var.get().strip()
+        if not root or not os.path.isdir(root):
+            messagebox.showerror("Folder required", "Choose the destination library to check for interrupted transfers.")
+            return
+        self.btn_recover.config(state="disabled")
+        self._start_job("recovery_scan", lambda: ableton_tags.find_transfer_recovery(root))
+
+    def show_transfer_recovery(self, journals):
+        self._restore_job_controls()
+        if not journals:
+            show_notice(self.winfo_toplevel(), "Transfer recovery", "No interrupted transfers found.")
+            return
+        for journal in journals:
+            self.write_console_message(f"TRANSFER RECOVERY: {journal}")
+        if ask_confirm(
+            self.winfo_toplevel(), "Recover interrupted transfers?",
+            f"Found {len(journals):,} recovery records. Close Live and other manager instances first.\n\n"
+            "Unfinished transfers are rolled back to their original audio and Live tags. "
+            "Already committed transfers are kept. Changed or conflicting files are left for review. "
+            "Recorded index and undo changes are reconciled automatically for new transfers. "
+            "Older journals still require a Library rescan. Keep backups; no file is intentionally overwritten.",
+            "Recover transfers",
+        ):
+            self.btn_recover.config(state="disabled")
+            self._start_job("transfer_recovery", lambda: sorter_engine.recover_library_transfers(journals))
+
+    def finish_transfer_recovery(self, result):
+        self._restore_job_controls()
+        self.winfo_toplevel().event_generate("<<LibraryChanged>>", when="tail")
+        for error in result["errors"]:
+            self.write_console_message(f"TRANSFER RECOVERY ERROR: {error}")
+        heading = "Recovery needs review" if result["errors"] else "Recovery finished"
+        show_notice(
+            self.winfo_toplevel(), heading,
+            f"{result['recovered']:,} transfer records recovered; {len(result['errors']):,} need review.\n"
+            "Recorded index and undo changes were reconciled for recovered application transfers. "
+            "Older journals still require a Library rescan. Unresolved journals and recovery audio were retained.",
+            heading=heading,
+        )
 
     def show_nested_suggestions(self, suggestions):
         self.nested_repair_suggestions = suggestions
@@ -400,7 +599,11 @@ class OrganizeTab(ttk.Frame):
         )
         if not approved:
             return
-        results = sorter_engine.repair_nested_folder_files(self.nested_repair_suggestions)
+        lease = gui_theme.claim_library_job(self, "Nested-folder repair")
+        if lease is None:
+            return
+        with lease:
+            results = sorter_engine.repair_nested_folder_files(self.nested_repair_suggestions)
         self.winfo_toplevel().event_generate("<<LibraryChanged>>", when="tail")
         self.write_console_message(
             f"Nested-folder repair complete: {results['moved']} moved, "
@@ -472,20 +675,25 @@ class OrganizeTab(ttk.Frame):
         
         selected = filedialog.askdirectory(title="Select Library Folder to Scan and Organize", initialdir=starting_dir)
         if selected:
-            self.library_dir_var.set(os.path.normpath(selected))
-            self.update_backup_location()
-            self.strip_text_highlights()
-            self.trigger_instant_volume_safeguard_check()
-            self.check_for_new_learned_rules_intercept()
+            app = self.winfo_toplevel()
+            if hasattr(app, "set_active_library"):
+                app.set_active_library(selected)
+            else:
+                self.set_active_library_path(selected)
 
     def prepopulate_user_library_path(self):
-        resolved_library_path = gui_theme.resolve_user_library_path()
+        resolved_library_path = gui_theme.USER_LIBRARY_PATH
 
-        self.library_dir_var.set(resolved_library_path)
+        self.set_active_library_path(resolved_library_path, check_safety=False)
+
+    def set_active_library_path(self, path, *, check_safety=True):
+        self.ent_src.config(state="normal")
+        self.library_dir_var.set(os.path.normpath(path))
+        self.ent_src.config(state="readonly")
         self.update_backup_location()
         self.strip_text_highlights()
-        
-        # Fire rule checks natively right when the path Discovery loop maps successfully
+        if check_safety:
+            self.trigger_instant_volume_safeguard_check()
         self.check_for_new_learned_rules_intercept()
 
 # tab_organize.py - Piece 3: Thread-Safe Zip Archivers & Storage Mass Calculators
@@ -496,12 +704,15 @@ class OrganizeTab(ttk.Frame):
         if not target_path or not os.path.exists(target_path):
             messagebox.showerror("Routing Fault", "Please select a valid user library path first.")
             return
-        for button in (self.btn_execute, self.btn_preview, self.btn_undo):
+        if not gui_theme.library_job_available(self, "Cleanup preview"):
+            return
+        self._invalidate_review()
+        for button in (self.btn_execute, self.btn_preview, self.btn_undo, self.btn_export_plan):
             button.config(state="disabled")
         self.btn_cancel.config(state="normal")
         self.progress_bar["value"] = 0
         self.wipe_console_log()
-        self.write_console_message("Previewing cleanup. Nothing will be moved...")
+        self.write_console_message("Previewing cleanup. Nothing will be moved or indexed...")
         clean_target = os.path.normpath(target_path)
         self.preview_sorter = sorter_engine.ParallelLibrarySorter(
             src_path=clean_target, dest_path=clean_target, window_el=self,
@@ -509,21 +720,68 @@ class OrganizeTab(ttk.Frame):
             done_callback=self.show_preview_results, copy_mode=False, preview_only=True
         )
         self.preview_running = True
+        self._preview_settings = self._settings_snapshot()
         self.preview_sorter.start_parallel_sort()
 
     def show_preview_results(self, _stats, _copy_mode):
         if getattr(self.winfo_toplevel(), "_closing", False) is True:
             self.preview_running = False
             return
-        self.winfo_toplevel().event_generate("<<LibraryChanged>>", when="tail")
         self.btn_cancel.config(state="disabled")
         self.preview_running = False
-        for button in (self.btn_execute, self.btn_preview, self.btn_undo):
-            button.config(state="normal")
+        self.btn_preview.config(state="normal")
+        self.btn_undo.config(state="normal")
+        errors = self.preview_sorter.operation_errors
+        cancelled = self.preview_sorter.cancel_event.is_set()
+        plan = getattr(self.preview_sorter, "reviewed_plan", None)
+        if (
+            errors or cancelled or not isinstance(plan, dict)
+            or self._preview_settings != self._settings_snapshot()
+        ):
+            self.progress_bar["value"] = 0
+            self.reviewed_plan = None
+            self._reviewed_settings = None
+            self.btn_execute.config(state="disabled")
+            self.btn_export_plan.config(state="disabled")
+            self.progress_text_var.set(
+                "Preview incomplete or settings changed. Preview again before applying."
+            )
+            for failure in errors[:25]:
+                self.write_console_message(
+                    f"PREVIEW ERROR [{failure['operation']}] {failure['source']}: {failure['error']}"
+                )
+            show_notice(
+                self.winfo_toplevel(), "Preview incomplete",
+                "The preview is incomplete because it was cancelled or files could not be checked. "
+                "No files were moved. Review the activity log and run preview again before cleanup.",
+                heading="Preview incomplete",
+            )
+            return
+        self.reviewed_plan = plan
+        self._reviewed_settings = self._settings_snapshot()
+        self.btn_execute.config(state="normal")
+        self.btn_export_plan.config(state="normal")
+        self.progress_text_var.set("Preview complete. Review the plan, then apply or export it.")
         self.progress_bar["value"] = 100
         records = self.preview_sorter.preview_records
         moves = [r for r in records if os.path.normpath(os.path.dirname(r["source"])) != os.path.normpath(r["destination"])]
+        duplicates = sum(record.get("action") == "duplicate" for record in moves)
+        renames = sum(record.get("collision") == "rename" for record in moves)
+        for record in moves[:100]:
+            destination = record.get("destination_path", os.path.join(record["destination"], record["filename"]))
+            self.write_console_message(
+                f"{record.get('action', 'move')}: {record['source']} -> {destination} "
+                f"(collision: {record.get('collision', 'none')})"
+            )
+        if len(moves) > 100:
+            self.write_console_message(f"Showing the first 100 of {len(moves):,} planned file operations.")
         in_place = len(records) - len(moves)
+        self.plan_summary_var.set(
+            f"{len(moves):,} planned operations · {duplicates:,} duplicates · "
+            f"{renames:,} renamed collisions · {in_place:,} already organized.\n"
+            "Review the detailed preview before applying. Export the complete plan from More tools."
+        )
+        self._sync_workflow_controls()
         scope_note = (
             f"Checked {len(records):,} sound and instrument files; other files "
             "(such as .asd analysis files) are left alone, so this is lower than the total file count shown above. "
@@ -561,7 +819,9 @@ class OrganizeTab(ttk.Frame):
                 label = os.path.relpath(record["destination"], library_root)
             except ValueError:
                 label = record["destination"]
-            groups.setdefault(label, []).append(record["filename"])
+            groups.setdefault(label, []).append(
+                os.path.basename(record.get("destination_path", record["filename"]))
+            )
         ordered = sorted(groups.items(), key=lambda item: -len(item[1]))
         cards = [
             (f"{label}  -  {len(names):,} file{'s' if len(names) != 1 else ''}",
@@ -572,15 +832,17 @@ class OrganizeTab(ttk.Frame):
             rest = sum(len(names) for _label, names in ordered[8:])
             cards.append((f"{len(ordered) - 8} more folders  -  {rest:,} files", ""))
         cards.extend(evidence_cards)
-        start = themed_dialog(
+        themed_dialog(
             self.winfo_toplevel(), "Preview of cleanup",
-            f"{len(moves):,} files would move; {in_place:,} are already in place. " + scope_note +
-            "Nothing has been changed yet. Every move is logged so you can undo it.",
-            [("Close", False), ("Start cleanup", True)], default=False,
+            f"{len(moves) - duplicates:,} files would move; {duplicates:,} identical duplicates would merge "
+            f"with undo recovery; {renames:,} files need renamed destinations; "
+            f"{in_place:,} are already in place. " + scope_note +
+            "Audio and sidecars have not been changed. Exact names are in the activity log (first 100). "
+            "Apply will verify that the reviewed files, destinations and settings are unchanged. "
+            "A mismatch stops the cleanup before writes. Every move is logged for recovery.",
+            [("Close", False)], default=False,
             heading="Here is what would happen", cards=cards
         )
-        if start:
-            self.execute_library_restructure()
 
     def undo_last_cleanup(self):
         if self.has_pending_job() or getattr(self.winfo_toplevel(), "_closing", False):
@@ -609,22 +871,20 @@ class OrganizeTab(ttk.Frame):
             button.config(state="normal")
         message = f"{result['restored']:,} files moved back."
         if result["skipped"]:
-            message += f"\n{result['skipped']:,} were skipped because they had changed since."
+            message += (
+                f"\n{result['skipped']:,} were skipped because an original path is occupied, "
+                "a moved file is missing, or a file changed. Unresolved entries are kept for retry."
+            )
         if result["errors"]:
             message += f"\n{len(result['errors'])} failed; see the activity log."
             for error in result["errors"][:25]:
                 self.write_console_message(f"UNDO ERROR: {error}")
         self.write_console_message(message.replace("\n", " "))
-        show_notice(self.winfo_toplevel(), "Undo complete", message, heading="Undo finished")
+        heading = "Undo needs review" if result["errors"] or result["skipped"] else "Undo finished"
+        show_notice(self.winfo_toplevel(), heading, message, heading=heading)
 
     def confirm_and_start(self):
-        if ask_confirm(
-            self.winfo_toplevel(), "Start cleanup?",
-            "This will move files inside your library into organized folders. "
-            "Every move is logged so you can undo it afterwards. Use 'Preview changes' first to see what would happen.",
-            "Start cleanup"
-        ):
-            self.execute_library_restructure()
+        self.execute_library_restructure()
 
     def execute_library_restructure(self):
         if self.has_pending_job() or getattr(self.winfo_toplevel(), "_closing", False):
@@ -633,8 +893,29 @@ class OrganizeTab(ttk.Frame):
         if not target_path or not os.path.exists(target_path):
             messagebox.showerror("Routing Fault", "Please select a valid user library path before launching execution threads.")
             return
+        if self.reviewed_plan is None or self._reviewed_settings != self._settings_snapshot():
+            self._invalidate_review()
+            messagebox.showwarning(
+                "Preview again", "The cleanup settings changed. Preview the plan again before applying.",
+                parent=self,
+            )
+            return
+        approved_plan = self.reviewed_plan
+        if not ask_confirm(
+            self.winfo_toplevel(), "Apply reviewed cleanup?",
+            f"Library: {target_path}\n\nFiles will be moved inside this library according to the reviewed plan. "
+            "A changed file, rule, destination or setting stops the cleanup before it writes. "
+            "Completed moves can be undone from History / Recovery.",
+            "Apply cleanup"
+        ):
+            return
+        lease = gui_theme.claim_library_job(self, "Library backup and cleanup")
+        if lease is None:
+            return
+        self._cleanup_lease = lease
 
         self.btn_execute.config(state="disabled")
+        self.btn_export_plan.config(state="disabled")
         self.btn_preview.config(state="disabled")
         self.btn_undo.config(state="disabled")
         self.cb_backup.config(state="disabled")
@@ -645,9 +926,13 @@ class OrganizeTab(ttk.Frame):
             self.write_console_message("Initializing pre-sorting environment security snapshots...")
             target_dest = self.get_backup_directory(target_path)
             self.write_console_message(f"Backup Destination Directory Target: {target_dest}")
-            self._start_job("backup", lambda: self.run_safeguard_archiver_thread(target_path))
+            self._approved_plan_after_backup = approved_plan
+            self._start_job(
+                "backup",
+                lambda: self.run_safeguard_archiver_thread(target_path),
+            )
         else:
-            self.kickoff_sorting_engine(target_path)
+            self.kickoff_sorting_engine(target_path, approved_plan)
 
     def evaluate_folder_mass_asynchronously(self, target_path):
         """Count the complete library so the safety notice reports actual totals."""
@@ -689,6 +974,10 @@ class OrganizeTab(ttk.Frame):
             fg="#ff9900"
         )
 
+    @performance_log.timed("library_backup", lambda result, self, *args, **kwargs: {
+        "files": self._performance_backup_files,
+        "source_bytes": self._performance_backup_bytes,
+    })
     def run_safeguard_archiver_thread(self, target_path):
         backup_dir = self.get_backup_directory(target_path)
         if os.path.commonpath((os.path.abspath(target_path), os.path.abspath(backup_dir))) == os.path.abspath(target_path):
@@ -712,6 +1001,8 @@ class OrganizeTab(ttk.Frame):
                             stack.append(os.path.normpath(entry.path))
                         elif entry.is_file(follow_symlinks=False):
                             local_files_to_pack.append((entry.path, sorter_engine._file_identity(entry.path)))
+            self._performance_backup_files = len(local_files_to_pack)
+            self._performance_backup_bytes = sum(identity["size"] for _, identity in local_files_to_pack)
             with zipfile.ZipFile(archive_full_path, "w", zipfile.ZIP_STORED, allowZip64=True) as archive:
                 for index, (path, identity) in enumerate(local_files_to_pack, 1):
                     if sorter_engine._file_identity(path) != identity:
@@ -760,32 +1051,51 @@ class OrganizeTab(ttk.Frame):
 # tab_organize.py - Piece 4: Parallel Sorting Engine Activation & Reporting Matrices
     def write_backup_success_log(self, target_path, archive_full_path):
         self.write_console_message(f"Archival package generated cleanly at location:\n -> {archive_full_path}")
-        self.kickoff_sorting_engine(target_path)
+        self.kickoff_sorting_engine(
+            target_path, getattr(self, "_approved_plan_after_backup", None),
+        )
 
     def handle_backup_fault(self, target_path, error_string):
-        self.btn_execute.config(state="normal")
+        self.btn_execute.config(state="normal" if self.reviewed_plan is not None else "disabled")
+        self.btn_export_plan.config(state="normal" if self.reviewed_plan is not None else "disabled")
         self.btn_preview.config(state="normal")
         self.btn_undo.config(state="normal")
         self.btn_cancel.config(state="disabled")
         self.cb_backup.config(state="normal")
         if getattr(self.winfo_toplevel(), "_closing", False):
             self.write_console_message(f"Backup failed; cleanup did not start: {error_string}")
+            self._release_cleanup_lease()
             return
         proceed_regardless = messagebox.askyesno("Safeguard Fault", f"Archive failed:\n{error_string}\n\nProceed without backup?", icon="warning")
-        if proceed_regardless: self.kickoff_sorting_engine(target_path)
+        if proceed_regardless:
+            self.kickoff_sorting_engine(
+                target_path, getattr(self, "_approved_plan_after_backup", None),
+            )
+        else:
+            self._release_cleanup_lease()
 
-    def kickoff_sorting_engine(self, target_path):
+    def kickoff_sorting_engine(self, target_path, approved_plan=None):
         if getattr(self.winfo_toplevel(), "_closing", False):
+            self._release_cleanup_lease()
             return
+        if approved_plan is None:
+            approved_plan = self.reviewed_plan
         self._sort_pending = True
-        for button in (self.btn_execute, self.btn_preview, self.btn_undo):
+        for button in (self.btn_execute, self.btn_preview, self.btn_undo, self.btn_export_plan):
             button.config(state="disabled")
         self.cb_backup.config(state="disabled")
         clean_target = os.path.normpath(target_path.strip())
         self.write_console_message("Firing parallel sorting network threads...")
-        self.active_sorter = sorter_engine.ParallelLibrarySorter(src_path=clean_target, dest_path=clean_target, window_el=self, update_status_callback=self.write_console_message, done_callback=self.handle_execution_complete, copy_mode=False)
+        self.active_sorter = sorter_engine.ParallelLibrarySorter(
+            src_path=clean_target, dest_path=clean_target, window_el=self,
+            update_status_callback=self.write_console_message,
+            done_callback=self.handle_execution_complete, copy_mode=False,
+            approved_plan=approved_plan,
+        )
         self.btn_cancel.config(state="normal")
-        self.active_sorter.start_parallel_sort()
+        lease = self.__dict__.get("_cleanup_lease")
+        self._cleanup_lease = None
+        self.active_sorter.start_parallel_sort(job_lease=lease)
 
     def cancel_running_job(self):
         sorter = self.active_sorter if self.btn_execute.cget("state") == "disabled" and self.active_sorter else None
@@ -794,7 +1104,7 @@ class OrganizeTab(ttk.Frame):
             return
         if ask_confirm(
             self.winfo_toplevel(), "Stop now?",
-            "The current file finishes, then everything stops. Files already moved stay where they are, and a cleanup can be undone with 'Undo last cleanup'.",
+            "The current file finishes, then everything stops. Files already moved stay where they are; use History / Recovery to undo completed cleanup moves.",
             "Stop"
         ):
             sorter.cancel()
@@ -807,21 +1117,35 @@ class OrganizeTab(ttk.Frame):
             return
         self.winfo_toplevel().event_generate("<<LibraryChanged>>", when="tail")
         self.btn_cancel.config(state="disabled")
-        self.btn_execute.config(state="normal")
+        self.reviewed_plan = None
+        self._reviewed_settings = None
+        self.btn_execute.config(state="disabled")
+        self.btn_export_plan.config(state="disabled")
         self.btn_preview.config(state="normal")
         self.btn_undo.config(state="normal")
         self.cb_backup.config(state="normal")
         self.progress_bar["value"] = 100
         
         was_cancelled = bool(self.active_sorter and self.active_sorter.cancel_event.is_set())
+        operation_errors = self.active_sorter.operation_errors if self.active_sorter else []
+        needs_review = bool(operation_errors or tracking_stats.get("Errors/Skipped Files", 0))
+        outcome = (
+            "Cleanup finished with errors; review the activity log." if needs_review else
+            "Cleanup stopped early. Files already moved can be undone." if was_cancelled else
+            "Cleanup complete."
+        )
+        self.progress_bar["value"] = 0 if was_cancelled or needs_review else 100
         tab_matrix.rescan_suggestions()
-        self.write_console_message("Cleanup stopped early. Files already moved can be undone." if was_cancelled else "In-place database restructure operations resolved clean!")
+        self.write_console_message(outcome)
+        self.progress_text_var.set(outcome)
+        self.plan_summary_var.set(outcome + " Preview again to review any remaining work.")
         lines = []
         if tracking_stats.get("Native Live Racks (.adg, .amxd, .alc, .adv)", 0) > 0: lines.append(f"• Native Racks: {tracking_stats['Native Live Racks (.adg, .amxd, .alc, .adv)']}")
         if tracking_stats.get("Synth Presets & Wavetables (.fxp, .vital)", 0) > 0: lines.append(f"• Presets: {tracking_stats['Synth Presets & Wavetables (.fxp, .vital)']}")
         if tracking_stats.get("Loops Separated by BPM & Key", 0) > 0: lines.append(f"• Loops Sorted: {tracking_stats['Loops Separated by BPM & Key']}")
         if tracking_stats.get("One-Shots Grouped by Drum Type", 0) > 0: lines.append(f"• One-Shots Filed: {tracking_stats['One-Shots Grouped by Drum Type']}")
-        operation_errors = self.active_sorter.operation_errors if self.active_sorter else []
+        if tracking_stats.get("Errors/Skipped Files", 0):
+            lines.append(f"Errors/Skipped Items: {tracking_stats['Errors/Skipped Files']}")
         if operation_errors:
             lines.append("• Review required: see the detailed file errors in the activity log.")
             for failure in operation_errors[:25]:
@@ -833,13 +1157,18 @@ class OrganizeTab(ttk.Frame):
                 self.write_console_message(
                     f"ERROR: {len(operation_errors) - 25} additional file errors omitted from the log."
                 )
-        summary = "\n".join(lines) if lines else "• State Coherent: All existing audio assets match target directory definitions."
+        summary = "\n".join(lines) if lines else "No file moves were recorded."
 
         try: master_window_container = self.nametowidget(".")
         except Exception:
             try: master_window_container = self.master
             except Exception: master_window_container = self.winfo_toplevel()
 
-        self.bell() 
-        messagebox.showinfo("Structural Optimization Complete", f"In-Place Library operations finished successfully!\n\nSummary:\n{summary}", parent=master_window_container)
-        if self.status_lbl: self.status_lbl.config(text=" Application Status: Structural allocation pass verified clean.", fg=gui_theme.THEME["accent_neon"])
+        self.bell()
+        notification = messagebox.showwarning if needs_review or was_cancelled else messagebox.showinfo
+        notification("Library cleanup", f"{outcome}\n\nSummary:\n{summary}", parent=master_window_container)
+        if self.status_lbl:
+            self.status_lbl.config(
+                text=f" Application Status: {outcome}",
+                fg=gui_theme.THEME["accent_gold"] if needs_review or was_cancelled else gui_theme.THEME["accent_neon"],
+            )

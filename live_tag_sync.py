@@ -4,6 +4,7 @@ from pathlib import Path
 
 import ableton_tags
 import sorter_engine
+import performance_log
 
 
 def _scope(connection, library_root):
@@ -40,31 +41,46 @@ def _fingerprint(paths, folders):
     return paths, tuple(sorted(sidecars))
 
 
+@performance_log.timed("sidecar_poll", lambda result, *args, **kwargs: {
+    "outcome": result[0],
+    "indexed_records": len(result[1][0]), "sidecars": len(result[1][1]),
+})
 def poll_live_metadata(library_root, baseline=None, candidate=None):
     """Waits for two identical probes, then refreshes only the manual tag cache."""
     connection = sorter_engine._asset_index_connection()
     try:
-        paths, folders = _scope(connection, library_root)
-        snapshot = _fingerprint(paths, folders)
+        with performance_log.measure_phase("scope"):
+            paths, folders = _scope(connection, library_root)
+        with performance_log.measure_phase("fingerprint"):
+            snapshot = _fingerprint(paths, folders)
         if snapshot == baseline:
             return "checked", snapshot
         if snapshot != candidate:
             return "pending", snapshot
         assignments = {}
-        for folder in folders:
-            for path, tags in ableton_tags.read_folder_tags(str(folder)).items():
-                assignments.setdefault(path, set()).update(tags)
-        if _fingerprint(paths, folders) != snapshot:
+        with performance_log.measure_phase("read_assignments"):
+            for folder in folders:
+                for path, tags in ableton_tags.read_folder_tags(str(folder)).items():
+                    assignments.setdefault(path, set()).update(tags)
+        with performance_log.measure_phase("verify_snapshot"):
+            stable = _fingerprint(paths, folders) == snapshot
+        if not stable:
             raise ValueError("Live metadata changed during refresh; waiting for a stable snapshot.")
-        connection.execute("BEGIN IMMEDIATE")
-        current_paths, current_folders = _scope(connection, library_root)
+        with performance_log.measure_phase("cache_update"):
+            connection.execute("BEGIN IMMEDIATE")
+        with performance_log.measure_phase("scope"):
+            current_paths, current_folders = _scope(connection, library_root)
         if current_paths != paths or current_folders != folders:
             raise ValueError("Indexed paths changed during metadata refresh; retrying.")
-        for path in paths:
-            sorter_engine._cache_ableton_tags(connection, path, assignments)
-        if _fingerprint(paths, folders) != snapshot:
+        with performance_log.measure_phase("cache_update"):
+            for path in paths:
+                sorter_engine._cache_ableton_tags(connection, path, assignments)
+        with performance_log.measure_phase("verify_snapshot"):
+            stable = _fingerprint(paths, folders) == snapshot
+        if not stable:
             raise ValueError("Live metadata changed before cache commit; cached tags retained.")
-        connection.commit()
+        with performance_log.measure_phase("cache_commit"):
+            connection.commit()
         return "refreshed", snapshot
     finally:
         connection.close()

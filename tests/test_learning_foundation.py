@@ -179,9 +179,7 @@ class LearningFoundationTests(unittest.TestCase):
         self.assertEqual(0.95, sorter.preview_records[0]["confidence"])
         self.assertIn("category:Kicks", sorter.preview_records[0]["tags"])
 
-        indexed = sorter_engine.get_indexed_asset(sample_path)
-        self.assertEqual("filename_rule", indexed["reason"])
-        self.assertIn("category:Kicks", indexed["tags"])
+        self.assertFalse(os.path.exists(sorter_engine.ASSET_INDEX_FILE))
 
     def test_cancelled_sorter_leaves_file_untouched(self):
         source = os.path.join(self.temp_dir.name, "incoming")

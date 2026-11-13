@@ -2,19 +2,21 @@ import importlib.machinery
 import importlib.util
 import ast
 import gc
+import json
 import os
 import tempfile
 import threading
 import time
 import tkinter as tk
 import unittest
-from tkinter import ttk
+from tkinter import font as tkfont, ttk
 from unittest import mock
 
 import gui_theme
 import sorter_engine
 import tab_matrix
 import xo_dialog
+import performance_log
 from tab_import import ImportTab
 from tab_organize import OrganizeTab
 from tab_integrations import IntegrationsTab
@@ -51,6 +53,19 @@ class CompletionNotificationTests(unittest.TestCase):
 
     def test_in_place_organize_preview_exposes_separate_tag_recommendation(self):
         panel = mock.MagicMock()
+        panel.winfo_toplevel.return_value._closing = False
+        panel._settings_snapshot.return_value = ("library", False)
+        panel._preview_settings = ("library", False)
+        panel.preview_sorter.reviewed_plan = {"kind": "ordinary"}
+        panel.btn_cancel = mock.Mock()
+        panel.btn_preview = mock.Mock()
+        panel.btn_undo = mock.Mock()
+        panel.btn_execute = mock.Mock()
+        panel.btn_export_plan = mock.Mock()
+        panel.progress_bar = mock.MagicMock()
+        panel.progress_text_var = mock.Mock()
+        panel.preview_sorter.operation_errors = []
+        panel.preview_sorter.cancel_event.is_set.return_value = False
         panel.preview_sorter.preview_records = [{
             "source": os.path.join("library", "Other One-Shots", "unknown.wav"),
             "filename": "unknown.wav",
@@ -63,7 +78,10 @@ class CompletionNotificationTests(unittest.TestCase):
         with mock.patch("tab_organize.show_notice") as notice:
             OrganizeTab.show_preview_results(panel, {}, False)
         self.assertIn("Sounds|Snare", panel.write_console_message.call_args.args[0])
-        self.assertIn("normal routing plan is unchanged", panel.write_console_message.call_args.args[0])
+        messages = "\n".join(
+            call.args[0] for call in panel.write_console_message.call_args_list
+        )
+        self.assertIn("normal routing plan is unchanged", messages)
         self.assertEqual("No planned moves", notice.call_args.kwargs["heading"])
         self.assertIn("1 manual Live-tag", notice.call_args.kwargs["cards"][0][0])
 
@@ -78,13 +96,30 @@ class CompletionNotificationTests(unittest.TestCase):
                 panel = mock.MagicMock()
                 panel.active_sorter = None
                 panel.preview_sorter.preview_records = []
+                panel.preview_sorter.operation_errors = []
+                panel.preview_sorter.cancel_event.is_set.return_value = False
+                if method_name == "show_preview_results":
+                    panel.winfo_toplevel.return_value._closing = False
+                    panel._settings_snapshot.return_value = ("library", False)
+                    panel._preview_settings = ("library", False)
+                    panel.preview_sorter.reviewed_plan = {"kind": "ordinary"}
+                    panel.btn_cancel = mock.Mock()
+                    panel.btn_preview = mock.Mock()
+                    panel.btn_undo = mock.Mock()
+                    panel.btn_execute = mock.Mock()
+                    panel.btn_export_plan = mock.Mock()
+                    panel.progress_bar = mock.MagicMock()
+                    panel.progress_text_var = mock.Mock()
                 with mock.patch("tab_matrix.rescan_suggestions"), mock.patch(
                     "tab_matrix.messagebox.showinfo"
                 ), mock.patch("tab_organize.show_notice"):
                     getattr(panel_class, method_name)(panel, *arguments)
-                panel.winfo_toplevel().event_generate.assert_called_once_with(
-                    "<<LibraryChanged>>", when="tail"
-                )
+                if method_name == "show_preview_results":
+                    panel.winfo_toplevel().event_generate.assert_not_called()
+                else:
+                    panel.winfo_toplevel().event_generate.assert_called_once_with(
+                        "<<LibraryChanged>>", when="tail"
+                    )
 
     def test_nested_repair_notifies_after_approved_operation(self):
         panel = mock.Mock()
@@ -116,6 +151,118 @@ class FoundationUiTests(unittest.TestCase):
             patcher = mock.patch.object(target, attribute, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+        config = sorter_engine._default_config()
+        config["ACTIVE_LIBRARY_PATH"] = self.temp_dir.name
+        sorter_engine._write_config(config, create_backup=False)
+
+    def test_xo_default_destination_uses_platform_home_path(self):
+        home = os.path.join(self.temp_dir.name, "user home")
+        self.assertEqual(
+            os.path.join(home, "XO Samples for Filters"),
+            xo_dialog.default_destination(home),
+        )
+
+    def test_confirmation_buttons_fit_full_labels_at_multiple_scales(self):
+        root = self.create_root()
+        original_scaling = root.tk.call("tk", "scaling")
+        self.addCleanup(root.tk.call, "tk", "scaling", original_scaling)
+        for scaling, approve in ((1.0, True), (1.5, False), (2.0, True)):
+            with self.subTest(scaling=scaling):
+                root.tk.call("tk", "scaling", scaling)
+                measurements = []
+
+                def inspect_dialog():
+                    dialog = next(widget for widget in root.winfo_children()
+                                  if isinstance(widget, tk.Toplevel))
+                    row = dialog.winfo_children()[-1]
+                    buttons = row.winfo_children()
+                    for button in buttons:
+                        text_width = tkfont.Font(font=button.cget("font")).measure(button.cget("text"))
+                        padding = button.winfo_pixels(button.cget("padx"))
+                        measurements.append((button.winfo_width(), text_width + 2 * padding,
+                                             button.winfo_x(), row.winfo_width()))
+                    next(button for button in buttons
+                         if (button.cget("text") != "Cancel") == approve).invoke()
+
+                root.after(50, inspect_dialog)
+                result = tab_matrix.ask_confirm(
+                    root, "Replace older XO output?",
+                    "Confirm only if this is your dedicated generated XO folder.",
+                    "Replace and keep backup",
+                )
+                self.assertEqual(result, approve)
+                self.assertEqual(len(measurements), 2)
+                for width, required_width, left, row_width in measurements:
+                    self.assertGreaterEqual(width, required_width)
+                    self.assertGreaterEqual(left, 0)
+                    self.assertLessEqual(left + width, row_width)
+
+    def test_normal_library_render_automatically_records_timings(self):
+        root = self.create_root()
+        sample = os.path.join(self.temp_dir.name, "private kick.wav")
+        with open(sample, "wb") as handle:
+            handle.write(b"audio")
+        sorter_engine.index_asset(sample, self.temp_dir.name, "test", 1.0, [])
+        panel = TagsTab(root, None)
+        panel.search_var.set("private")
+        panel._render_results(load_sidebar=False)
+        with open(next(performance_log.log_directory().glob("*.jsonl")), encoding="utf-8") as handle:
+            records = [json.loads(line) for line in handle]
+        record = next(record for record in records if record["operation"] == "library_page_render")
+        self.assertTrue(record["has_search"])
+        self.assertEqual(1, record["visible_rows"])
+        self.assertNotIn("private", str(record))
+
+    def test_import_exposes_history_and_recovery_outside_setup_at_minimum_window_size(self):
+        root = self.create_root()
+        root.geometry("1036x740")
+        panel = ImportTab(root)
+        panel.pack(fill="both", expand=True)
+        root.update()
+        self.assertEqual("Cancel import", panel.cancel_btn.cget("text"))
+        self.assertEqual("disabled", panel.cancel_btn.cget("state"))
+        self.assertFalse(hasattr(panel, "undo_btn"))
+        self.assertFalse(panel.audio_only_var.get())
+        panel.copy_mode_var.set(False)
+        panel.audio_only_check.invoke()
+        self.assertFalse(panel.copy_mode_var.get())
+        self.assertEqual("normal", panel.move_radio.cget("state"))
+        panel.audio_only_check.invoke()
+        self.assertEqual("normal", panel.move_radio.cget("state"))
+        for button in (panel.cancel_btn, panel.audio_only_check):
+            self.assertTrue(button.winfo_ismapped())
+            self.assertLessEqual(
+                button.winfo_rootx() + button.winfo_width(),
+                root.winfo_rootx() + root.winfo_width(),
+            )
+
+        path = os.path.join(self.temp_dir.name, "moves_approved.jsonl")
+        loader = importlib.machinery.SourceFileLoader(
+            "history_ui_app", os.path.join(os.path.dirname(os.path.dirname(__file__)), "AbletonLibraryManager.pyw")
+        )
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        root.organize_panel = mock.Mock()
+        root.import_dashboard = mock.Mock()
+        root._undo_selected_history = lambda: module.ProductionStudioManagerApp._undo_selected_history(root)
+        root._refresh_history_list = mock.Mock()
+        module.ProductionStudioManagerApp.open_history_recovery(root)
+        self.assertTrue(root._history_window.winfo_exists())
+        history_action = root._history_tree.insert(
+            "", "end", values=("Import / Move", "today", "1", path),
+        )
+        root._history_paths[history_action] = path
+        root._history_tree.selection_set(history_action)
+        module.ProductionStudioManagerApp._undo_selected_history(root)
+        root.import_dashboard.undo_move_import.assert_called_once_with(path)
+        actions = [
+            widget.cget("text")
+            for widget in root._history_window.winfo_children()
+            for widget in widget.winfo_children()
+            if widget.winfo_class() in ("TButton", "Button")
+        ]
+        self.assertIn("Undo selected…", actions)
 
     def create_root(self, factory=tk.Tk):
         try:
@@ -131,37 +278,6 @@ class FoundationUiTests(unittest.TestCase):
         self.addCleanup(close_root)
         return root
 
-    def test_xo_folder_suggestion_error_is_visible_and_live_mode_reaches_scan(self):
-        root = self.create_root()
-        with mock.patch.object(xo_dialog.xo_filter, "suggest_types", side_effect=ValueError("Invalid manual sidecar")) as scan, mock.patch.object(
-            xo_dialog.messagebox, "showerror"
-        ) as error:
-            xo_dialog.open_type_editor(
-                root, root, self.temp_dir.name, lambda: None, use_live_tags=True
-            )
-            editor = next(child for child in root.winfo_children() if isinstance(child, tk.Toplevel))
-            widgets = [editor]
-            find_button = None
-            listings = []
-            while widgets:
-                widget = widgets.pop()
-                widgets.extend(widget.winfo_children())
-                if widget.winfo_class() in ("Button", "TButton") and widget.cget("text") == "Find suggestions":
-                    find_button = widget
-                if widget.winfo_class() == "Listbox":
-                    listings.append(widget)
-            self.assertIsNotNone(find_button)
-            find_button.invoke()
-            deadline = time.monotonic() + 3
-            while not error.called and time.monotonic() < deadline:
-                root.update()
-                time.sleep(0.01)
-            scan.assert_called_once_with(self.temp_dir.name, include_loops=False, use_live_tags=True)
-            error.assert_called_once()
-            self.assertIn("Invalid manual sidecar", error.call_args.args[1])
-            self.assertTrue(any("Suggestion scan failed" in widget.get(0) for widget in listings if widget.size()))
-            self.assertEqual("normal", find_button.cget("state"))
-
     def test_integrations_opens_existing_builder(self):
         root = self.create_root()
         tab = IntegrationsTab(root)
@@ -170,6 +286,19 @@ class FoundationUiTests(unittest.TestCase):
         with mock.patch("tab_integrations.xo_dialog.open_xo_builder") as builder:
             tab.xo_button.invoke()
         builder.assert_called_once_with(tab)
+        labels = [
+            widget.cget("text") for widget in tab.winfo_children()
+            if isinstance(widget, tk.Label)
+        ]
+        self.assertTrue(any("Prepare sample folders" in text for text in labels))
+        xo_labels = []
+        pending = [tab]
+        while pending:
+            widget = pending.pop()
+            pending.extend(widget.winfo_children())
+            if isinstance(widget, tk.Label):
+                xo_labels.append(widget.cget("text"))
+        self.assertTrue(any("Add the output in XO and verify the sounds" in text for text in xo_labels))
         browser = TagsTab(root)
         self.assertNotIn("xo_button", browser.__dict__)
 
@@ -273,6 +402,23 @@ class FoundationUiTests(unittest.TestCase):
             self.assertIn("27 / 30", text)
             self.assertIn("Quasar 1.wav", text)
             self.assertIn("Pending only", text)
+
+    def test_rules_explains_candidate_refresh_side_effects(self):
+        root = self.create_root()
+        with mock.patch.object(tab_matrix.rule_suggester, "suggest_rules", return_value=[]):
+            tab_matrix.build(root, ttk.Label(root))
+            labels = []
+            pending = [root]
+            while pending:
+                widget = pending.pop()
+                pending.extend(widget.winfo_children())
+                if isinstance(widget, tk.Label):
+                    labels.append(widget.cget("text"))
+        explanation = next((text for text in labels if "Refresh scans the current User Library" in text), "")
+        self.assertTrue(explanation)
+        self.assertIn("mark unsupported pending candidates", explanation)
+        self.assertIn("never activates a rule or moves files", explanation)
+        self.assertIn("after imports or Organize", explanation)
 
     def test_rule_approval_rechecks_in_background_and_reports_stale_evidence(self):
         root = self.create_root()
@@ -422,7 +568,65 @@ class FoundationUiTests(unittest.TestCase):
             review.assert_called_once_with((("quasar", "Snares"), ("nebula", "Snares")), "approved")
             self.assertIn("Approved 2 suggestion(s)", status.cget("text"))
 
-    def test_xo_opt_in_scan_evidence_and_failed_rescan_disable_build(self):
+    def test_xo_destination_verification_keeps_ui_responsive_and_can_be_cancelled(self):
+        root = self.create_root()
+        xo_dialog.open_xo_builder(root)
+        win = next(widget for widget in root.winfo_children() if isinstance(widget, tk.Toplevel))
+        pending, widgets = [win], []
+        while pending:
+            widget = pending.pop()
+            widgets.append(widget)
+            pending.extend(widget.winfo_children())
+        scan = next(w for w in widgets if isinstance(w, tk.Button) and w.cget("text") == "Scan")
+        build = next(w for w in widgets if isinstance(w, tk.Button) and w.cget("text") == "Build folder")
+        cancel = next(w for w in widgets if isinstance(w, tk.Button) and w.cget("text") == "Cancel")
+        stats = {"scanned": 1, "unclassified": 0, "loops_skipped": 0}
+        with mock.patch("xo_dialog.xo_filter.build_plan", return_value=({"Kicks": ["fixture.wav"]}, stats)):
+            scan.invoke()
+            deadline = time.monotonic() + 3
+            while scan.cget("state") == "disabled" and time.monotonic() < deadline:
+                root.update()
+                time.sleep(0.01)
+        entered = threading.Event()
+        worker_threads, heartbeats = [], []
+        def blocked_review(*args, should_cancel, status, **kwargs):
+            worker_threads.append(threading.get_ident())
+            status("Checking previous output: fixture.wav")
+            entered.set()
+            deadline = time.monotonic() + 3
+            while not should_cancel() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            if not should_cancel():
+                raise TimeoutError("UI failed to cancel blocked verification")
+            raise xo_dialog.xo_filter.BuildCancelled()
+        with mock.patch("xo_dialog.xo_filter.review_output_destination", side_effect=blocked_review), \
+                mock.patch("xo_dialog.xo_filter.rebuild_folder") as rebuild:
+            build.invoke()
+            self.assertTrue(entered.wait(1))
+            root.after(0, lambda: heartbeats.append(True))
+            deadline = time.monotonic() + 3
+            while not any(
+                isinstance(w, tk.Label) and "Checking previous output: fixture.wav" in w.cget("text")
+                for w in widgets
+            ) and time.monotonic() < deadline:
+                root.update()
+                time.sleep(0.01)
+            self.assertEqual([True], heartbeats)
+            self.assertNotEqual(threading.get_ident(), worker_threads[0])
+            self.assertFalse(any(
+                isinstance(w, tk.Label) and "Elapsed:" in w.cget("text") for w in widgets
+            ))
+            self.assertTrue(cancel.winfo_ismapped())
+            cancel.invoke()
+            while scan.cget("state") == "disabled" and time.monotonic() < deadline:
+                root.update()
+                time.sleep(0.01)
+            self.assertTrue(any(
+                isinstance(w, tk.Label) and "Build cancelled" in w.cget("text") for w in widgets
+            ))
+            rebuild.assert_not_called()
+
+    def test_xo_simple_scan_loop_filter_and_failed_rescan_disable_build(self):
         root = self.create_root()
         xo_dialog.open_xo_builder(root)
         win = next(widget for widget in root.winfo_children() if isinstance(widget, tk.Toplevel))
@@ -434,17 +638,23 @@ class FoundationUiTests(unittest.TestCase):
             pending.extend(widget.winfo_children())
         scan = next(widget for widget in widgets if isinstance(widget, tk.Button) and widget.cget("text") == "Scan")
         build = next(widget for widget in widgets if isinstance(widget, tk.Button) and widget.cget("text") == "Build folder")
-        evidence = next(widget for widget in widgets if isinstance(widget, tk.Button) and widget.cget("text") == "Evidence")
-        live = next(widget for widget in widgets if isinstance(widget, tk.Checkbutton)
-                    and widget.cget("text").startswith("Use manual Live"))
+        controls = [
+            widget.cget("text") for widget in widgets
+            if isinstance(widget, (tk.Button, tk.Checkbutton))
+        ]
+        self.assertEqual(
+            {"Change…", "Scan", "Build folder", "Close", "Cancel", "Include loops (XO works best with one-shots)"},
+            set(controls),
+        )
+        status = next(
+            widget for widget in widgets
+            if isinstance(widget, tk.Label) and widget.cget("text") == "Click Scan to see what will be created."
+        )
+        loops = next(widget for widget in widgets if isinstance(widget, tk.Checkbutton)
+                     and widget.cget("text").startswith("Include loops"))
         path = os.path.join(self.temp_dir.name, "unknown.wav")
         stats = {
             "scanned": 1, "unclassified": 0, "loops_skipped": 0,
-            "manual_classified": 1, "manual_conflicts": 0,
-            "evidence": [{
-                "path": path, "assignments": ["Sounds|Snare"], "status": "manual Live type",
-                "sound_type": "Snares", "is_loop": False,
-            }]
         }
 
         def finish_scan():
@@ -455,31 +665,89 @@ class FoundationUiTests(unittest.TestCase):
             self.assertEqual("normal", scan.cget("state"))
 
         with mock.patch("xo_dialog.xo_filter.build_plan", return_value=({"Snares": [path]}, stats)) as plan:
-            live.invoke()
             scan.invoke()
             finish_scan()
-            self.assertTrue(plan.call_args.kwargs["use_live_tags"])
-        self.assertEqual("normal", build.cget("state"))
-        evidence.invoke()
-        root.update()
-        detail = next(widget for widget in win.winfo_children() if isinstance(widget, tk.Toplevel))
-        from tkinter.scrolledtext import ScrolledText
-        texts = [widget for child in detail.winfo_children() for widget in child.winfo_children()
-                 if isinstance(widget, ScrolledText)]
-        self.assertIn("Sounds|Snare", texts[0].get("1.0", "end"))
-        detail.destroy()
-        with mock.patch("xo_dialog.xo_filter.build_folder", return_value={
-            "linked": 1, "copied": 0, "existing": 0, "failed": 0
-        }) as build_folder:
-            build.invoke()
+            self.assertFalse(plan.call_args.kwargs.get("use_live_tags", False))
+            self.assertFalse(plan.call_args.kwargs["include_loops"])
+            loops.invoke()
             finish_scan()
+            self.assertEqual(2, plan.call_count)
+            self.assertTrue(plan.call_args.kwargs["include_loops"])
+        self.assertEqual("normal", build.cget("state"))
+        import library_jobs
+        with library_jobs.coordinator.claim("Import"), mock.patch(
+            "gui_theme.messagebox.showwarning"
+        ) as busy, mock.patch("xo_dialog.xo_filter.build_plan") as blocked_scan, mock.patch(
+            "xo_dialog.xo_filter.rebuild_folder"
+        ) as blocked_build:
+            scan.invoke()
+            build.invoke()
+        self.assertEqual(2, busy.call_count)
+        blocked_scan.assert_not_called()
+        blocked_build.assert_not_called()
+        self.assertEqual("normal", build.cget("state"))
+        with mock.patch("xo_dialog.xo_filter.rebuild_folder", return_value={
+            "linked": 1, "copied": 0, "existing": 0, "failed": 1,
+            "cancelled": False,
+            "errors": [{
+                "source": path, "destination": os.path.join(self.temp_dir.name, "XO", "Snares", "unknown.wav"),
+                "error": "permission denied",
+            }],
+        }) as build_folder, mock.patch("xo_dialog.show_notice") as failure_notice:
+            build.invoke()
+            deadline = time.monotonic() + 3
+            while "Build failed" not in status.cget("text") and time.monotonic() < deadline:
+                root.update()
+                time.sleep(0.01)
             self.assertEqual({"Snares": [path]}, build_folder.call_args.args[0])
-        with mock.patch("xo_dialog.xo_filter.build_plan", side_effect=ValueError("Invalid Ableton sidecar")):
+            self.assertIn("Previous output was not replaced", status.cget("text"))
+            self.assertIn("Resolve the reported file or destination problem", failure_notice.call_args.args[2])
+            self.assertEqual(failure_notice.call_args.kwargs["cards"][0][0], path)
+            self.assertIn("permission denied", failure_notice.call_args.kwargs["cards"][0][1])
+        output_parent = tempfile.TemporaryDirectory()
+        self.addCleanup(output_parent.cleanup)
+        output = os.path.join(output_parent.name, "old-xo-output")
+        os.mkdir(output)
+        old_file = os.path.join(output, "keep.txt")
+        with open(old_file, "wb") as handle:
+            handle.write(b"older output")
+        destination_entry = next(widget for widget in widgets if isinstance(widget, tk.Entry))
+        destination_entry.delete(0, tk.END)
+        destination_entry.insert(0, output)
+        with mock.patch("xo_dialog.ask_confirm", return_value=False) as confirm, mock.patch(
+            "xo_dialog.xo_filter.rebuild_folder",
+        ) as rebuild:
+            build.invoke()
+            deadline = time.monotonic() + 3
+            while confirm.call_count == 0 and time.monotonic() < deadline:
+                root.update()
+                time.sleep(0.01)
+            confirm.assert_called_once()
+            while scan.cget("state") == "disabled" and time.monotonic() < deadline:
+                root.update()
+                time.sleep(0.01)
+            rebuild.assert_not_called()
+        with mock.patch("xo_dialog.ask_confirm", return_value=True), mock.patch(
+            "xo_dialog.xo_filter.rebuild_folder", return_value={
+                "linked": 1, "copied": 0, "existing": 0, "failed": 0, "cancelled": False,
+                "published": True, "retained_backup": output + ".previous-fixture",
+            },
+        ) as rebuild:
+            build.invoke()
+            deadline = time.monotonic() + 3
+            while "Folder replaced" not in status.cget("text") and time.monotonic() < deadline:
+                root.update()
+                time.sleep(0.01)
+            self.assertTrue(rebuild.call_args.kwargs["adopt_existing"])
+            self.assertIn("Previous unmanaged output retained", status.cget("text"))
+            self.assertIn("verify the expected sounds", status.cget("text"))
+        with open(old_file, "rb") as handle:
+            self.assertEqual(b"older output", handle.read())
+        with mock.patch("xo_dialog.xo_filter.build_plan", side_effect=ValueError("Invalid XO folder configuration")):
             scan.invoke()
             finish_scan()
         self.assertEqual("disabled", build.cget("state"))
-        self.assertEqual("disabled", evidence.cget("state"))
-        self.assertTrue(any("Invalid Ableton sidecar" in widget.cget("text")
+        self.assertTrue(any("Invalid XO folder configuration" in widget.cget("text")
                             for widget in widgets if isinstance(widget, tk.Label)))
         many_types = {f"Group {index}": [path] for index in range(40)}
         with mock.patch("xo_dialog.xo_filter.build_plan", return_value=(many_types, stats)):

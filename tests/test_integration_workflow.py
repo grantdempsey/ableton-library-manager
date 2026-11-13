@@ -54,7 +54,7 @@ class LibraryWorkflowIntegrationTests(unittest.TestCase):
         self.assertEqual(1, len(callbacks))
         return sorter, callbacks[0]
 
-    def test_preview_then_copy_indexes_source_and_destination(self):
+    def test_preview_is_read_only_then_copy_indexes_destination(self):
         source = os.path.join(self.temp_dir.name, "incoming")
         destination = os.path.join(self.temp_dir.name, "library")
         os.makedirs(source)
@@ -69,6 +69,7 @@ class LibraryWorkflowIntegrationTests(unittest.TestCase):
         self.assertTrue(preview_mode)
         self.assertEqual(1, len(preview.preview_records))
         self.assertTrue(os.path.exists(sample_path))
+        self.assertFalse(os.path.exists(sorter_engine.ASSET_INDEX_FILE))
 
         copy_sorter, (copy_stats, copy_mode) = self._run_sorter(
             source, destination, copy_mode=True
@@ -80,7 +81,7 @@ class LibraryWorkflowIntegrationTests(unittest.TestCase):
         )
         self.assertTrue(os.path.exists(sample_path))
         self.assertTrue(os.path.exists(destination_path))
-        self.assertIsNotNone(sorter_engine.get_indexed_asset(sample_path))
+        self.assertIsNone(sorter_engine.get_indexed_asset(sample_path))
         self.assertIsNotNone(sorter_engine.get_indexed_asset(destination_path))
         self.assertEqual([], copy_sorter.operation_errors)
 

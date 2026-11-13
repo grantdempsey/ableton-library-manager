@@ -575,6 +575,17 @@ class LiveCatalogTests(unittest.TestCase):
         self.assertEqual(1, len(racks))
         self.assertTrue(racks[0].path.endswith("rack.adg"))
 
+    def test_vocabulary_rejects_referenced_keyword_with_incomplete_hierarchy(self):
+        connection = sqlite3.connect(self.database)
+        try:
+            connection.execute("UPDATE files SET parent_id=999 WHERE file_id=8")
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaisesRegex(ValueError, "Incomplete Live catalog vocabulary hierarchy"):
+            live_catalog.read_vocabulary(self.database)
+
     def test_additional_hierarchy_and_browser_fields_preserve_provenance(self):
         connection = sqlite3.connect(self.database)
         try:

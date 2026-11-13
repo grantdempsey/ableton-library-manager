@@ -7,6 +7,7 @@ import subprocess
 import threading
 import tkinter as tk
 from tkinter import messagebox
+import library_jobs
 
 # --- SINGLE SOURCE OF TRUTH PALETTE CONFIGURATION ---
 THEME = {
@@ -20,10 +21,10 @@ THEME = {
     # Functional accents
     "accent_neon": "#a8e063",  # Soft green for active state and success
     "accent_gold": "#f4c95d",  # Warm gold for attention and playback
-    "btn_primary": "#a8e063",  # Confirmed/constructive action (matches accent_neon)
-    "btn_primary_hover": "#bff080",
-    "btn_primary_fg": "#1c2410",  # Dark text for legibility on the bright green
-    "btn_execute": "#a8e063",  # Backwards-compatible primary action name
+    "btn_primary": "#424a56",  # Muted slate for primary actions
+    "btn_primary_hover": "#535f70",
+    "btn_primary_fg": "#e4e6eb",
+    "btn_execute": "#424a56",  # Backwards-compatible primary action name
     "btn_secondary": "#34373d",  # Neutral navigation and utility action
     "btn_secondary_hover": "#454951",
     "btn_playback": "#66552c",  # Audio preview and attention action
@@ -48,17 +49,66 @@ ACCENT_GREY = THEME["hover_dark"]
 BORDER = THEME["border"]
 
 
-def start_background_job(owner, target, *, cancel=None):
-    """Register jobs on the Tk thread so shutdown can wait before destroying Tk."""
+def library_job_available(owner, label, *, notify=True):
+    active = library_jobs.coordinator.active_label
+    if active is None:
+        return True
+    if notify:
+        messagebox.showwarning(
+            "Library is busy",
+            f"{active} is still running. Wait for it to finish or cancel it before starting {label}. "
+            "No new operation was started.",
+            parent=owner,
+        )
+    return False
+
+
+def claim_library_job(owner, label, *, notify=True):
+    lease = library_jobs.coordinator.claim(label)
+    if lease is None and notify:
+        messagebox.showwarning(
+            "Library is busy",
+            f"{library_jobs.coordinator.active_label or 'Another library operation'} is still running. "
+            f"Wait for it to finish or cancel it before starting {label}. No new operation was started.",
+            parent=owner,
+        )
+    return lease
+
+
+def start_background_job(owner, target, *, cancel=None, library_job=None, notify_busy=True,
+                         lease=None, release_lease=True):
+    """Track work through shutdown; retained leases require a caller handoff/release."""
     root = owner._root()
     if getattr(root, "_closing", False):
+        if lease is not None:
+            lease.release()
         return None
+    if library_job is not None and lease is None:
+        lease = claim_library_job(owner, library_job, notify=notify_busy)
+        if lease is None:
+            return None
+    if lease is not None and not lease.active:
+        raise ValueError("Cannot start work with expired library job ownership.")
     jobs = getattr(root, "_background_jobs", [])
     jobs[:] = [(thread, stop) for thread, stop in jobs if thread.is_alive()]
-    thread = threading.Thread(target=target, daemon=False)
+    def work():
+        completed = False
+        try:
+            target()
+            completed = True
+        finally:
+            if lease is not None and (release_lease or not completed):
+                lease.release()
+    thread = threading.Thread(target=work, daemon=False)
     jobs.append((thread, cancel))
     root._background_jobs = jobs
-    thread.start()
+    try:
+        thread.start()
+    except RuntimeError:
+        if lease is not None:
+            lease.release()
+        jobs.remove((thread, cancel))
+        raise
     return thread
 
 # 🌎 GLOBAL SYSTEM ENVIRONMENT RECONNAISSANCE MATRIX
@@ -88,6 +138,12 @@ def resolve_user_library_path():
 
 
 USER_LIBRARY_PATH = resolve_user_library_path()
+
+
+def set_active_library_path(path):
+    global USER_LIBRARY_PATH
+    USER_LIBRARY_PATH = os.path.normpath(path)
+
 
 def reveal_folder_in_explorer(folder_path):
     """Safely opens the native operating system file explorer at the specified path."""

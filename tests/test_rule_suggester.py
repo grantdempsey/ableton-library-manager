@@ -64,6 +64,30 @@ class RuleSuggesterTests(unittest.TestCase):
         )
         self.assertEqual(21, rain["count"])
 
+    def test_filename_evidence_classification_uses_the_actual_nested_sample_path(self):
+        nested_nature = os.path.join(self.catch_all, "Nature")
+        os.makedirs(nested_nature)
+        self._files([f"Splash {index}.wav" for index in range(20)], folder=nested_nature)
+
+        splash = next(
+            suggestion for suggestion in rule_suggester.suggest_rules(self.lib)
+            if suggestion["token"] == "splash"
+        )
+
+        self.assertEqual("Nature", splash["target"])
+        self.assertEqual(20, splash["count"])
+
+    def test_suggestion_refresh_reports_malformed_xo_folder_configuration(self):
+        config = os.path.join(self.tmp, "invalid-profile.json")
+        with open(config, "w", encoding="utf-8") as handle:
+            handle.write('{"XO_CUSTOM_TYPES":{"Custom":"not a list"}}')
+        original_error = sorter_engine.XO_CONFIG_LOAD_ERROR
+        self.addCleanup(setattr, sorter_engine, "XO_CONFIG_LOAD_ERROR", original_error)
+
+        with mock.patch.object(sorter_engine, "CONFIG_FILE", config):
+            with self.assertRaisesRegex(ValueError, "XO_CUSTOM_TYPES"):
+                rule_suggester.suggest_rules(self.lib)
+
     def test_default_requires_twenty_files_and_explicit_lower_threshold_is_preserved(self):
         self._files([f"Pack - Rain {i}.wav" for i in range(19)])
         self.assertEqual([], rule_suggester.suggest_rules(self.lib))

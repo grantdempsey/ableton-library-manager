@@ -1111,6 +1111,7 @@ class LibraryInspectorTests(unittest.TestCase):
         self.assertEqual([], ableton_tags.sample_tags(self.paths[0]))
         self.assertEqual([], ableton_tags.sample_tags(self.paths[1]))
         self.assertIn("Changes saved.", dialog.status_var.get())
+        self.assertIn("Live acceptance is not verified.", dialog.status_var.get())
 
     def test_canceling_direct_save_confirmation_leaves_assignments_unchanged(self):
         ableton_tags.prepare_edit(self.paths[:1], "Genres|Keep").commit()

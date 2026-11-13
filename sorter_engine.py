@@ -1,5 +1,6 @@
 # sorter_engine.py - Piece 1: Core Configuration Matrices & Global State Setup
 import os
+import ntpath
 import sys
 import json
 import re
@@ -10,6 +11,9 @@ import shutil
 import subprocess
 import threading
 import tempfile
+import uuid
+import time
+import copy
 from functools import wraps
 import sqlite3
 import datetime
@@ -19,21 +23,35 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import ableton_tags
 import tag_evidence
+import serum_presets
+import library_jobs
+import library_state
+import performance_log
 
 # Core Shared Platform State Configuration Mapping
 def _runtime_file(name):
     if sys.platform == "darwin" and getattr(sys, "frozen", False):
         directory = os.path.expanduser("~/Library/Application Support/AbletonLibraryManager")
-        os.makedirs(directory, exist_ok=True)
         return os.path.join(directory, name)
-    return name
+    return os.path.join(library_state.user_data_directory(
+        system=sys.platform, home=os.path.expanduser("~"), environment=os.environ,
+    ), name)
 
 
 CONFIG_FILE = _runtime_file("library_config.json")
 ASSET_INDEX_FILE = _runtime_file("library_assets.db")
+ACTIVE_LIBRARY_PATH = library_state.default_user_library()
+STATE_MIGRATION_WARNINGS = []
+_STATE_MIGRATION_DONE = False
+_DEFAULT_CONFIG_FILE = CONFIG_FILE
+_DEFAULT_ASSET_INDEX_FILE = ASSET_INDEX_FILE
 AUDIO_EXTS = {
     ".wav", ".aif", ".aiff", ".flac", ".mp3", ".ogg", ".oga", ".m4a",
     ".aac", ".wma", ".opus", ".caf", ".au", ".snd"
+}
+SUPPORTED_PRESET_EXTS = {
+    ".fxp", ".fxb", ".serumpreset", ".vital", ".adg", ".adv", ".alc",
+    ".amxd", ".nki", ".nkm", ".nksf", ".aupreset", ".h2p", ".h2p2",
 }
 INDEXABLE_SOUND_EXTS = AUDIO_EXTS | {".mid", ".midi"}
 INDEXABLE_SOUND_SUFFIXES = tuple(sorted(INDEXABLE_SOUND_EXTS))
@@ -55,6 +73,8 @@ _ASSET_SCHEMA_READY = set()
 _ASSET_SCHEMA_LOCK = threading.Lock()
 _CONFIG_LOCK = threading.RLock()
 _UNSPECIFIED_CONFIG = object()
+CONFIG_LOAD_ERROR = None
+XO_CONFIG_LOAD_ERROR = None
 
 
 def serialized_config(function):
@@ -79,6 +99,7 @@ def _default_learning_state():
 
 def _default_config():
     return {
+        "ACTIVE_LIBRARY_PATH": library_state.default_user_library(),
         "BPM_RANGES": [[0, 99, "99 BPM and Below"], [100, 114, "100-114 BPM"],
                        [115, 129, "115-129 BPM"], [130, 149, "130-149 BPM"],
                        [150, 174, "150-174 BPM"], [175, 999, "175 BPM and Above"]],
@@ -96,13 +117,62 @@ def _default_config():
             "(?:^|[^a-zA-Z0-9])cym(?:bal)?(?:s)?(?:$|[^a-zA-Z0-9])": "Cymbals & Crashes",
             "(?:^|[^a-zA-Z0-9])808(?:s)?(?:$|[^a-zA-Z0-9])": "808 Sub Bass"
         },
-        "SYNTH_EXTS": {".fxp": "Serum Presets", ".fxb": "Serum Banks"},
+        "SYNTH_EXTS": {".fxp": serum_presets.USER_FOLDER, ".fxb": "Serum Banks",
+                       ".serumpreset": serum_presets.USER_FOLDER},
         "NATIVE_EXTS": {".adg": "Live Instrument Racks", ".amxd": "Max For Live Devices"},
         "IGNORED_DIRECTORIES": ["eastwest", "kontakt library", "spectrasonics", "steam",
                                "vstplugins", "common files"],
         "LOOP_LAYOUT": list(LOOP_LEVELS),
         **_default_learning_state()
     }
+
+def _validate_route_folder(folder):
+    if not isinstance(folder, str) or not folder.strip():
+        raise ValueError("Routing destination must be a non-empty relative folder.")
+    parts = re.split(r"[/\\]", folder)
+    if (ntpath.splitdrive(folder)[0] or folder.startswith(("/", "\\"))
+            or any(part in (".", "..") or not part.strip()
+                   or part.rstrip(" .") != part for part in parts)
+            or any(character in folder for character in ('\x00', ':'))):
+        raise ValueError(f"Routing destination must stay inside the selected library: {folder!r}")
+
+
+def _resolved_route_path(path):
+    resolved = os.path.realpath(path)
+    if os.name == "nt":
+        if resolved.startswith("\\\\?\\UNC\\"):
+            resolved = "\\\\" + resolved[8:]
+        elif resolved.startswith("\\\\?\\") and re.match(r"[a-zA-Z]:\\", resolved[4:]):
+            resolved = resolved[4:]
+    return os.path.normcase(resolved)
+
+
+def _validate_destination(library_root, destination):
+    destination = destination.replace("\\", os.sep).replace("/", os.sep)
+    root = os.path.abspath(library_root)
+    target = os.path.abspath(destination)
+    try:
+        lexical_inside = os.path.normcase(os.path.commonpath((root, target))) == os.path.normcase(root)
+        resolved_root = _resolved_route_path(root)
+        resolved_target = _resolved_route_path(target)
+        resolved_inside = os.path.normcase(
+            os.path.commonpath((resolved_root, resolved_target))
+        ) == os.path.normcase(resolved_root)
+    except ValueError:
+        lexical_inside = resolved_inside = False
+    if not lexical_inside or not resolved_inside:
+        raise ValueError(f"Routing destination escapes the selected library: {destination}")
+    path = Path(target)
+    while os.path.normcase(str(path)) != os.path.normcase(root):
+        junction = (
+            os.name == "nt" and os.path.lexists(path)
+            and path.lstat().st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+        )
+        if path.is_symlink() or junction:
+            raise ValueError(f"Linked routing destination is not supported: {path}")
+        path = path.parent
+    return os.path.normpath(destination)
+
 
 def _validate_config(data):
     if not isinstance(data, dict):
@@ -118,8 +188,13 @@ def _validate_config(data):
     for key in ("DRUM_KEYWORDS", "SYNTH_EXTS", "NATIVE_EXTS"):
         if not isinstance(data.get(key, {}), dict):
             raise ValueError(f"{key} must be an object.")
+        for folder in data.get(key, {}).values():
+            _validate_route_folder(folder)
     if not isinstance(data.get("IGNORED_DIRECTORIES", []), list):
         raise ValueError("IGNORED_DIRECTORIES must be a list.")
+    if any(not isinstance(value, str) or not value.strip()
+           for value in data.get("IGNORED_DIRECTORIES", [])):
+        raise ValueError("IGNORED_DIRECTORIES must contain nonempty folder names.")
     if not isinstance(data.get("LEARNING_COUNTS", {}), dict):
         raise ValueError("LEARNING_COUNTS must be an object.")
     if not isinstance(data.get("LEARNED_RULE_CANDIDATES", []), list):
@@ -133,11 +208,30 @@ def _validate_config(data):
         raise ValueError("XO_CUSTOM_TYPES must map folder names to lists of keywords.")
     if not isinstance(data.get("RULE_METADATA", {}), dict):
         raise ValueError("RULE_METADATA must be an object.")
+    active_library = data.get("ACTIVE_LIBRARY_PATH", library_state.default_user_library())
+    if not isinstance(active_library, str) or not active_library.strip():
+        raise ValueError("ACTIVE_LIBRARY_PATH must be a non-empty path.")
     layout = data.get("LOOP_LAYOUT", list(LOOP_LEVELS))
     if (not isinstance(layout, list) or len(set(layout)) != len(layout)
             or any(level not in LOOP_LEVELS for level in layout)):
         raise ValueError("LOOP_LAYOUT must list each of 'bpm' and 'key' at most once.")
     return data
+
+
+def _validate_config_with_xo_fallback(data):
+    """Keep non-XO profile settings available without trusting malformed XO folders."""
+    global XO_CONFIG_LOAD_ERROR
+    try:
+        return _validate_config(data)
+    except ValueError as error:
+        if not isinstance(data, dict) or "XO_CUSTOM_TYPES" not in str(error):
+            raise
+        safe_data = dict(data)
+        safe_data.pop("XO_CUSTOM_TYPES", None)
+        validated = _validate_config(safe_data)
+        XO_CONFIG_LOAD_ERROR = f"XO folder configuration is invalid: {error}"
+        return validated
+
 
 @serialized_config
 def load_external_config():
@@ -145,22 +239,46 @@ def load_external_config():
     global BPM_RANGES, DRUM_KEYWORDS, SYNTH_EXTS, NATIVE_EXTS, IGNORED_DIRECTORIES
     global RULE_METADATA
     global SMART_LEARNING_ENABLED, LEARNING_COUNTS, LEARNED_RULE_CANDIDATES, LOOP_LAYOUT
+    global ACTIVE_LIBRARY_PATH, CONFIG_LOAD_ERROR
     if not os.path.exists(CONFIG_FILE):
         _write_config(_default_config(), create_backup=False)
     try:
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            user_rules = _validate_config(json.load(f))
+            user_rules = _validate_config_with_xo_fallback(json.load(f))
     except (OSError, json.JSONDecodeError, ValueError) as error:
         backup_path = f"{CONFIG_FILE}.bak"
         try:
             with open(backup_path, 'r', encoding='utf-8') as f:
-                user_rules = _validate_config(json.load(f))
+                user_rules = _validate_config_with_xo_fallback(json.load(f))
             os.replace(backup_path, CONFIG_FILE)
         except (OSError, json.JSONDecodeError, ValueError) as backup_error:
-            raise ValueError(
+            CONFIG_LOAD_ERROR = (
                 f"Configuration is invalid ({error}) and no valid backup was found "
                 f"({backup_error})."
-            ) from error
+            )
+            raise ValueError(CONFIG_LOAD_ERROR) from error
+    upgraded_serum_rules = False
+    for extension in serum_presets.PRESET_EXTENSIONS:
+        if user_rules.get("SYNTH_EXTS", {}).get(extension) in (
+            "Serum Presets", "Serum Presets/Serum 2 Presets/Presets/User",
+        ):
+            user_rules["SYNTH_EXTS"][extension] = serum_presets.USER_FOLDER
+            upgraded_serum_rules = True
+    active_library = user_rules.get("ACTIVE_LIBRARY_PATH", library_state.default_user_library())
+    if not os.path.isabs(active_library):
+        active_library = os.path.abspath(active_library)
+    if user_rules.get("ACTIVE_LIBRARY_PATH") != active_library:
+        user_rules["ACTIVE_LIBRARY_PATH"] = active_library
+    if upgraded_serum_rules:
+        _write_config(user_rules)
+    CONFIG_LOAD_ERROR = None
+    return _apply_config_values(user_rules)
+
+
+def _apply_config_values(user_rules):
+    global BPM_RANGES, DRUM_KEYWORDS, SYNTH_EXTS, NATIVE_EXTS, IGNORED_DIRECTORIES
+    global RULE_METADATA, SMART_LEARNING_ENABLED, LEARNING_COUNTS
+    global LEARNED_RULE_CANDIDATES, LOOP_LAYOUT, ACTIVE_LIBRARY_PATH
     BPM_RANGES = [tuple(x) for x in user_rules.get("BPM_RANGES", [])]
     DRUM_KEYWORDS = user_rules.get("DRUM_KEYWORDS", {})
     SYNTH_EXTS = user_rules.get("SYNTH_EXTS", {})
@@ -171,6 +289,8 @@ def load_external_config():
     LEARNED_RULE_CANDIDATES = user_rules.get("LEARNED_RULE_CANDIDATES", [])
     RULE_METADATA = user_rules.get("RULE_METADATA", {})
     LOOP_LAYOUT = list(user_rules.get("LOOP_LAYOUT", LOOP_LEVELS))
+    active_library = user_rules.get("ACTIVE_LIBRARY_PATH", library_state.default_user_library())
+    ACTIVE_LIBRARY_PATH = os.path.abspath(os.path.normpath(active_library))
     for index, pattern in enumerate(DRUM_KEYWORDS):
         RULE_METADATA.setdefault(pattern, {
             "priority": len(DRUM_KEYWORDS) - index,
@@ -179,11 +299,50 @@ def load_external_config():
         })
     return user_rules
 
+
+_apply_config_values(_default_config())
+
+
+def initialize_runtime_storage():
+    """Migrate the current working/profile state before the app loads persisted settings."""
+    global _STATE_MIGRATION_DONE, STATE_MIGRATION_WARNINGS
+    if _STATE_MIGRATION_DONE:
+        return list(STATE_MIGRATION_WARNINGS)
+    if CONFIG_FILE != _DEFAULT_CONFIG_FILE or ASSET_INDEX_FILE != _DEFAULT_ASSET_INDEX_FILE:
+        return []
+    root = library_state.user_data_directory(
+        system=sys.platform, home=os.path.expanduser("~"), environment=os.environ,
+    )
+    executable = sys.executable if getattr(sys, "frozen", False) else None
+    roots = library_state.legacy_state_directories(
+        executable=executable, source=__file__,
+    )
+    warnings = library_state.migrate_legacy_state(roots, root)
+    STATE_MIGRATION_WARNINGS = list(warnings)
+    _STATE_MIGRATION_DONE = True
+    return list(warnings)
+
+
+@serialized_config
+def set_active_library_path(path):
+    """Persist the app-wide User Library selection before publishing it in memory."""
+    global ACTIVE_LIBRARY_PATH
+    path = os.path.abspath(os.path.normpath(os.fspath(path)))
+    if not os.path.isdir(path):
+        raise ValueError(f"Choose an existing User Library folder: {path}")
+    with open(CONFIG_FILE, "r", encoding="utf-8") as handle:
+        data = _validate_config(json.load(handle))
+    data["ACTIVE_LIBRARY_PATH"] = path
+    _write_config(data)
+    ACTIVE_LIBRARY_PATH = path
+    return path
+
 @serialized_config
 def _write_config(data, create_backup=True, *, expected_content=_UNSPECIFIED_CONFIG):
     """Writes configuration through a temporary file so interrupted writes do not corrupt it."""
     _validate_config(data)
     directory = os.path.dirname(os.path.abspath(CONFIG_FILE))
+    os.makedirs(directory, exist_ok=True)
     temporary_path = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -217,7 +376,63 @@ def save_ignored_directories(directories):
         data = _validate_config(json.load(handle))
     data["IGNORED_DIRECTORIES"] = sorted(set(directories) | {"No Key Info"})
     _write_config(data)
-    load_external_config()
+    _apply_config_values(data)
+
+
+def pending_legacy_exclusions():
+    """Find unreviewed safety exclusions in registered legacy profiles."""
+    with open(CONFIG_FILE, encoding="utf-8") as handle:
+        current = _validate_config(json.load(handle))
+    reviewed = current.get("LEGACY_EXCLUSIONS_REVIEWED", {})
+    if not isinstance(reviewed, dict):
+        raise ValueError("Legacy exclusion review settings must be a mapping.")
+    existing = {value.casefold() for value in current.get("IGNORED_DIRECTORIES", [])}
+    pending = []
+    for path in library_state.legacy_profile_paths(os.path.dirname(os.path.abspath(CONFIG_FILE))):
+        if not os.path.lexists(path):
+            continue
+        if os.path.islink(path) or not os.path.isfile(path):
+            raise ValueError(f"Cannot safely review legacy profile: {path}")
+        with open(path, "rb") as handle:
+            contents = handle.read()
+        digest = hashlib.sha256(contents).hexdigest()
+        if reviewed.get(path) == digest:
+            continue
+        data = _validate_config(json.loads(contents))
+        missing = sorted({
+            value for value in data.get("IGNORED_DIRECTORIES", [])
+            if value.casefold() not in existing
+        })
+        if missing:
+            pending.append({"path": path, "digest": digest, "missing": missing})
+    return pending
+
+
+@serialized_config
+def merge_legacy_exclusions(path, *, expected_digest=None):
+    """Merge only safety exclusions, preserving the current profile's other settings."""
+    path = os.path.abspath(os.fspath(path))
+    if os.path.islink(path) or not os.path.isfile(path):
+        raise ValueError("Choose an existing, unlinked legacy profile.")
+    with open(path, "rb") as handle:
+        contents = handle.read()
+    digest = hashlib.sha256(contents).hexdigest()
+    if expected_digest is not None and digest != expected_digest:
+        raise ValueError("Legacy profile changed during review. Review it again.")
+    legacy = _validate_config(json.loads(contents))
+    with open(CONFIG_FILE, encoding="utf-8") as handle:
+        current = _validate_config(json.load(handle))
+    current["IGNORED_DIRECTORIES"] = sorted(
+        set(current.get("IGNORED_DIRECTORIES", []))
+        | set(legacy.get("IGNORED_DIRECTORIES", [])) | {"No Key Info"}
+    )
+    reviewed = current.setdefault("LEGACY_EXCLUSIONS_REVIEWED", {})
+    if not isinstance(reviewed, dict):
+        raise ValueError("Legacy exclusion review settings must be a mapping.")
+    reviewed[path] = digest
+    _write_config(current)
+    _apply_config_values(current)
+    return list(IGNORED_DIRECTORIES)
 
 CONFIG_BACKUP_DIR = "config_backups"
 CONFIG_BACKUP_LIMIT = 10
@@ -335,14 +550,232 @@ def _new_move_log_path():
     return path
 
 
+_MOVE_LOG_LOCK = threading.RLock()
+
+
 def _append_move_record(log_path, source, destination, **details):
-    with open(log_path, "a", encoding="utf-8") as log:
-        log.write(json.dumps({
-            "source": os.path.normpath(source),
-            "destination": os.path.normpath(destination), **details,
-        }) + "\n")
-        log.flush()
-        os.fsync(log.fileno())
+    record_id = details.setdefault("record_id", uuid.uuid4().hex)
+    with _MOVE_LOG_LOCK:
+        with open(log_path, "a", encoding="utf-8") as log:
+            log.write(json.dumps({
+                "source": os.path.normpath(source),
+                "destination": os.path.normpath(destination), **details,
+            }) + "\n")
+            log.flush()
+            os.fsync(log.fileno())
+    return record_id
+
+
+def _save_move_records(path, records):
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=os.path.dirname(os.path.abspath(path)),
+            suffix=".tmp", delete=False,
+        ) as handle:
+            temporary = handle.name
+            for record in records:
+                handle.write(json.dumps(record) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None and os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _transfer_application(reason, confidence, tags, *, log_path=None, record_id=None, direction="forward"):
+    return {
+        "version": 1, "index": os.path.abspath(ASSET_INDEX_FILE),
+        "reason": reason, "confidence": confidence, "tags": list(tags),
+        "log_path": os.path.abspath(log_path) if log_path else None,
+        "record_id": record_id, "direction": direction,
+    }
+
+
+def _application_move_record(journal):
+    application = journal["application"]
+    if (not isinstance(application, dict) or application.get("version") != 1
+            or application.get("direction") not in {"forward", "undo"}
+            or not isinstance(application.get("reason"), str)
+            or not isinstance(application.get("confidence"), (int, float))
+            or not isinstance(application.get("tags"), list)
+            or not all(isinstance(tag, str) for tag in application["tags"])):
+        raise ValueError("Invalid application recovery intent; journal retained.")
+    mapped_index = library_state.resolve_legacy_path(
+        application.get("index", ""), os.path.join(os.path.dirname(CONFIG_FILE), "legacy_path_aliases.json")
+    )
+    if mapped_index != os.path.abspath(ASSET_INDEX_FILE):
+        raise ValueError("Recovery belongs to a different index/profile; reopen the original manager folder.")
+    ableton_tags._check_transfer_path(ASSET_INDEX_FILE)
+    original_log_path = application.get("log_path")
+    if original_log_path is None:
+        if not journal["copy"] or application.get("record_id") is not None:
+            raise ValueError("Move recovery is missing its undo record; journal retained.")
+        return None, None
+    log_path = library_state.resolve_legacy_path(
+        original_log_path, os.path.join(os.path.dirname(CONFIG_FILE), "legacy_path_aliases.json")
+    )
+    if (not isinstance(log_path, str) or not os.path.isabs(log_path)
+            or os.path.dirname(log_path) != os.path.abspath(_move_log_dir())
+            or not os.path.basename(log_path).startswith("moves_")
+            or not log_path.endswith(".jsonl")):
+        raise ValueError("Recovery undo log is outside this profile; journal retained.")
+    ableton_tags._check_transfer_path(log_path)
+    with open(log_path, encoding="utf-8") as handle:
+        records = [json.loads(line) for line in handle if line.strip()]
+    if any(not isinstance(record, dict) for record in records):
+        raise ValueError("Invalid recovery undo log entries; journal retained.")
+    matching = [record for record in records if record.get("record_id") == application.get("record_id")]
+    if not application.get("record_id") or len(matching) != 1:
+        raise ValueError("Recovery undo record is missing or ambiguous; journal retained.")
+    record = matching[0]
+    first, second = (
+        ("destination", "source") if application["direction"] == "undo" else ("source", "destination")
+    )
+    if any(os.path.normcase(os.path.abspath(record[key])) != os.path.normcase(journal[target])
+           for key, target in ((first, "source"), (second, "destination"))):
+        raise ValueError("Recovery undo paths changed; journal retained.")
+    identity = record.get("destination_identity") or (
+        _file_identity(record["recovery"]) if record.get("operation") == "duplicate" else None
+    )
+    if identity is None or any(identity[key] != journal["source_identity"][key] for key in ("size", "sha256")):
+        raise ValueError("Recovery undo identity changed; journal retained.")
+    return records, record
+
+
+def _reconcile_transfer_application(journal, outcome):
+    if journal.get("application") is None:
+        return
+    with _MOVE_LOG_LOCK:
+        records, record = _application_move_record(journal)
+        if outcome == "validate":
+            return
+        application = journal["application"]
+        if outcome == "committed":
+            destination = journal["destination"]
+            try:
+                connection = _asset_index_connection()
+                try:
+                    index_asset(
+                        destination, os.path.dirname(destination), application["reason"],
+                        application["confidence"], application["tags"],
+                        previous_path=journal["source"] if not journal["copy"] else None,
+                        _connection=connection,
+                    )
+                    _cache_ableton_tags(connection, destination, {
+                        os.path.normcase(destination): ableton_tags.sample_tags(destination),
+                    })
+                    connection.commit()
+                finally:
+                    connection.close()
+            except (OSError, ValueError, sqlite3.Error) as error:
+                raise OSError(f"Transfer audio committed but index reconciliation failed; recovery retained: {error}") from error
+            ableton_tags._transfer_checkpoint("application_index_committed")
+        if record is not None:
+            if application["direction"] == "forward":
+                if outcome == "rolled_back":
+                    record["undo_complete"] = True
+                    record["transfer_rolled_back"] = True
+                    _save_move_records(application["log_path"], records)
+            elif outcome == "committed":
+                record["undo_files_restored"] = True
+                record["undo_complete"] = True
+                _save_move_records(application["log_path"], records)
+            ableton_tags._transfer_checkpoint("application_undo_committed")
+
+
+def recover_library_transfers(paths):
+    """Recover files and replay their recorded index/undo changes before removing journals."""
+    return ableton_tags.recover_transfers(paths, reconcile=_reconcile_transfer_application)
+
+
+def recover_startup_transfers(library_root):
+    """Recover pending transfer journals in the active library and app move history."""
+    journals = set()
+    errors = []
+    if os.path.lexists(library_root):
+        try:
+            journals.update(ableton_tags.find_transfer_recovery(library_root))
+        except (OSError, ValueError) as error:
+            errors.append(f"Could not scan active User Library for interrupted transfers: {error}")
+
+    log_directory = _move_log_dir()
+    if os.path.lexists(log_directory):
+        try:
+            ableton_tags._check_transfer_path(log_directory)
+            for name in sorted(os.listdir(log_directory)):
+                if not name.startswith("moves_") or not name.endswith(".jsonl"):
+                    continue
+                log_path = os.path.join(log_directory, name)
+                try:
+                    ableton_tags._check_transfer_path(log_path)
+                    with open(log_path, encoding="utf-8") as handle:
+                        records = [json.loads(line) for line in handle if line.strip()]
+                    if any(not isinstance(record, dict) for record in records):
+                        raise ValueError(f"Invalid move-log records: {log_path}")
+                    alias_file = os.path.join(os.path.dirname(CONFIG_FILE), "legacy_path_aliases.json")
+                    recovery_directories = set()
+                    for record in records:
+                        for key in ("source", "destination"):
+                            sample = record.get(key)
+                            if not isinstance(sample, str) or not os.path.isabs(sample):
+                                continue
+                            recovery_directory = (
+                                Path(sample).absolute().parent / "Ableton Folder Info"
+                                / ableton_tags._RECOVERY_FOLDER
+                            )
+                            recovery_directories.add(recovery_directory)
+                    for recovery_directory in recovery_directories:
+                        if not os.path.lexists(recovery_directory):
+                            continue
+                        ableton_tags._check_transfer_path(recovery_directory)
+                        for journal_path in recovery_directory.glob("*.json"):
+                            ableton_tags._check_transfer_path(journal_path)
+                            with journal_path.open(encoding="utf-8") as journal_file:
+                                journal = json.load(journal_file)
+                            if not isinstance(journal, dict):
+                                raise ValueError(f"Invalid transfer recovery journal: {journal_path}")
+                            application = journal.get("application")
+                            if not isinstance(application, dict):
+                                continue
+                            journal_log = application.get("log_path")
+                            if not isinstance(journal_log, str):
+                                continue
+                            mapped_log = library_state.resolve_legacy_path(journal_log, alias_file)
+                            if os.path.normcase(mapped_log) == os.path.normcase(os.path.abspath(log_path)):
+                                journals.add(str(journal_path))
+                except (OSError, ValueError, KeyError, TypeError) as error:
+                    errors.append(f"Could not inspect move history {log_path}: {error}")
+        except (OSError, ValueError) as error:
+            errors.append(f"Could not scan application move history: {error}")
+
+    recovered = recover_library_transfers(sorted(journals))
+    return {
+        "journals_found": len(journals),
+        "recovered": recovered["recovered"],
+        "errors": errors + recovered["errors"],
+    }
+
+
+def _recover_move_log_transfers(log_path, records):
+    pending = set()
+    folders = set()
+    for record in records:
+        for key in ("source", "destination"):
+            folders.add(Path(record[key]).absolute().parent / "Ableton Folder Info" / ableton_tags._RECOVERY_FOLDER)
+    for folder in folders:
+        ableton_tags._check_transfer_path(folder)
+        for path in folder.glob("*.json"):
+            ableton_tags._check_transfer_path(path)
+            with path.open(encoding="utf-8") as handle:
+                journal = json.load(handle)
+            if not isinstance(journal, dict):
+                raise ValueError(f"Invalid transfer recovery journal: {path}")
+            application = journal.get("application")
+            if isinstance(application, dict) and application.get("log_path") == os.path.abspath(log_path):
+                pending.add(str(path))
+    return recover_library_transfers(sorted(pending))
 
 def latest_move_log():
     """Newest move log that still has something to undo, or None."""
@@ -354,22 +787,38 @@ def latest_move_log():
         reverse=True
     )
     for log in logs:
-        if os.path.getsize(log) > 0:
+        if os.path.getsize(log) > 0 and describe_move_log(log)[0]:
             return log
     return None
 
 def describe_move_log(log_path):
-    """Returns (file_count, created_text) for a move log."""
+    """Returns (unresolved_file_count, created_text) for a move log."""
     with open(log_path, 'r', encoding='utf-8') as f:
-        count = sum(1 for line in f if line.strip())
+        count = sum(1 for line in f if line.strip() and not json.loads(line).get("undo_complete"))
     created = datetime.datetime.fromtimestamp(os.path.getmtime(log_path)).strftime("%b %d, %Y %I:%M %p")
     return count, created
 
-def undo_move_log(log_path, progress=None):
-    """Moves every file in the log back to where it came from. Nothing is overwritten."""
+def undo_move_log(log_path, progress=None, *, record_ids=None):
+    """Restore all or explicitly selected log entries without overwriting files."""
     with open(log_path, 'r', encoding='utf-8') as f:
         records = [json.loads(line) for line in f if line.strip()]
+    if record_ids is not None:
+        record_ids = set(record_ids)
+        known_ids = {record.get("record_id") for record in records}
+        if not record_ids or None in record_ids or not record_ids <= known_ids:
+            raise ValueError("Select existing move-log record IDs before attempting undo.")
+    selected_records = [
+        record for record in records
+        if record_ids is None or record.get("record_id") in record_ids
+    ]
     results = {"restored": 0, "skipped": 0, "errors": []}
+    recovered = _recover_move_log_transfers(log_path, selected_records)
+    if recovered["errors"]:
+        results["errors"].extend(recovered["errors"])
+        return results
+    if recovered["recovered"]:
+        with open(log_path, encoding="utf-8") as handle:
+            records = [json.loads(line) for line in handle if line.strip()]
     connection = None
     try:
         connection = _asset_index_connection()
@@ -377,26 +826,39 @@ def undo_move_log(log_path, progress=None):
         connection = None
         results["errors"].append(f"Undo index could not be opened: {error}")
     touched_dirs = set()
+    completed = []
     for index, record in enumerate(reversed(records)):
+        if record_ids is not None and record.get("record_id") not in record_ids:
+            continue
+        if record.get("undo_complete"):
+            continue
         source, destination = record["source"], record["destination"]
         try:
-            if not os.path.exists(destination) or os.path.exists(source):
+            already_restored = record.get("undo_files_restored", False)
+            if (record.get("operation") != "duplicate" and not os.path.lexists(destination)
+                    and os.path.isfile(source) and not os.path.islink(source)
+                    and record.get("destination_identity") is not None
+                    and _file_identity(source) == record["destination_identity"]):
+                already_restored = True
+            if not already_restored and (not os.path.exists(destination) or os.path.exists(source)):
                 results["skipped"] += 1
                 continue
             if record.get("operation") == "duplicate":
-                if connection is not None and "expected_destination_personal" in record:
+                if not already_restored and connection is not None and "expected_destination_personal" in record:
                     actual = dict(connection.execute(
                         "SELECT tag, enabled FROM asset_tags WHERE asset_path = ? AND source = 'personal'",
                         (destination,),
                     ))
                     if actual != record["expected_destination_personal"]:
                         raise ValueError("Duplicate destination app tags changed; recovery was retained.")
-                ableton_tags.restore_duplicate(
-                    source, destination, record["recovery"],
-                    record["source_live_tags"], record["destination_live_tags"],
-                    record["merged_live_tags"],
-                )
-                results["restored"] += 1
+                if not already_restored:
+                    ableton_tags.restore_duplicate(
+                        source, destination, record["recovery"],
+                        record["source_live_tags"], record["destination_live_tags"],
+                        record["merged_live_tags"],
+                    )
+                    record["undo_files_restored"] = True
+                    results["restored"] += 1
                 if connection is not None:
                     for path, snapshot in (
                         (source, record.get("source_index")),
@@ -427,6 +889,7 @@ def undo_move_log(log_path, progress=None):
                             _cache_ableton_tags(connection, path, {
                                 os.path.normcase(os.path.abspath(path)): ableton_tags.sample_tags(path)
                             })
+                    completed.append(record)
                 continue
             expected = record.get("destination_identity")
             if expected is None:
@@ -435,14 +898,46 @@ def undo_move_log(log_path, progress=None):
                 )
                 results["skipped"] += 1
                 continue
-            if os.path.islink(destination) or _file_identity(destination) != expected:
+            restored_path = source if already_restored else destination
+            if os.path.islink(restored_path) or _file_identity(restored_path) != expected:
                 results["skipped"] += 1
                 results["errors"].append(f"Destination changed since cleanup; left in place: {destination}")
                 continue
-            os.makedirs(os.path.dirname(source), exist_ok=True)
-            ableton_tags.transfer_sample(destination, source)
-            touched_dirs.add(os.path.dirname(destination))
-            results["restored"] += 1
+            if not already_restored:
+                os.makedirs(os.path.dirname(source), exist_ok=True)
+                if connection is not None:
+                    connection.commit()
+                    for finished in completed:
+                        finished["undo_complete"] = True
+                previous = get_indexed_asset(destination)
+                record.setdefault("record_id", uuid.uuid4().hex)
+                with _MOVE_LOG_LOCK:
+                    _save_move_records(log_path, records)
+                application = _transfer_application(
+                    previous["reason"] if previous else "undo_cleanup",
+                    previous["confidence"] if previous else 1.0,
+                    [tag for tag in previous["tags"] if not tag.startswith("category:")] if previous else [],
+                    log_path=log_path, record_id=record["record_id"], direction="undo",
+                )
+                try:
+                    ableton_tags.transfer_sample(
+                        destination, source, application=application, reconcile=_reconcile_transfer_application,
+                    )
+                except (OSError, ValueError) as error:
+                    if (not os.path.lexists(destination) and os.path.isfile(source)
+                            and _file_identity(source) == expected):
+                        record["undo_files_restored"] = True
+                        results["restored"] += 1
+                        raise OSError(
+                            f"File restored but index update failed; recovery journal retained for retry: {error}"
+                        ) from error
+                    raise
+                record["undo_files_restored"] = True
+                record["undo_complete"] = True
+                touched_dirs.add(os.path.dirname(destination))
+                results["restored"] += 1
+                completed.append(record)
+                continue
             if connection is not None:
                 connection.execute("SAVEPOINT undo_asset")
                 try:
@@ -458,6 +953,7 @@ def undo_move_log(log_path, progress=None):
                         {os.path.normcase(os.path.abspath(source)): ableton_tags.sample_tags(source)}
                     )
                     connection.execute("RELEASE SAVEPOINT undo_asset")
+                    completed.append(record)
                 except (sqlite3.Error, OSError, ValueError) as error:
                     connection.execute("ROLLBACK TO SAVEPOINT undo_asset")
                     connection.execute("RELEASE SAVEPOINT undo_asset")
@@ -469,6 +965,8 @@ def undo_move_log(log_path, progress=None):
     if connection is not None:
         try:
             connection.commit()
+            for record in completed:
+                record["undo_complete"] = True
         except sqlite3.Error as error:
             results["errors"].append(f"Files restored but index changes could not be saved: {error}")
         finally:
@@ -478,8 +976,14 @@ def undo_move_log(log_path, progress=None):
             os.rmdir(folder)
         except OSError:
             pass
-    if not results["errors"]:
+    if (not results["errors"] and not results["skipped"]
+            and all(record.get("undo_complete") for record in records)):
         os.replace(log_path, log_path + ".undone")
+    elif any(record.get("undo_files_restored") or record.get("undo_complete") for record in records):
+        try:
+            _save_move_records(log_path, records)
+        except OSError as error:
+            results["errors"].append(f"Undo retry checkpoint could not be saved: {error}")
     return results
 
 def _sidebar_cache_path():
@@ -880,6 +1384,57 @@ def get_all_indexed_asset_tags():
         return tags_by_path
     finally:
         connection.close()
+
+def _read_routing_tags():
+    """Read routing inputs without creating, migrating or updating the index."""
+    path = Path(ASSET_INDEX_FILE).absolute()
+    if not path.exists():
+        return {}
+    snapshot = None
+    connection = None
+    try:
+        with path.open("rb") as stream:
+            wal_mode = stream.read(20)[18:20] == b"\x02\x02"
+        if wal_mode:
+            # Even mode=ro creates WAL bookkeeping in the original directory.
+            snapshot = tempfile.TemporaryDirectory(prefix="alm-routing-index-")
+            wal = Path(str(path) + "-wal")
+            inputs = [path] + ([wal] if wal.exists() else [])
+            identities = {item: _file_identity(item) for item in inputs}
+            for item in inputs:
+                copied = Path(snapshot.name) / item.name
+                shutil.copyfile(item, copied)
+                if _file_identity(copied)["sha256"] != identities[item]["sha256"]:
+                    raise ValueError("Routing index changed while taking a read-only snapshot.")
+            if wal.exists() != (wal in identities) or any(
+                _file_identity(item) != identity for item, identity in identities.items()
+            ):
+                raise ValueError("Routing index changed while taking a read-only snapshot.")
+            path = Path(snapshot.name) / path.name
+        connection = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "asset_tags" not in tables:
+            raise ValueError("Existing index has no asset_tags table; repair it before previewing.")
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(asset_tags)")}
+        if not {"asset_path", "tag"} <= columns:
+            raise ValueError("Existing index has an unsupported tag schema.")
+        filters = []
+        if "enabled" in columns:
+            filters.append("enabled = 1")
+        if "source" in columns:
+            filters.append("(source IN ('generated', 'ableton') OR tag = 'favorite')")
+        query = "SELECT asset_path, tag FROM asset_tags"
+        if filters:
+            query += " WHERE " + " AND ".join(filters)
+        result = {}
+        for asset_path, tag in connection.execute(query + " ORDER BY asset_path, tag"):
+            result.setdefault(asset_path, []).append(tag)
+        return result
+    finally:
+        if connection is not None:
+            connection.close()
+        if snapshot is not None:
+            snapshot.cleanup()
 
 def _parse_asset_search(search_text):
     """Splits simple browser syntax into positive and negative search constraints."""
@@ -1588,15 +2143,17 @@ def repair_nested_folder_files(suggestions):
             identity = _file_identity(source)
             if log_path is None:
                 log_path = _new_move_log_path()
-            _append_move_record(log_path, source, destination, destination_identity=identity)
-            ableton_tags.transfer_sample(source, destination)
             previous = get_indexed_asset(source)
-            if previous is not None:
-                index_asset(
-                    destination, os.path.dirname(destination), previous["reason"],
-                    previous["confidence"], previous["tags"], previous_path=source
-                )
-                refresh_live_tag_cache([destination])
+            record_id = _append_move_record(log_path, source, destination, destination_identity=identity)
+            application = _transfer_application(
+                previous["reason"] if previous else "nested_folder_repair",
+                previous["confidence"] if previous else 1.0,
+                previous["tags"] if previous else [],
+                log_path=log_path, record_id=record_id,
+            )
+            ableton_tags.transfer_sample(
+                source, destination, application=application, reconcile=_reconcile_transfer_application,
+            )
             results["moved"] += 1
         except (OSError, ValueError, sqlite3.Error) as error:
             results["errors"].append(f"{source}: {error}")
@@ -1644,7 +2201,7 @@ def explain_filename(filename, folder_path=""):
         return result
     if ext in SYNTH_EXTS:
         result["file_type"] = (ext, SYNTH_EXTS[ext])
-        result["destination"] = SYNTH_EXTS[ext]
+        result["destination"] = serum_presets.destination(name, SYNTH_EXTS[ext])
         return result
     if ext in ('.mid', '.midi'):
         result["file_type"] = (ext, "Midi")
@@ -2030,13 +2587,21 @@ def review_learning_candidates(selections, decision):
     _write_config(data, expected_content=original)
     load_external_config()
 
-# Force load on module call so imports immediately populate global configuration states
-load_external_config()
-
 # sorter_engine.py - Piece 2: Class Initialization & Background Thread Routing
+def _check_unlinked_path(path):
+    for part in (path, *path.parents):
+        junction = (
+            os.name == "nt" and os.path.lexists(part)
+            and part.lstat().st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+        )
+        if part.is_symlink() or junction:
+            raise ValueError(f"Linked paths are not supported: {part}")
+
+
 class ParallelLibrarySorter:
     def __init__(self, src_path, dest_path, window_el, update_status_callback, done_callback, copy_mode=False,
-                 smart_learning_enabled=None, preview_only=False):
+                 smart_learning_enabled=None, preview_only=False, *, audio_only=False,
+                 supported_only=False, approved_plan=None):
         """Initializes the multi-threaded file distribution and structural optimization engine."""
         self.src = os.path.normpath(src_path)
         self.dest = os.path.normpath(dest_path)
@@ -2046,6 +2611,12 @@ class ParallelLibrarySorter:
         self.copy_mode = copy_mode
         self.smart_learning_enabled = SMART_LEARNING_ENABLED if smart_learning_enabled is None else bool(smart_learning_enabled)
         self.preview_only = bool(preview_only)
+        self.audio_only = bool(audio_only)
+        self.supported_only = bool(supported_only)
+        self.approved_plan = copy.deepcopy(approved_plan)
+        self.reviewed_plan = None
+        self.skipped_records = []
+        self._scan_inventory = []
         
         self.total_files = 0
         self.processed_files = 0
@@ -2053,10 +2624,20 @@ class ParallelLibrarySorter:
         self.harvested_metadata = {}
         self.manual_live_assignments = {}
         self.preview_records = []
+        self.operation_plan = []
+        self._planning_only = False
+        self._plan_lock = threading.Lock()
+        self._reserved_destinations = {}
+        self._planned_directories = set()
+        self._completed_plan_sources = set()
         self.move_log_path = None
         self.lock = threading.Lock()
         self.cancel_event = threading.Event()
         self.worker_thread = None
+        self.cancel_requested_at = None
+        self.phase_seconds = {}
+        self._destination_metadata_folders = set()
+        self._destination_metadata = {}
         self.operation_errors = []
         self.indexed_tags_by_path = {}
         self.indexed_tags_cache_loaded = False
@@ -2068,88 +2649,54 @@ class ParallelLibrarySorter:
             "Loops Separated by BPM & Key": 0, 
             "One-Shots Grouped by Drum Type": 0, 
             "Skipped Duplicate Items": 0, 
+            "Non-audio Files Excluded": 0,
             "Errors/Skipped Files": 0,
             "New Metadata Rules Learned & Written": 0,
             "New Learning Candidates": 0
         }
 
-    def start_parallel_sort(self):
+    def start_parallel_sort(self, *, job_lease=None):
         """Spins up background threading networks to execute operations without freezing the UI."""
+        lease = self._claim_job("Import/cleanup preview" if self.preview_only else "Import/cleanup", job_lease)
+        if lease is None:
+            return
+        started = time.perf_counter()
         def background_execution_pipeline():
-            # 🌟 TRACKING FLAG: Prevents the UI done_callback from being triggered multiple times
-            callback_triggered = False
-            
             try:
+                planning_started = time.perf_counter()
+                _validate_config({
+                    "DRUM_KEYWORDS": DRUM_KEYWORDS, "SYNTH_EXTS": SYNTH_EXTS,
+                    "NATIVE_EXTS": NATIVE_EXTS,
+                })
+                routing_state = self._routing_state()
+                metadata_before = self._metadata_state()
+                nested_serum_root = os.path.join(self.dest, "Serum Presets", "Serum 2 Presets")
+                if (any(serum_presets.is_user_folder(folder) for folder in SYNTH_EXTS.values())
+                        and os.path.isdir(nested_serum_root)):
+                    raise ValueError(
+                        "The Serum 2 resource folder is still nested inside Serum Presets. "
+                        "Complete the reviewed relocation of the entire Serum 2 Presets folder "
+                        "to the User Library root before importing or organizing. "
+                        "Do not merge resource folders; no files were moved."
+                    )
                 self.window.after(0, lambda: self.update_status("Extracting Ableton browser tagging metadata..."))
                 
-                try: self.harvested_metadata = harvest_ableton_metadata(self.src)
-                except Exception: self.harvested_metadata = {}
+                self.harvested_metadata = harvest_ableton_metadata(self.src)
                 try:
-                    self.indexed_tags_by_path = get_all_indexed_asset_tags()
+                    self.indexed_tags_by_path = _read_routing_tags()
                     self.indexed_tags_cache_loaded = True
                 except sqlite3.Error as error:
                     raise OSError(f"Cannot read saved routing/index tags; no files were moved: {error}") from error
 
                 self.window.after(0, lambda: self.update_status("Scanning directory layout safely..."))
 
-                execution_manifest = []
-                stack = [self.src]
-                visited_paths = set()
-                max_depth_guard = 0
-                scanned_entries = 0
-
-                while stack:
-                    if self.cancel_event.is_set():
-                        self.window.after(0, lambda: self.update_status("Operation cancelled. Finishing current file safely."))
-                        return
-                    max_depth_guard += 1
-                    if max_depth_guard > 50000: 
-                        break
-
-                    current_dir = stack.pop()
-                    current_norm = os.path.normpath(current_dir)
-
-                    if current_norm in visited_paths or "Ableton Folder Info" in current_norm:
-                        continue
-                    visited_paths.add(current_norm)
-
-                    relative_branch = current_norm.replace(self.src, "").strip(os.sep)
-                    branch_segments = [seg for seg in relative_branch.split(os.sep) if seg.strip()]
-                    if len(branch_segments) > 6:
-                        continue
-
-                    try:
-                        for entry in os.scandir(current_norm):
-                            if ableton_tags.is_metadata_stub(entry.name):
-                                continue
-                            if entry.is_symlink():
-                                continue
-                                
-                            entry_norm = os.path.normpath(entry.path)
-                            entry_lower = entry_norm.lower()
-
-                            if entry.is_dir(follow_symlinks=False):
-                                if any(ignore.lower() in entry_lower for ignore in IGNORED_DIRECTORIES if ignore.strip()):
-                                    continue
-                                    
-                                stack.append(entry.path)
-                            elif entry.is_file():
-                                if entry.name == "library_config.json" or entry.name.endswith(".py") or entry.name.endswith(".pyw"):
-                                    continue
-                                execution_manifest.append((current_norm, entry.name))
-                                scanned_entries += 1
-                                if scanned_entries % 1000 == 0:
-                                    count_snapshot = scanned_entries
-                                    self.window.after(
-                                        0,
-                                        lambda count=count_snapshot: self.update_status(
-                                            f"Scanning directory layout safely... "
-                                            f"{count:,} files found"
-                                        )
-                                    )
-                    except OSError as error:
-                        raise OSError(f"Could not scan {current_norm}; no files were moved: {error}") from error
-
+                execution_manifest, self._scan_inventory, scan_skips = self._scan_manifest()
+                self.skipped_records = list(scan_skips)
+                self.stats["Non-audio Files Excluded"] = sum(
+                    row["reason"] == "file_type_excluded" for row in scan_skips
+                )
+                if self.cancel_event.is_set():
+                    return
                 self.total_files = len(execution_manifest)
                 try:
                     self.manual_live_assignments = ableton_tags.read_sample_assignments(
@@ -2162,20 +2709,62 @@ class ParallelLibrarySorter:
                     self.window.after(0, lambda error=error: self.update_status(
                         f"Manual Live metadata could not be read; operation aborted: {error}"
                     ))
-                    callback_triggered = True
-                    self.window.after(0, lambda: self.done_callback(self.stats, self.copy_mode))
                     return
                 
-                if self.total_files > 0:
+                self.window.after(0, lambda: self.update_status(
+                    "Planning exact destinations and checking file identities..."
+                ))
+                self._planning_only = True
+                try:
+                    for root, filename in execution_manifest:
+                        if self.cancel_event.is_set():
+                            return
+                        self.process_single_file(root, filename)
+                finally:
+                    self._planning_only = False
+                self.phase_seconds["planning_seconds"] = time.perf_counter() - planning_started
+                validation_started = time.perf_counter()
+                if self._routing_state() != routing_state:
+                    raise ValueError(
+                        "Routing settings changed during destination planning; no files were moved. Preview again."
+                    )
+                if self._metadata_state() != metadata_before:
+                    raise ValueError("Source metadata changed during planning. Preview again; no files were moved.")
+                if self.operation_errors or self.cancel_event.is_set():
+                    return
+                _, current_inventory, current_skips = self._scan_manifest()
+                if self.cancel_event.is_set():
+                    return
+                if current_inventory != self._scan_inventory or current_skips != scan_skips:
+                    raise ValueError("Source inventory changed during planning; no files were moved. Preview again.")
+                for record in self.operation_plan:
+                    self._validate_planned_inputs(record)
+                if self._folder_metadata_state(self._destination_metadata_folders) != self._destination_metadata:
+                    raise ValueError("Destination metadata changed during planning; no files were moved.")
+                self.reviewed_plan = self._make_reviewed_plan(routing_state, metadata_before)
+                if self.approved_plan is not None:
+                    self.validate_approved_plan(self.approved_plan)
+                self.phase_seconds["approval_validation_seconds"] = time.perf_counter() - validation_started
+                if self.preview_only:
+                    return
+
+                transfer_started = time.perf_counter()
+                if self.operation_plan and not self.preview_only:
+                    # A duplicate may depend on an earlier planned copy/move of the same name.
+                    groups = {}
+                    for record in self.operation_plan:
+                        groups.setdefault(self._destination_key(record["destination_path"]), []).append(record)
+                    self.processed_files = self.total_files - len(self.operation_plan)
                     with ThreadPoolExecutor(max_workers=4) as executor:
                         batch_size = 256
-                        for batch_start in range(0, self.total_files, batch_size):
+                        grouped_records = list(groups.values())
+                        for batch_start in range(0, len(grouped_records), batch_size):
                             if self.cancel_event.is_set():
                                 break
-                            batch = execution_manifest[batch_start:batch_start + batch_size]
+                            batch = grouped_records[batch_start:batch_start + batch_size]
                             futures = [
-                                executor.submit(self.process_single_file, *item)
-                                for item in batch
+                                executor.submit(self._execute_group, records)
+                                for records in batch
                             ]
                             for future in as_completed(futures):
                                 try:
@@ -2189,13 +2778,12 @@ class ParallelLibrarySorter:
                                     )
                             self.window.after(
                                 0,
-                                lambda completed=min(
-                                    batch_start + len(batch), self.total_files
-                                ): self.update_status(
+                                lambda completed=self.processed_files: self.update_status(
                                     f"Batch complete ({completed}/{self.total_files})"
                                 )
                             )
 
+                self.phase_seconds["transfer_seconds"] = time.perf_counter() - transfer_started
                 if self.raw_unmatched_tokens and self.smart_learning_enabled and not self.preview_only:
                     try:
                         candidates = record_learning_evidence(self.raw_unmatched_tokens)
@@ -2232,36 +2820,294 @@ class ParallelLibrarySorter:
                     self.window.after(0, lambda: self.update_status("Operation cancelled. No new files will be processed."))
                 else:
                     self.window.after(0, lambda: self.update_status("Task optimization complete!"))
-                if not callback_triggered:
-                    callback_triggered = True
-                    self.window.after(0, lambda: self.done_callback(self.stats, self.copy_mode))
-                
-                # 🌟 CRITICAL FIX: Explicitly exit the background thread execution pipeline right here!
-                # This completely blocks the function from sliding down into the generic 'except' handler.
-                return
-            
             except Exception as pipeline_err:
                 self.record_operation_error(self.src, self.dest, "pipeline", pipeline_err)
                 self.increment_stat_safe("Errors/Skipped Files")
                 self.window.after(0, lambda error=pipeline_err: self.update_status(f"Error: {error}"))
-                if not callback_triggered:
-                    callback_triggered = True
+            finally:
+                try:
+                    self._record_performance(started)
+                finally:
+                    lease.release()
                     self.window.after(0, lambda: self.done_callback(self.stats, self.copy_mode))
 
-        self.worker_thread = threading.Thread(
-            target=background_execution_pipeline,
-            name="library-sorter",
-            daemon=True
-        )
-        self.worker_thread.start()
+        self._start_owned_thread(background_execution_pipeline, lease, "library-sorter")
+
+    def _claim_job(self, label, inherited=None):
+        try:
+            self._validate_audio_only_mode()
+            if CONFIG_LOAD_ERROR or XO_CONFIG_LOAD_ERROR:
+                raise ValueError(CONFIG_LOAD_ERROR or XO_CONFIG_LOAD_ERROR)
+            pending = pending_legacy_exclusions() if os.path.isfile(CONFIG_FILE) else []
+            if pending:
+                names = sorted({name for entry in pending for name in entry["missing"]})
+                raise ValueError(
+                    "Previous Skip Folders settings need review before importing or organizing: "
+                    + ", ".join(names) + ". Open Skip Folders > Review previous settings."
+                )
+        except (OSError, ValueError) as error:
+            if inherited is not None:
+                inherited.release()
+            self.record_operation_error(self.src, self.dest, "Skip Folders safety check", error)
+            self.increment_stat_safe("Errors/Skipped Files")
+            self.window.after(0, lambda error=error: self.update_status(str(error)))
+            self.window.after(0, lambda: self.done_callback(self.stats, self.copy_mode))
+            return None
+        lease = inherited if inherited is not None else library_jobs.coordinator.claim(label)
+        if lease is not None and not lease.active:
+            lease = None
+        if lease is None:
+            error = ValueError(
+                f"Library is busy: {library_jobs.coordinator.active_label}. "
+                "Wait for that operation to finish or cancel it before retrying."
+            )
+            self.record_operation_error(self.src, self.dest, "job ownership", error)
+            self.increment_stat_safe("Errors/Skipped Files")
+            self.window.after(0, lambda: self.update_status(str(error)))
+            self.window.after(0, lambda: self.done_callback(self.stats, self.copy_mode))
+        return lease
+
+    def _start_owned_thread(self, target, lease, name):
+        self.worker_thread = threading.Thread(target=target, name=name, daemon=False)
+        try:
+            self.worker_thread.start()
+        except RuntimeError as error:
+            lease.release()
+            self.record_operation_error(self.src, self.dest, "worker startup", error)
+            self.increment_stat_safe("Errors/Skipped Files")
+            self.window.after(0, lambda: self.done_callback(self.stats, self.copy_mode))
 
     def cancel(self):
         """Requests cancellation without interrupting the file currently being processed."""
+        if self.cancel_requested_at is None:
+            self.cancel_requested_at = time.perf_counter()
         self.cancel_event.set()
+
+    def _record_performance(self, started, operation=None):
+        completed = len(self._completed_plan_sources)
+        planned = len(self.operation_plan)
+        transferred_bytes = sum(
+            record["source_identity"]["size"] for record in self.operation_plan
+            if record["source"] in self._completed_plan_sources and record["action"] != "duplicate"
+        )
+        if operation == "serum_resource_import":
+            planned = self.total_files
+            completed = (
+                self.stats["Serum 2 Resource Files Copied"] + self.stats["Skipped Duplicate Items"]
+                if not self.preview_only else 0
+            )
+            transferred_bytes = self._resource_bytes_copied
+        elapsed = max(time.perf_counter() - started, 0.000001)
+        cancelled = self.cancel_event.is_set()
+        errors = self.stats["Errors/Skipped Files"]
+        performance_log.record(
+            operation or ("organize" if self.src == self.dest else "import"),
+            started,
+            outcome="cancelled" if cancelled else "failed" if errors else "completed",
+            preview=self.preview_only, copy_mode=self.copy_mode,
+            audio_only=self.audio_only,
+            excluded_non_audio=self.stats["Non-audio Files Excluded"],
+            total_files=self.total_files, processed_files=self.processed_files,
+            planned_files=planned, completed_files=completed,
+            transferred_bytes=transferred_bytes, errors=errors,
+            files_per_second=completed / elapsed, bytes_per_second=transferred_bytes / elapsed,
+            processed_files_per_second=self.processed_files / elapsed,
+            cancellation_seconds=(
+                max(0.0, time.perf_counter() - self.cancel_requested_at)
+                if self.cancel_requested_at is not None else None
+            ),
+            **self.phase_seconds,
+        )
 
     def is_running(self):
         """Returns whether the sorter worker is still active."""
         return self.worker_thread is not None and self.worker_thread.is_alive()
+
+    def _accepts_file(self, filename):
+        extension = os.path.splitext(filename)[1].lower()
+        if self.audio_only:
+            return extension in AUDIO_EXTS
+        if self.supported_only:
+            return extension in AUDIO_EXTS or (
+                extension in SUPPORTED_PRESET_EXTS
+                and (extension in SYNTH_EXTS or extension in NATIVE_EXTS)
+            )
+        return True
+
+    def _scan_manifest(self):
+        manifest, inventory, skipped = [], [], []
+        stack, visited = [self.src], set()
+        while stack:
+            if self.cancel_event.is_set():
+                return manifest, inventory, skipped
+            if len(visited) >= 50000:
+                raise ValueError("The scan exceeded its folder safety limit. No files were moved.")
+            root = os.path.normpath(stack.pop())
+            if root in visited or "Ableton Folder Info" in root:
+                continue
+            visited.add(root)
+            if len(Path(os.path.relpath(root, self.src)).parts) > 6:
+                skipped.append({"source": root, "reason": "depth_limit"})
+                continue
+            try:
+                with os.scandir(root) as entries:
+                    for entry in entries:
+                        if ableton_tags.is_metadata_stub(entry.name):
+                            continue
+                        if entry.is_symlink():
+                            skipped.append({"source": entry.path, "reason": "linked_content"})
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            if any(ignore.lower() in entry.path.lower()
+                                   for ignore in IGNORED_DIRECTORIES if ignore.strip()):
+                                skipped.append({"source": entry.path, "reason": "skip_folder"})
+                            else:
+                                stack.append(entry.path)
+                        elif entry.is_file():
+                            info = entry.stat(follow_symlinks=False)
+                            inventory.append({
+                                "source": entry.path, "size": info.st_size,
+                                "modified_ns": info.st_mtime_ns,
+                            })
+                            if entry.name == "library_config.json" or entry.name.endswith((".py", ".pyw")):
+                                skipped.append({"source": entry.path, "reason": "application_file"})
+                            elif not self._accepts_file(entry.name):
+                                skipped.append({"source": entry.path, "reason": "file_type_excluded"})
+                            else:
+                                manifest.append((root, entry.name))
+                                if len(manifest) % 1000 == 0:
+                                    self.window.after(0, lambda count=len(manifest): self.update_status(
+                                        f"Scanning directory layout safely... {count:,} files found"
+                                    ))
+            except OSError as error:
+                raise OSError(f"Could not scan {root}; no files were moved: {error}") from error
+        return (
+            sorted(manifest, key=lambda item: (
+                os.path.normcase(os.path.join(*item)).casefold(), os.path.join(*item),
+            )),
+            sorted(inventory, key=lambda item: item["source"]),
+            sorted(skipped, key=lambda item: (item["source"], item["reason"])),
+        )
+
+    def _validate_planned_inputs(self, record):
+        source, destination = record["source"], record["destination_path"]
+        _validate_destination(self.dest, destination)
+        if os.path.islink(source) or _file_identity(source) != record["source_identity"]:
+            raise ValueError(f"Source changed during planning; no files were moved: {source}")
+        if record["action"] == "duplicate" and not record["provider"]:
+            if not os.path.isfile(destination) or _file_identity(destination) != record["destination_identity"]:
+                raise ValueError(f"Duplicate destination changed during planning: {destination}")
+        elif record["action"] != "in_place" and os.path.lexists(destination):
+            raise FileExistsError(f"Planned destination is now occupied: {destination}")
+
+    def _metadata_state(self):
+        source = Path(self.src).absolute()
+        folders = {source, *source.parents}
+        def scan_error(error):
+            raise OSError(f"Could not inspect source metadata; no files were moved: {error}") from error
+        if source.is_dir():
+            for root, directories, files in os.walk(source, followlinks=False, onerror=scan_error):
+                if len(Path(root).relative_to(source).parts) >= 6:
+                    directories[:] = [name for name in directories if name == "Ableton Folder Info"]
+                directories[:] = [
+                    name for name in directories if not os.path.islink(os.path.join(root, name))
+                    and (name == "Ableton Folder Info" or not any(
+                        ignored.casefold() in os.path.join(root, name).casefold()
+                        for ignored in IGNORED_DIRECTORIES if ignored.strip()
+                    ))
+                ]
+                if "Ableton Folder Info" in Path(root).parts:
+                    folders.add(Path(root).parent)
+        sidecars = self._folder_metadata_state(folders)
+        profile = None
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, "rb") as handle:
+                profile = hashlib.sha256(handle.read()).hexdigest()
+        return {
+            "sidecars": sidecars, "profile_sha256": profile,
+            "indexed_tags_sha256": hashlib.sha256(
+                json.dumps(_read_routing_tags(), sort_keys=True).encode("utf-8")
+            ).hexdigest(),
+        }
+
+    @staticmethod
+    def _folder_metadata_state(folders):
+        sidecars = {}
+        for folder in sorted(folders):
+            metadata = folder / "Ableton Folder Info"
+            _check_unlinked_path(metadata)
+            if not metadata.exists():
+                continue
+            for path in sorted(metadata.iterdir()):
+                if path.suffix.lower() != ".xmp" or ableton_tags.is_metadata_stub(path.name):
+                    continue
+                _check_unlinked_path(path)
+                sidecars[str(path)] = _file_identity(path)
+        return sidecars
+
+    def _make_reviewed_plan(self, routing_state, metadata_state):
+        return {
+            "version": 1, "kind": "ordinary",
+            "source_root": os.path.abspath(self.src), "destination_root": os.path.abspath(self.dest),
+            "copy_mode": bool(self.copy_mode), "audio_only": self.audio_only,
+            "supported_only": self.supported_only, "smart_learning": self.smart_learning_enabled,
+            "settings": routing_state, "metadata": metadata_state,
+            "destination_metadata": copy.deepcopy(self._destination_metadata),
+            "inventory": sorted(self._scan_inventory, key=lambda item: item["source"]),
+            "records": copy.deepcopy(self.operation_plan),
+            "skipped": sorted(self.skipped_records, key=lambda item: (item["source"], item["reason"])),
+            "learning_evidence": sorted(self.raw_unmatched_tokens),
+            "total_files": self.total_files,
+            "integration_limits": [
+                "Copying or moving files does not change Live, Serum or XO preferences.",
+                "Review copied presets in their plugin to verify sample/resource dependencies.",
+            ],
+        }
+
+    def validate_approved_plan(self, plan):
+        if not isinstance(plan, dict) or plan.get("version") != 1:
+            raise ValueError("Unsupported approved plan. Generate a new preview.")
+        if self.reviewed_plan is None or json.dumps(plan, sort_keys=True) != json.dumps(
+            self.reviewed_plan, sort_keys=True,
+        ):
+            raise ValueError(
+                "The approved plan is stale: inputs, metadata, settings or destinations changed. "
+                "No files were transferred. Preview again."
+            )
+
+    def export_plan(self, path):
+        if self.reviewed_plan is None or self.operation_errors or self.cancel_event.is_set():
+            raise ValueError("Only complete, successful previews can be exported.")
+        output = os.path.realpath(os.path.abspath(os.fspath(path)))
+        for root in (self.src, self.dest):
+            base = os.path.realpath(os.path.abspath(root))
+            if (os.path.splitdrive(base)[0].casefold() == os.path.splitdrive(output)[0].casefold()
+                    and os.path.commonpath((base, output)) == base):
+                raise ValueError("Export the plan outside the source and destination libraries.")
+        with open(output, "x", encoding="utf-8") as handle:
+            try:
+                json.dump(self.reviewed_plan, handle, indent=2, ensure_ascii=True, allow_nan=False)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            except (OSError, ValueError, TypeError):
+                handle.close()
+                os.unlink(output)
+                raise
+
+    def _validate_audio_only_mode(self):
+        if not self.audio_only:
+            return
+        source = os.path.normcase(os.path.abspath(self.src))
+        destination = os.path.normcase(os.path.abspath(self.dest))
+        if (os.path.splitdrive(source)[0] == os.path.splitdrive(destination)[0]
+                and os.path.commonpath((source, destination)) in (source, destination)):
+            raise ValueError("Audio-only import requires separate, non-overlapping source and destination folders.")
+        if serum_presets.is_resource_root(self.src):
+            raise ValueError(
+                "Complete Serum resource imports require the normal copy-only resource workflow. "
+                "Turn off Audio samples only."
+            )
 
     def get_metadata_drum_target(self, filename):
         """Cross-references file data maps against internal metadata arrays."""
@@ -2291,7 +3137,10 @@ class ParallelLibrarySorter:
                 self.move_log_path = _new_move_log_path()
             if not details:
                 details["destination_identity"] = _file_identity(destination)
-            _append_move_record(self.move_log_path, source, destination, **details)
+            details.setdefault("job_kind", "organize" if self.src == self.dest else "import")
+            details.setdefault("source_root", self.src)
+            details.setdefault("destination_root", self.dest)
+            return _append_move_record(self.move_log_path, source, destination, **details)
 
     def retain_duplicate_for_undo(self, source, destination, tags):
         os.makedirs(_move_log_dir(), exist_ok=True)
@@ -2312,8 +3161,9 @@ class ParallelLibrarySorter:
             for tag in tags:
                 if tag == "favorite":
                     expected_personal.setdefault(tag, 1)
-            self.log_move(
+            return self.log_move(
                 source, destination, operation="duplicate", recovery=recovery,
+                destination_identity=_file_identity(source),
                 source_live_tags=source_tags, destination_live_tags=destination_tags,
                 merged_live_tags=sorted(set(source_tags + destination_tags)),
                 source_index=source_index, destination_index=destination_index,
@@ -2341,12 +3191,13 @@ class ParallelLibrarySorter:
             })
 
     def process_single_file(self, root, f):
-        """Processes categorization, namespacing adjustments, and moves files to target folders instantly."""
+        """Plan one file, or plan and execute it for single-file callers."""
         global BPM_RANGES, DRUM_KEYWORDS, SYNTH_EXTS, NATIVE_EXTS
         
         try:
             if self.cancel_event.is_set():
                 return
+            self._validate_audio_only_mode()
             f = str(f)
             f_lower = f.lower()
             root_lower = str(root).lower()
@@ -2354,8 +3205,15 @@ class ParallelLibrarySorter:
             # Extract the actual extension string from the tuple split
             ext_tuple = os.path.splitext(f_lower)
             ext = ext_tuple[1].strip() if len(ext_tuple) > 1 else ""
+            if not self._accepts_file(f):
+                self.increment_stat_safe("Non-audio Files Excluded")
+                self.skipped_records.append({"source": os.path.join(root, f), "reason": "file_type_excluded"})
+                return
             
             s_path = os.path.normpath(os.path.join(root, f))
+            if serum_presets.is_resource_path(root):
+                self.skipped_records.append({"source": s_path, "reason": "serum_resource_preserved"})
+                return
             target_dir = None
             stat_key = "Errors/Skipped Files"
             classification_reason = "unclassified"
@@ -2364,7 +3222,9 @@ class ParallelLibrarySorter:
                 indexed_tags = self.indexed_tags_by_path.get(s_path, [])
             else:
                 try:
-                    indexed_tags = get_asset_tags(s_path)
+                    indexed_tags = (
+                        _read_routing_tags().get(s_path, []) if self.preview_only else get_asset_tags(s_path)
+                    )
                 except sqlite3.Error:
                     indexed_tags = []
             tags = [
@@ -2402,7 +3262,17 @@ class ParallelLibrarySorter:
                     relayout_loop = (path_segments[1] == "loops" and ext in AUDIO_EXTS
                                      and is_generated_loop_folder(path_segments[2:-1]))
 
-            if is_already_sorted and not relayout_loop:
+            recover_serum_preset = (
+                bool(path_segments) and path_segments[0] == "live instrument racks"
+                and ext == ".serumpreset" and ext in SYNTH_EXTS and ext not in NATIVE_EXTS
+            )
+            migrate_loose_serum_preset = (
+                len(path_segments) == 2 and path_segments[0] == "serum presets"
+                and ext in serum_presets.PRESET_EXTENSIONS and ext in SYNTH_EXTS
+                and ext not in NATIVE_EXTS and serum_presets.is_user_folder(SYNTH_EXTS[ext])
+            )
+            if (is_already_sorted and not relayout_loop and not recover_serum_preset
+                    and not migrate_loose_serum_preset):
                 return
 
             if relayout_loop:
@@ -2429,22 +3299,23 @@ class ParallelLibrarySorter:
                         break
                     
             if grid_matched_folder:
-                if classification_reason == "unclassified":
-                    classification_reason = "filename_rule"
-                    classification_confidence = 0.95
-                if "/" in grid_matched_folder or "\\" in grid_matched_folder:
+                if ext in NATIVE_EXTS:
+                    target_dir = os.path.join(self.dest, NATIVE_EXTS[ext])
+                elif ext in SYNTH_EXTS:
+                    target_dir = os.path.join(
+                        self.dest, serum_presets.destination(f, SYNTH_EXTS[ext]))
+                elif ext in ('.mid', '.midi'):
+                    target_dir = os.path.join(self.dest, "Midi")
+                else:
                     target_dir = os.path.join(
                         self.dest, *tag_evidence.one_shot_folder(grid_matched_folder))
-                else:
-                    if ext in NATIVE_EXTS: 
-                        target_dir = os.path.join(self.dest, NATIVE_EXTS.get(ext, "Live Instrument Racks"))
-                    elif ext in SYNTH_EXTS: 
-                        target_dir = os.path.join(self.dest, SYNTH_EXTS.get(ext, "Serum Presets"))
-                    elif ext == '.mid' or ext == '.midi':
-                        target_dir = os.path.join(self.dest, "Midi")
-                    else: 
-                        target_dir = os.path.join(
-                            self.dest, *tag_evidence.one_shot_folder(grid_matched_folder))
+
+                if ext in NATIVE_EXTS or ext in SYNTH_EXTS or ext in ('.mid', '.midi'):
+                    classification_reason = "file_extension"
+                    classification_confidence = 0.90
+                elif classification_reason == "unclassified":
+                    classification_reason = "filename_rule"
+                    classification_confidence = 0.95
                 
                 if ext in NATIVE_EXTS: stat_key = "Native Live Racks (.adg, .amxd, .alc, .adv)"
                 elif ext in SYNTH_EXTS: stat_key = "Synth Presets & Wavetables (.fxp, .vital)"
@@ -2482,7 +3353,8 @@ class ParallelLibrarySorter:
                 elif ext in SYNTH_EXTS:
                     classification_reason = "file_extension"
                     classification_confidence = 0.90
-                    target_dir = os.path.join(self.dest, SYNTH_EXTS.get(ext, "Serum Presets"))
+                    target_dir = os.path.join(
+                        self.dest, serum_presets.destination(f, SYNTH_EXTS[ext]))
                     stat_key = "Synth Presets & Wavetables (.fxp, .vital)"
                 elif ext == '.mid' or ext == '.midi':
                     classification_reason = "file_extension"
@@ -2511,21 +3383,32 @@ class ParallelLibrarySorter:
                     target_dir = os.path.join(self.dest, "Live Instrument Racks")
                     stat_key = "Native Live Racks (.adg, .amxd, .alc, .adv)"
                 else:
+                    self.skipped_records.append({"source": s_path, "reason": "unsupported_file_type"})
                     return
 
-            target_dir = os.path.normpath(target_dir)
+            target_dir = _validate_destination(self.dest, target_dir)
+            _validate_destination(self.dest, os.path.join(target_dir, f))
             manual = tag_evidence.interpret_manual_tags(
                 self.manual_live_assignments.get(os.path.normcase(os.path.abspath(s_path)), ())
             )
             if os.path.normpath(root) == target_dir and (
-                not self.preview_only or not manual.assignments
+                not manual.assignments
             ):
+                self.skipped_records.append({"source": s_path, "reason": "already_organized"})
                 return
             tags = sorted(set(
                 tags + derive_filename_tags(f) +
                 [f"category:{os.path.basename(target_dir)}"]
             ))
-            if self.preview_only:
+            with self._plan_lock:
+                record = self._reserve_destination(s_path, target_dir, f)
+            record.update({
+                "source": s_path, "filename": f, "destination": target_dir,
+                "reason": classification_reason, "confidence": classification_confidence,
+                "tags": tags, "stat_key": stat_key,
+            })
+            self.operation_plan.append(record)
+            if self.preview_only or self._planning_only:
                 tag_suggestion = None
                 if manual.assignments:
                     suggested = (
@@ -2555,91 +3438,19 @@ class ParallelLibrarySorter:
                         "source": "live_manual", "assignments": list(manual.assignments),
                         "sound_type": manual.sound_type, "destination": suggested, "status": status,
                     }
-                try:
-                    with self.lock:
-                        index_asset(s_path, target_dir, classification_reason,
-                                    classification_confidence, tags)
-                except (OSError, sqlite3.Error) as index_error:
-                    self.window.after(0, lambda: self.update_status(
-                        f"Asset index could not be updated: {index_error}"))
-                with self.lock:
-                    self.preview_records.append({
-                        "source": os.path.normpath(s_path),
-                        "filename": f,
-                        "destination": target_dir,
-                        "reason": classification_reason,
-                        "confidence": classification_confidence,
-                        "tags": tags,
-                        "tag_suggestion": tag_suggestion,
-                    })
-                    self.processed_files += 1
+                record["tag_suggestion"] = tag_suggestion
+                if self.preview_only:
+                    self.preview_records.append(record)
+                    if record["action"] == "duplicate":
+                        self.increment_stat_safe("Skipped Duplicate Items")
                 return
 
-            if self.cancel_event.is_set():
-                return
-
-            d_path = os.path.normpath(os.path.join(target_dir, f))
-            
-            if os.path.normpath(root) == target_dir: return
-
-            os.makedirs(target_dir, exist_ok=True)
-            if os.name == "nt":
-                try:
-                    os.chmod(s_path, stat.S_IWRITE)
-                except OSError:
-                    pass
-            
-            if os.path.exists(d_path):
-                s_crc = calculate_crc32(s_path)
-                d_crc = calculate_crc32(d_path)
-                if s_crc is not None and s_crc == d_crc:
-                    if not self.copy_mode:
-                        self.retain_duplicate_for_undo(s_path, d_path, tags)
-                    self.increment_stat_safe("Skipped Duplicate Items")
-                    ableton_tags.transfer_sample(
-                        s_path, d_path, copy=self.copy_mode, duplicate=True
-                    )
-                    index_asset(
-                        d_path, target_dir, classification_reason,
-                        classification_confidence, tags,
-                        previous_path=s_path if not self.copy_mode else None
-                    )
-                    refresh_live_tag_cache([d_path])
-                    return
-                else:
-                    counter = 1
-                    base_name, file_ext = os.path.splitext(f)
-                    while os.path.exists(d_path):
-                        d_path = os.path.normpath(os.path.join(target_dir, f"{base_name}_{counter}{file_ext}"))
-                        counter += 1
-
-            current_processed = self.processed_files + 1
-            if current_processed % 25 == 0 or current_processed == self.total_files:
-                self.window.after(0, lambda: self.update_status(f"Filing Asset ({current_processed}/{self.total_files}) -> {f}"))
-            
-            if not self.copy_mode and not self.preview_only:
-                self.log_move(s_path, d_path, destination_identity=_file_identity(s_path))
-                ableton_tags.transfer_sample(s_path, d_path)
-            else:
-                ableton_tags.transfer_sample(s_path, d_path, copy=True)
-            try:
-                with self.lock:
-                    index_asset(
-                        d_path, target_dir, classification_reason,
-                        classification_confidence, tags,
-                        previous_path=s_path if not self.copy_mode else None
-                    )
-                    refresh_live_tag_cache([d_path])
-            except (OSError, sqlite3.Error) as index_error:
-                self.window.after(0, lambda: self.update_status(
-                    f"Asset index could not be updated: {index_error}"))
-            
-            self.increment_stat_safe(stat_key)
+            self._execute_record(record)
         except Exception as error:
             operation = "preview" if self.preview_only else ("copy" if self.copy_mode else "move")
             self.record_operation_error(
                 locals().get("s_path", os.path.join(root, str(f))),
-                locals().get("d_path", locals().get("target_dir", "")),
+                locals().get("record", {}).get("destination_path", locals().get("target_dir", "")),
                 operation,
                 error
             )
@@ -2648,12 +3459,369 @@ class ParallelLibrarySorter:
             with self.lock: 
                 self.processed_files += 1
 
+    @staticmethod
+    def _destination_key(path):
+        return os.path.abspath(path).casefold()
+
+    @staticmethod
+    def _routing_state():
+        return json.dumps({
+            "DRUM_KEYWORDS": DRUM_KEYWORDS, "RULE_METADATA": RULE_METADATA,
+            "SYNTH_EXTS": SYNTH_EXTS, "NATIVE_EXTS": NATIVE_EXTS,
+            "BPM_RANGES": BPM_RANGES, "LOOP_LAYOUT": LOOP_LAYOUT,
+            "IGNORED_DIRECTORIES": IGNORED_DIRECTORIES,
+        })
+
+    def _reserve_destination(self, source, target_dir, filename):
+        folder = Path(target_dir).absolute()
+        folders = {folder, *folder.parents} - self._destination_metadata_folders
+        for metadata_folder in folders:
+            _check_unlinked_path(metadata_folder / "Ableton Folder Info")
+            ableton_tags.read_folder_tags(str(metadata_folder))
+        self._destination_metadata.update(self._folder_metadata_state(folders))
+        self._destination_metadata_folders.update(folders)
+        if os.path.islink(source) or not os.path.isfile(source):
+            raise ValueError(f"Source must be an existing, unlinked file: {source}")
+        directory = Path(os.path.abspath(target_dir))
+        library = Path(os.path.abspath(self.dest))
+        directory_keys = []
+        while True:
+            if os.path.lexists(directory) and not directory.is_dir():
+                raise FileExistsError(f"A file blocks the planned destination folder: {directory}")
+            directory_key = self._destination_key(directory)
+            directory_keys.append(directory_key)
+            reserved = self._reserved_destinations.get(directory_key)
+            if reserved and reserved[1] is not None:
+                raise FileExistsError(f"A planned file blocks the destination folder: {directory}")
+            if directory == library:
+                break
+            directory = directory.parent
+        source_identity = _file_identity(source)
+        self._planned_directories.update(directory_keys)
+        base, extension = os.path.splitext(filename)
+        counter = 0
+        while True:
+            if self.cancel_event.is_set():
+                raise ValueError("Destination planning cancelled; no file was transferred.")
+            name = filename if not counter else f"{base}_{counter}{extension}"
+            destination = os.path.join(target_dir, name)
+            _validate_destination(self.dest, destination)
+            key = self._destination_key(destination)
+            reserved = self._reserved_destinations.get(key)
+            identity = None
+            provider = None
+            if reserved:
+                destination, identity, provider = reserved
+            elif key in self._planned_directories:
+                pass
+            elif os.path.lexists(destination):
+                if os.path.isfile(destination):
+                    identity = _file_identity(destination)
+                self._reserved_destinations[key] = (destination, identity, None)
+            else:
+                self._reserved_destinations[key] = (destination, source_identity, source)
+                return {
+                    "destination_path": destination, "source_identity": source_identity,
+                    "destination_identity": None, "provider": None,
+                    "action": "copy" if self.copy_mode else "move",
+                    "collision": "rename" if counter else "none",
+                }
+            if identity and (identity["size"], identity["sha256"]) == (
+                source_identity["size"], source_identity["sha256"]
+            ):
+                if (provider is None and os.path.normcase(source) != os.path.normcase(destination)
+                        and os.path.samefile(source, destination)):
+                    raise ValueError(f"Source and destination refer to the same file: {destination}")
+                return {
+                    "destination_path": destination, "source_identity": source_identity,
+                    "destination_identity": identity, "provider": provider,
+                    "action": "in_place" if os.path.normcase(source) == os.path.normcase(destination) else "duplicate",
+                    "collision": "identical",
+                }
+            counter += 1
+
+    def _execute_group(self, records):
+        for record in records:
+            if self.cancel_event.is_set():
+                return
+            try:
+                self._execute_record(record)
+            except Exception as error:
+                self.record_operation_error(
+                    record["source"], record["destination_path"],
+                    "copy" if self.copy_mode else "move", error,
+                )
+                self.increment_stat_safe("Errors/Skipped Files")
+            finally:
+                with self.lock:
+                    self.processed_files += 1
+
+    def _execute_record(self, record):
+        if self.cancel_event.is_set() or record["action"] == "in_place":
+            return
+        source, destination = record["source"], record["destination_path"]
+        target_dir = os.path.dirname(destination)
+        _validate_destination(self.dest, destination)
+        if os.path.islink(source) or _file_identity(source) != record["source_identity"]:
+            raise ValueError(f"Source changed after destination planning; preview again: {source}")
+        duplicate = record["action"] == "duplicate"
+        if duplicate:
+            if record["provider"] and record["provider"] not in self._completed_plan_sources:
+                raise ValueError(f"Planned duplicate depends on a file that was not transferred: {destination}")
+            if not os.path.isfile(destination) or _file_identity(destination) != record["destination_identity"]:
+                raise ValueError(f"Duplicate destination changed after planning; preview again: {destination}")
+        elif os.path.lexists(destination):
+            raise FileExistsError(f"Planned destination is now occupied; preview again: {destination}")
+        os.makedirs(target_dir, exist_ok=True)
+        _validate_destination(self.dest, destination)
+        record_id = None
+        if not self.copy_mode:
+            if duplicate:
+                record_id = self.retain_duplicate_for_undo(source, destination, record["tags"])
+            else:
+                record_id = self.log_move(source, destination, destination_identity=record["source_identity"])
+        application = _transfer_application(
+            record["reason"], record["confidence"], record["tags"],
+            log_path=self.move_log_path if record_id else None, record_id=record_id,
+        )
+        ableton_tags.transfer_sample(
+            source, destination, copy=self.copy_mode, duplicate=duplicate,
+            application=application, reconcile=_reconcile_transfer_application,
+        )
+        self._completed_plan_sources.add(source)
+        self.increment_stat_safe("Skipped Duplicate Items" if duplicate else record["stat_key"])
+        current = self.processed_files + 1
+        if current % 25 == 0 or current == self.total_files:
+            self.window.after(0, lambda count=current: self.update_status(
+                f"Filing Asset ({count}/{self.total_files}) -> {os.path.basename(destination)}"
+            ))
+
 # sorter_engine.py - Piece 7: Low-Level Data Validation & XML Tag Harvesters
     def force_delete_empty_folders(self, target_path):
         """Class method wrapper hook that allows test runners to cleanly trigger 
         the structural folder scrub utility across targeted path strings.
         """
         return force_delete_empty_folders(target_path)
+
+
+class SerumResourceImporter(ParallelLibrarySorter):
+    """Copy a complete Serum installation without applying sound-sorting rules."""
+
+    def __init__(self, src_path, dest_path, window_el, update_status_callback, done_callback,
+                 copy_mode=True, preview_only=False, *, approved_plan=None):
+        super().__init__(
+            src_path, dest_path, window_el, update_status_callback, done_callback,
+            copy_mode=copy_mode, smart_learning_enabled=False, preview_only=preview_only,
+            approved_plan=approved_plan,
+        )
+        self.stats.update({
+            "Serum 2 Resource Files Copied": 0,
+            "Serum 2 Resource Files Planned": 0,
+            "Serum 2 Resource Folders Created": 0,
+        })
+        self._resource_bytes_copied = 0
+
+    @staticmethod
+    def _check_path(path):
+        _check_unlinked_path(path)
+
+    def _resource_plan(self):
+        source = Path(os.path.abspath(self.src))
+        target = Path(os.path.abspath(self.dest)) / "Serum 2 Presets"
+        self._check_path(source)
+        self._check_path(target)
+        if not self.copy_mode:
+            raise ValueError("Complete Serum 2 resource imports are copy-only; originals must be kept.")
+        if not all((source / name).is_dir() for name in ("Presets", "Tables", "Samples")):
+            raise ValueError(
+                "Select the complete Serum 2 resource folder containing Presets, Tables and Samples, "
+                "not an individual preset subfolder."
+            )
+        try:
+            common = os.path.commonpath((str(source), str(target)))
+        except ValueError:
+            common = ""
+        if os.path.normcase(common) in (os.path.normcase(str(source)), os.path.normcase(str(target))):
+            raise ValueError("Serum source and destination must not overlap; no files were copied.")
+        directories = [target]
+        files = []
+        stack = [source]
+        while stack:
+            if self.cancel_event.is_set():
+                return [], []
+            directory = stack.pop()
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    path = Path(entry.path)
+                    self._check_path(path)
+                    destination = target / path.relative_to(source)
+                    self._check_path(destination)
+                    if entry.is_dir(follow_symlinks=False):
+                        directories.append(destination)
+                        stack.append(path)
+                    elif entry.is_file(follow_symlinks=False):
+                        identity = _file_identity(path)
+                        duplicate = False
+                        if destination.exists():
+                            if not destination.is_file():
+                                raise FileExistsError(f"A resource file conflicts with a folder: {destination}")
+                            existing = _file_identity(destination)
+                            duplicate = (identity["size"], identity["sha256"]) == (
+                                existing["size"], existing["sha256"])
+                            if not duplicate:
+                                raise FileExistsError(
+                                    f"Different resource file already exists: {destination}. "
+                                    "Nothing was copied; choose a clean destination or resolve the conflict."
+                                )
+                        files.append((path, destination, identity, duplicate))
+                    else:
+                        raise ValueError(f"Unsupported resource entry: {path}")
+        for directory in directories:
+            self._check_path(directory)
+            for parent in (directory, *directory.parents):
+                if parent.exists() and not parent.is_dir():
+                    raise NotADirectoryError(f"A resource folder conflicts with a file: {parent}")
+        return directories, files
+
+    def _copy_resource(self, source, destination, identity):
+        self._check_path(source)
+        self._check_path(destination)
+        if _file_identity(source) != identity:
+            raise ValueError(f"Source changed after preview; not copied: {source}")
+        with destination.open("xb") as output:
+            try:
+                with source.open("rb") as input_file:
+                    shutil.copyfileobj(input_file, output)
+                output.flush()
+                os.fsync(output.fileno())
+                if _file_identity(source) != identity:
+                    raise ValueError(f"Source changed during copy: {source}")
+                copied = _file_identity(destination)
+                if (copied["size"], copied["sha256"]) != (identity["size"], identity["sha256"]):
+                    raise ValueError(f"Copied resource failed verification: {destination}")
+            except (OSError, ValueError):
+                output.close()
+                destination.unlink()
+                raise
+        shutil.copystat(source, destination)
+
+    def start_parallel_sort(self, *, job_lease=None):
+        lease = self._claim_job("Serum resource preview" if self.preview_only else "Serum resource import", job_lease)
+        if lease is None:
+            return
+        started = time.perf_counter()
+        def pipeline():
+            current_source = self.src
+            current_destination = os.path.join(self.dest, "Serum 2 Presets")
+            try:
+                planning_started = time.perf_counter()
+                self.window.after(0, lambda: self.update_status(
+                    "Checking complete Serum 2 resource tree and destination conflicts..."
+                ))
+                directories, files = self._resource_plan()
+                if self.cancel_event.is_set():
+                    return
+                self.phase_seconds["planning_seconds"] = time.perf_counter() - planning_started
+                validation_started = time.perf_counter()
+                if (directories, files) != self._resource_plan():
+                    raise ValueError("Serum resource inputs changed during planning; no files were copied.")
+                if self.cancel_event.is_set():
+                    return
+                self.total_files = len(files)
+                self.reviewed_plan = {
+                    "version": 1, "kind": "serum_resources",
+                    "source_root": os.path.abspath(self.src), "destination_root": os.path.abspath(self.dest),
+                    "copy_mode": bool(self.copy_mode),
+                    "directories": [str(path) for path in directories],
+                    "records": [{
+                        "source": str(source), "destination_path": str(destination),
+                        "source_identity": identity, "action": "duplicate" if duplicate else "copy",
+                        "destination_identity": _file_identity(destination) if duplicate else None,
+                    } for source, destination, identity, duplicate in files],
+                    "settings": self._routing_state(), "skipped": [],
+                    "integration_steps": [
+                        "Select the copied Serum 2 Presets root as the plugin resource location.",
+                        "Open a representative preset and verify its dependencies in Serum.",
+                        "Original resources are retained; plugin preferences are not changed automatically.",
+                    ],
+                }
+                if self.approved_plan is not None:
+                    self.validate_approved_plan(self.approved_plan)
+                self.phase_seconds["approval_validation_seconds"] = time.perf_counter() - validation_started
+                transfer_started = time.perf_counter()
+                if self.preview_only:
+                    for source, destination, _identity, duplicate in files:
+                        if self.cancel_event.is_set():
+                            break
+                        self.preview_records.append({
+                            "source": str(source), "filename": str(source.relative_to(Path(os.path.abspath(self.src)))),
+                            "destination": str(destination.parent),
+                            "destination_path": str(destination),
+                            "action": "duplicate" if duplicate else "copy",
+                            "collision": "identical" if duplicate else "none",
+                            "reason": "serum_resource_duplicate" if duplicate else "serum_resource_copy",
+                            "confidence": 1.0, "tags": [],
+                        })
+                        key = "Skipped Duplicate Items" if duplicate else "Serum 2 Resource Files Planned"
+                        self.increment_stat_safe(key)
+                        self.processed_files += 1
+                elif not self.cancel_event.is_set():
+                    for directory in directories:
+                        if self.cancel_event.is_set():
+                            break
+                        self._check_path(directory)
+                        if not directory.exists():
+                            directory.mkdir(parents=True, exist_ok=True)
+                            self.increment_stat_safe("Serum 2 Resource Folders Created")
+                    for source, destination, identity, duplicate in files:
+                        if self.cancel_event.is_set():
+                            break
+                        current_source = str(source)
+                        current_destination = str(destination)
+                        if duplicate:
+                            self._check_path(source)
+                            self._check_path(destination)
+                            current = _file_identity(destination)
+                            if (_file_identity(source) != identity
+                                    or (current["size"], current["sha256"]) != (
+                                        identity["size"], identity["sha256"])):
+                                raise ValueError(f"Duplicate changed during import: {destination}")
+                            self.increment_stat_safe("Skipped Duplicate Items")
+                        else:
+                            self._copy_resource(source, destination, identity)
+                            self._resource_bytes_copied += identity["size"]
+                            self.increment_stat_safe("Serum 2 Resource Files Copied")
+                        self.processed_files += 1
+                        if self.processed_files % 100 == 0:
+                            count = self.processed_files
+                            self.window.after(0, lambda count=count: self.update_status(
+                                f"Serum 2 resources checked/copied: {count:,}/{self.total_files:,}"
+                            ))
+                if not self.preview_only:
+                    self.phase_seconds["transfer_seconds"] = time.perf_counter() - transfer_started
+                message = (
+                    "Serum 2 import cancelled; completed copies were kept, originals were not changed."
+                    if self.cancel_event.is_set() else
+                    "Serum 2 resource preview complete; no files changed."
+                    if self.preview_only else
+                    "Serum 2 resource import complete; originals kept and relative paths preserved."
+                )
+                self.window.after(0, lambda: self.update_status(message))
+            except (OSError, ValueError) as error:
+                self.record_operation_error(current_source, current_destination,
+                                            "Serum 2 resource import", error)
+                self.increment_stat_safe("Errors/Skipped Files")
+                self.window.after(0, lambda error=error: self.update_status(
+                    f"Serum 2 import stopped: {error}"
+                ))
+            finally:
+                try:
+                    self._record_performance(started, "serum_resource_import")
+                finally:
+                    lease.release()
+                    self.window.after(0, lambda: self.done_callback(self.stats, self.copy_mode))
+
+        self._start_owned_thread(pipeline, lease, "serum-resource-import")
 
 
 # ---------------------------------------------------------------------------------
@@ -2812,8 +3980,12 @@ def force_delete_empty_folders(root_dir):
     """Recursively sweeps and clears out dead paths from storage blocks."""
     count = 0
     for root, dirs, _ in os.walk(root_dir, topdown=False):
+        if serum_presets.is_resource_path(root):
+            continue
         for d in dirs:
             dir_path = os.path.join(root, d)
+            if serum_presets.is_resource_path(dir_path):
+                continue
             try:
                 if os.name == "nt":
                     os.chmod(dir_path, stat.S_IWRITE)

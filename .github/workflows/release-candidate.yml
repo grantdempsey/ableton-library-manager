@@ -1,0 +1,107 @@
+name: Publish release candidate
+
+on:
+  push:
+    tags: ["v*-rc.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  identity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Check candidate version
+        run: |
+          python -c "import build_info, os; assert os.environ['GITHUB_REF_NAME'] == 'v' + build_info.VERSION, 'Tag/version mismatch'"
+
+  windows:
+    needs: identity
+    uses: ./.github/workflows/windows-validation.yml
+
+  macos:
+    needs: identity
+    uses: ./.github/workflows/macos-validation.yml
+
+  publish:
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: unsigned-*
+          path: downloads
+      - name: Verify candidate archives and prepare assets
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          for platform in unsigned-windows unsigned-macos-15 unsigned-macos-15-intel; do
+            (cd "downloads/$platform" && sha256sum -c SHA256SUMS.txt)
+          done
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import shutil
+          import zipfile
+          import build_info
+
+          platforms = {
+              "unsigned-windows": "windows",
+              "unsigned-macos-15": "macos-arm64",
+              "unsigned-macos-15-intel": "macos-x86_64",
+          }
+          assets = Path("release-assets")
+          assets.mkdir()
+          checksums = []
+          for artifact, platform in platforms.items():
+              archives = list((Path("downloads") / artifact).glob("*.zip"))
+              if len(archives) != 1:
+                  raise RuntimeError(f"Expected one archive for {artifact}")
+              archive = archives[0]
+              with zipfile.ZipFile(archive) as package:
+                  identity_path = (
+                      "AbletonLibraryManager/_internal/build_info.json"
+                      if platform == "windows"
+                      else "AbletonLibraryManager.app/Contents/Resources/build_info.json"
+                  )
+                  identity = json.loads(package.read(identity_path))
+              if (identity["git_revision"] != os.environ["GITHUB_SHA"]
+                      or identity["git_dirty"] is not False
+                      or identity["version"] != build_info.VERSION
+                      or identity["source_sha256"] != build_info.source_hash(Path.cwd())):
+                  raise RuntimeError(f"Candidate source identity mismatch for {artifact}")
+              destination = assets / f"{os.environ['TAG']}-{platform}-unsigned.zip"
+              shutil.copyfile(archive, destination)
+              with destination.open("rb") as stream:
+                  digest = hashlib.file_digest(stream, "sha256").hexdigest()
+              checksums.append(f"{digest}  {destination.name}")
+          (assets / "SHA256SUMS.txt").write_text("\n".join(checksums) + "\n", encoding="utf-8")
+          shutil.copyfile("RELEASE-ACCEPTANCE.md", assets / "RELEASE-ACCEPTANCE.md")
+          PY
+      - name: Publish verified unsigned prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" release-assets/* --verify-tag --draft --prerelease \
+            --title "$TAG - Windows and macOS release candidate (unsigned)" \
+            --notes-file RELEASE-NOTES.md
+          gh release edit "$TAG" --draft=false

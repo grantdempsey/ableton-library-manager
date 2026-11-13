@@ -4,6 +4,7 @@ from tkinter import ttk
 from tab_matrix import messagebox
 import os
 import tempfile
+import webbrowser
 import gui_theme
 
 OPTION_HELP_URL = "https://help.ableton.com/hc/en-us/articles/6003224107292-Options-txt-file"
@@ -104,25 +105,28 @@ class ExperimentalTab(ttk.Frame):
         )
         btn_open.pack(side="right", padx=(6, 0), ipady=1) # 🌟 FIXED: Shifted ipady to the geometry pack layer
 
+        settings_actions = tk.Frame(self, bg=t["bg_dark"])
         btn_save = tk.Button(
-            f_path_row, text="💾 Save changes", font=("Segoe UI", 9, "bold"),
+            settings_actions, text="Save changes", font=("Segoe UI", 9, "bold"),
             bg=t["btn_primary"], fg=t["btn_primary_fg"],
             activebackground=t["btn_primary_hover"], activeforeground=t["btn_primary_fg"],
             bd=0, padx=15, command=self.write_live_options_file
         )
-        btn_save.pack(side="right", padx=(8, 0), ipady=2) # 🌟 FIXED: Shifted ipady to the geometry pack layer
+        btn_save.pack(side="left", ipady=2)
         tk.Button(
-            self, text="Reload settings from disk", command=self.read_live_options_file,
+            settings_actions, text="Reload settings from disk", command=self.read_live_options_file,
             bg=t["btn_secondary"], fg=t["fg_light"],
-        ).pack(anchor="w", padx=15, pady=(0, 5))
-        tk.Label(
-            self, text="Reference: " + OPTION_HELP_URL, wraplength=900, anchor="w",
-            justify="left", bg=t["bg_dark"], fg=t["fg_muted"],
-        ).pack(fill="x", padx=15, pady=(0, 5))
+        ).pack(side="left", padx=8)
+        tk.Button(
+            settings_actions, text="Ableton documentation",
+            command=self.open_options_help,
+            bg=t["btn_secondary"], fg=t["fg_light"],
+        ).pack(side="right")
 
         # --- DUAL COLUMN CHECKBOX SPLITTER WORKSPACE CONTAINER ---
         f_columns = tk.Frame(self, bg=t["bg_dark"])
         f_columns.pack(fill="x", padx=15, pady=5)
+        settings_actions.pack(side="bottom", fill="x", padx=15, pady=12)
         f_columns.columnconfigure(0, weight=1)
         f_columns.columnconfigure(1, weight=1)
 
@@ -299,6 +303,25 @@ class ExperimentalTab(ttk.Frame):
                 self.status_lbl.config(text=" Application Status: Preferences folder opened cleanly.", fg=gui_theme.THEME["accent_gold"])
         else:
             messagebox.showwarning("Directory Error", f"Target workspace path structure not yet generated:\n\n{target_dir}")
+
+    def open_options_help(self):
+        try:
+            if not webbrowser.open(OPTION_HELP_URL):
+                raise webbrowser.Error("The system browser did not open the page.")
+        except (OSError, webbrowser.Error) as error:
+            message = (
+                f"Could not open Ableton's Options.txt documentation: {error}\n\n"
+                f"Open this URL manually:\n{OPTION_HELP_URL}"
+            )
+            self._set_status(message, gui_theme.THEME["accent_gold"])
+            messagebox.showerror("Could not open Ableton help", message)
+            return False
+
+        self._set_status(
+            "Opened Ableton's Options.txt documentation in your browser.",
+            gui_theme.THEME["accent_neon"],
+        )
+        return True
 
     def read_live_options_file(self):
         """Parses the existing Options.txt file to synchronize checkbuttons and numerical caps based on reality."""

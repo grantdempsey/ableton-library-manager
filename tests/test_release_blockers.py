@@ -13,6 +13,7 @@ import zipfile
 
 import ableton_tags
 import gui_theme
+import library_jobs
 import live_tag_sync
 import sorter_engine
 from tab_organize import OrganizeTab
@@ -279,13 +280,45 @@ class RecoverySafetyTests(unittest.TestCase):
         ), mock.patch.object(sorter_engine.os.path, "expanduser", return_value=str(support)):
             self.assertEqual(str(support / "library_config.json"), sorter_engine._runtime_file("library_config.json"))
             self.assertEqual(str(support / "library_assets.db"), sorter_engine._runtime_file("library_assets.db"))
-        self.assertTrue(support.is_dir())
 
 
 class RecoveryUiTests(unittest.TestCase):
-    setUp = app_fixture.WindowsReleaseAcceptanceTests.setUp
     close_app = app_fixture.WindowsReleaseAcceptanceTests.close_app
     wait = app_fixture.WindowsReleaseAcceptanceTests.wait
+
+    def setUp(self):
+        app_fixture.WindowsReleaseAcceptanceTests.setUp(self)
+        self.app._startup_recovery_thread.join(timeout=5)
+        self.wait(lambda: not self.app._startup_recovery_pending)
+
+    def test_startup_recovery_runs_in_background_and_reports_success(self):
+        thread = self.app._startup_recovery_thread
+        thread.join(timeout=5)
+        self.app.update()
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(self.app._startup_recovery_pending)
+
+        with mock.patch.object(
+            sorter_engine, "recover_startup_transfers",
+            return_value={"journals_found": 1, "recovered": 1, "errors": []},
+        ) as recovery, mock.patch("tkinter.messagebox.showinfo") as notice:
+            self.app._startup_recovery_pending = True
+            self.app._start_startup_recovery()
+            self.wait(lambda: not self.app._startup_recovery_pending)
+
+        recovery.assert_called_once_with(str(self.library))
+        notice.assert_called_once()
+        self.assertIn("1 interrupted transfer records", notice.call_args.args[1])
+
+    def test_startup_migration_failure_releases_process_lock(self):
+        with mock.patch.object(
+            sorter_engine, "initialize_runtime_storage", side_effect=OSError("migration fixture")
+        ), mock.patch("tkinter.messagebox.showerror") as error:
+            self.app.__class__()
+        error.assert_called_once()
+        lease = library_jobs.coordinator.claim("verify lock release")
+        self.assertIsNotNone(lease)
+        lease.release()
 
     def test_cleanup_button_keeps_requested_size_with_long_backup_path_on_resize(self):
         page = self.app.organize_panel
@@ -304,8 +337,8 @@ class RecoveryUiTests(unittest.TestCase):
                     button.master.winfo_rootx() + button.master.winfo_width(),
                 )
                 self.assertGreaterEqual(
-                    page.lbl_backup_location.winfo_rooty(),
-                    button.winfo_rooty() + button.winfo_height(),
+                    button.winfo_rooty(),
+                    page.lbl_backup_location.winfo_rooty() + page.lbl_backup_location.winfo_height(),
                 )
 
     def test_shutdown_waits_for_blocked_undo_and_does_not_interrupt_recovery(self):
@@ -339,7 +372,8 @@ class RecoveryUiTests(unittest.TestCase):
     def test_backup_failure_requires_explicit_bypass_on_main_thread(self):
         page = self.app.organize_panel
         page.library_dir_var.set(str(self.library))
-        with mock.patch.object(page, "run_safeguard_archiver_thread", side_effect=OSError("disk full")), mock.patch(
+        self.preview_cleanup()
+        with mock.patch("tab_organize.ask_confirm", return_value=True), mock.patch.object(page, "run_safeguard_archiver_thread", side_effect=OSError("disk full")), mock.patch(
             "tab_organize.messagebox.askyesno", return_value=False
         ) as question, mock.patch.object(page, "kickoff_sorting_engine") as sort:
             page.execute_library_restructure()
@@ -348,6 +382,112 @@ class RecoveryUiTests(unittest.TestCase):
         self.assertIn("disk full", question.call_args.args[1])
         sort.assert_not_called()
         self.assertEqual("normal", page.btn_execute.cget("state"))
+        self.assertIsNone(library_jobs.coordinator.active_label)
+
+    def test_backup_completion_keeps_ownership_until_cleanup_starts(self):
+        page = self.app.organize_panel
+        page.library_dir_var.set(str(self.library))
+        self.preview_cleanup()
+        with mock.patch("tab_organize.ask_confirm", return_value=True), mock.patch("tab_organize.messagebox.showinfo"), mock.patch(
+            "tab_organize.messagebox.showwarning"
+        ):
+            page.execute_library_restructure()
+            self.app._background_jobs[-1][0].join(3)
+            self.assertIsNotNone(library_jobs.coordinator.active_label)
+            self.assertIsNone(library_jobs.coordinator.claim("Rival import"))
+            def finish():
+                if page.has_pending_job():
+                    self.app.after(10, finish)
+                else:
+                    self.app.quit()
+            timeout = self.app.after(5000, self.app.quit)
+            self.app.after(10, finish)
+            self.app.mainloop()
+            self.app.after_cancel(timeout)
+            self.assertFalse(page.has_pending_job())
+        self.assertIsNone(library_jobs.coordinator.active_label)
+        self.assertIsNone(page._cleanup_lease)
+        self.assertEqual([], page.active_sorter.operation_errors)
+        self.assertEqual([], self.callbacks)
+
+    def test_shutdown_releases_backup_ownership_without_starting_cleanup(self):
+        page = self.app.organize_panel
+        page.library_dir_var.set(str(self.library))
+        self.preview_cleanup()
+        with mock.patch("tab_organize.ask_confirm", return_value=True), mock.patch.object(
+            page, "run_safeguard_archiver_thread", return_value=(str(self.library), "fixture-backup.zip")
+        ), mock.patch.object(page, "kickoff_sorting_engine") as sort:
+            page.execute_library_restructure()
+            self.app._background_jobs[-1][0].join(3)
+            with mock.patch.object(self.app, "destroy") as destroy:
+                self.app.request_graceful_shutdown()
+                deadline = time.monotonic() + 5
+                while not destroy.called and time.monotonic() < deadline:
+                    self.app.update()
+                    time.sleep(0.01)
+                destroy.assert_called_once()
+            sort.assert_not_called()
+        self.assertIsNone(library_jobs.coordinator.active_label)
+        self.assertFalse(page.has_pending_job())
+        self.assertEqual([], self.callbacks)
+
+    def test_backup_thread_start_failure_does_not_leave_app_busy(self):
+        page = self.app.organize_panel
+        page.library_dir_var.set(str(self.library))
+        self.preview_cleanup()
+        with mock.patch("tab_organize.ask_confirm", return_value=True), mock.patch.object(
+            threading.Thread, "start", side_effect=RuntimeError("cannot start backup")
+        ), mock.patch("tab_organize.messagebox.askyesno", return_value=False) as question:
+            page.execute_library_restructure()
+            self.wait(lambda: not page.has_pending_job())
+        question.assert_called_once()
+        self.assertIn("cannot start backup", question.call_args.args[1])
+        self.assertIsNone(library_jobs.coordinator.active_label)
+        self.assertEqual("normal", page.btn_execute.cget("state"))
+
+    def preview_cleanup(self):
+        page = self.app.organize_panel
+        with mock.patch("tab_organize.themed_dialog", return_value=False):
+            page.preview_cleanup()
+            def finish():
+                if page.has_pending_job():
+                    self.app.after(10, finish)
+                else:
+                    self.app.quit()
+            timeout = self.app.after(5000, self.app.quit)
+            self.app.after(10, finish)
+            self.app.mainloop()
+            self.app.after_cancel(timeout)
+        self.assertFalse(page.has_pending_job())
+        self.assertIsNotNone(page.reviewed_plan)
+        self.assertEqual([], page.preview_sorter.operation_errors)
+        self.assertEqual([], self.callbacks)
+
+    def test_active_library_selection_persists_and_updates_every_tab(self):
+        selected = self.root / "selected-library"
+        selected.mkdir()
+        with mock.patch("gui_theme.messagebox.showwarning"):
+            self.assertTrue(self.app.set_active_library(str(selected)))
+        self.wait(lambda: not self.app.tags_panel._refresh_running)
+        expected = os.path.normpath(str(selected))
+        self.assertEqual(expected, gui_theme.USER_LIBRARY_PATH)
+        self.assertEqual(expected, self.app.active_library_var.get())
+        self.assertEqual(expected, self.app.import_dashboard.dest_dir_var.get())
+        self.assertEqual(expected, self.app.organize_panel.library_dir_var.get())
+        self.assertEqual(expected, sorter_engine.load_external_config()["ACTIVE_LIBRARY_PATH"])
+        self.assertEqual([], self.callbacks)
+
+    def test_active_library_change_is_refused_while_a_writer_is_active(self):
+        selected = self.root / "blocked-library"
+        selected.mkdir()
+        old = gui_theme.USER_LIBRARY_PATH
+        with library_jobs.coordinator.claim("Import"), mock.patch(
+            "gui_theme.messagebox.showwarning"
+        ) as notice:
+            self.assertFalse(self.app.set_active_library(str(selected)))
+        self.assertEqual(old, gui_theme.USER_LIBRARY_PATH)
+        self.assertNotEqual(os.path.normpath(str(selected)), self.app.organize_panel.library_dir_var.get())
+        notice.assert_called_once()
 
     def test_organize_operations_cannot_overlap_a_sort_or_preview(self):
         page = self.app.organize_panel
@@ -361,6 +501,7 @@ class RecoveryUiTests(unittest.TestCase):
                     page.scan_nested_folders()
                     page.repair_nested_folders()
                     page.undo_last_cleanup()
+                    page.scan_transfer_recovery()
                     page.preview_cleanup()
                     page.execute_library_restructure()
                 finally:

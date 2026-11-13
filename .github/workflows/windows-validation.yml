@@ -1,0 +1,116 @@
+name: Windows release validation
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-tests:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Run source tests with an isolated profile
+        shell: pwsh
+        run: |
+          $homeDir = Join-Path $env:GITHUB_WORKSPACE '.ci-profile'
+          New-Item -ItemType Directory -Force (Join-Path $homeDir 'Documents\Ableton\User Library') | Out-Null
+          $env:USERPROFILE = $homeDir
+          $env:HOME = $homeDir
+          $env:APPDATA = Join-Path $homeDir 'AppData\Roaming'
+          $env:LOCALAPPDATA = Join-Path $homeDir 'AppData\Local'
+          Remove-Item Env:OneDrive, Env:OneDriveConsumer, Env:OneDriveCommercial -ErrorAction SilentlyContinue
+          python -c "import tkinter; root = tkinter.Tk(); print('Tcl/Tk', root.tk.call('info', 'patchlevel')); root.destroy()"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -u -c "import faulthandler, unittest; faulthandler.dump_traceback_later(180, repeat=True); r = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.discover('tests')); raise SystemExit(not r.wasSuccessful())"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  packaged:
+    needs: source-tests
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install build tools and build
+        shell: pwsh
+        run: |
+          python -m pip install -r requirements-build.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python build_app.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exercise bundled code and native app
+        shell: pwsh
+        run: |
+          $candidate = @(Get-ChildItem release_builds -Directory -Filter 'candidate-*')
+          if ($candidate.Count -ne 1) { throw 'Expected exactly one build candidate' }
+          $package = Join-Path $candidate[0].FullName 'dist\AbletonLibraryManager'
+          $privateNames = @('library_config.json', 'library_assets.db', 'sidebar_cache.json', 'saved_searches.json', 'Options.txt', 'Log.txt', 'move_logs', 'config_backups', 'performance_logs', 'ALM Transfer Recovery')
+          $private = @(Get-ChildItem -LiteralPath $package -Recurse -Force | Where-Object {
+            $_.Name -in $privateNames -or $_.Name -match '\.(bak|db-journal|db-wal|db-shm)$'
+          })
+          if ($private.Count) { throw "Private/runtime state in package: $($private.FullName -join ', ')" }
+          $homeDir = Join-Path $env:GITHUB_WORKSPACE '.ci-profile'
+          New-Item -ItemType Directory -Force (Join-Path $homeDir 'Documents\Ableton\User Library') | Out-Null
+          $env:USERPROFILE = $homeDir
+          $env:HOME = $homeDir
+          $env:APPDATA = Join-Path $homeDir 'AppData\Roaming'
+          $env:LOCALAPPDATA = Join-Path $homeDir 'AppData\Local'
+          Remove-Item Env:OneDrive, Env:OneDriveConsumer, Env:OneDriveCommercial -ErrorAction SilentlyContinue
+          python tests\verify_windows_bundle.py $package
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\tests\smoke_windows_package.ps1 -PackageDirectory $package -EvidenceDirectory '.ci-evidence\original'
+      - name: Archive, extract and smoke tester download
+        shell: pwsh
+        run: |
+          $candidate = @(Get-ChildItem release_builds -Directory -Filter 'candidate-*')
+          $package = Join-Path $candidate[0].FullName 'dist\AbletonLibraryManager'
+          New-Item -ItemType Directory -Force tester-download, .ci-extracted | Out-Null
+          $archive = Join-Path $env:GITHUB_WORKSPACE 'tester-download\AbletonLibraryManager-Windows-unsigned-test.zip'
+          Compress-Archive -Path $package -DestinationPath $archive
+          Expand-Archive -LiteralPath $archive -DestinationPath .ci-extracted
+          $extracted = Join-Path $env:GITHUB_WORKSPACE '.ci-extracted\AbletonLibraryManager'
+          $originalFiles = @(Get-ChildItem $package -Recurse -File)
+          $extractedFiles = @(Get-ChildItem $extracted -Recurse -File)
+          if ($originalFiles.Count -ne $extractedFiles.Count) { throw 'Archive file count mismatch' }
+          foreach ($file in $originalFiles) {
+            $relative = $file.FullName.Substring($package.Length).TrimStart('\')
+            $copy = Join-Path $extracted $relative
+            if (-not (Test-Path -LiteralPath $copy) -or (Get-FileHash $file.FullName).Hash -ne (Get-FileHash $copy).Hash) { throw "Archive mismatch: $relative" }
+          }
+          & .\tests\smoke_windows_package.ps1 -PackageDirectory $extracted -EvidenceDirectory '.ci-evidence\extracted'
+          python -c "import housekeeping, sys; housekeeping.mark_validated(sys.argv[1])" $candidate[0].FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          (Get-FileHash $archive -Algorithm SHA256).Hash + '  ' + (Split-Path $archive -Leaf) | Set-Content tester-download\SHA256SUMS.txt
+          Copy-Item RELEASE-ACCEPTANCE.md tester-download\
+          "UNSIGNED TEST BUILD. Source: $env:GITHUB_SHA" | Set-Content tester-download\BUILD-INFO.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-windows
+          path: tester-download\
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-validation-evidence
+          path: .ci-evidence\
+          if-no-files-found: error
+          retention-days: 14

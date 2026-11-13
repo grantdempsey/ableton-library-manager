@@ -1,6 +1,8 @@
 # tab_exclusions.py - Piece 1: Framework Imports & Configuration Synchronization
 import tkinter as tk
-from tkinter import ttk
+import json
+import hashlib
+from tkinter import ttk, filedialog
 import gui_theme
 import sorter_engine
 from tab_matrix import ask_confirm, show_notice, messagebox
@@ -12,20 +14,31 @@ class ExclusionsTab(ttk.Frame):
         
         self.resolved_backend_key = "IGNORED_DIRECTORIES"
         self.active_exclusions_set = set()
+        self.configuration_read_only = bool(
+            sorter_engine.CONFIG_LOAD_ERROR or sorter_engine.XO_CONFIG_LOAD_ERROR
+        )
+        self.configuration_error = (
+            sorter_engine.CONFIG_LOAD_ERROR or sorter_engine.XO_CONFIG_LOAD_ERROR
+        )
         
         # Pull configurations and align memory slots
         self.synchronize_backend_variables()
 
         self.setup_ui_layout()
         self.refresh_exclusion_list()
+        try:
+            pending = sorter_engine.pending_legacy_exclusions()
+            if pending:
+                missing = sorted({name for entry in pending for name in entry["missing"]})
+                self.configuration_notice.config(
+                    text="Import/Organize is blocked until previous skipped folders are reviewed: "
+                         + ", ".join(missing),
+                )
+        except (OSError, ValueError) as error:
+            self.configuration_notice.config(text=f"Previous Skip Folders review failed: {error}")
 
     def synchronize_backend_variables(self):
-        """Forces the backend config loader to run and maps IGNORED_DIRECTORIES into UI memory."""
-        try:
-            sorter_engine.load_external_config()
-        except (OSError, ValueError) as error:
-            messagebox.showerror("Could not load skipped folders", str(error))
-
+        """Maps the configuration loaded by application startup into the UI."""
         if hasattr(sorter_engine, 'IGNORED_DIRECTORIES'):
             raw_val = sorter_engine.IGNORED_DIRECTORIES
             if isinstance(raw_val, (list, set)):
@@ -36,12 +49,45 @@ class ExclusionsTab(ttk.Frame):
         if "No Key Info" not in self.active_exclusions_set:
             self.active_exclusions_set.add("No Key Info")
 
+    def update_configuration_state(self):
+        """Lock edits once the shared profile has failed to load or save."""
+        error = sorter_engine.CONFIG_LOAD_ERROR or sorter_engine.XO_CONFIG_LOAD_ERROR
+        if error and not getattr(self, "configuration_read_only", False):
+            self.configuration_read_only = True
+            self.configuration_error = error
+            if hasattr(self, "ent_pattern"):
+                ExclusionsTab._set_edit_controls(self, "disabled")
+                notice = getattr(self, "configuration_notice", None)
+                if notice is not None:
+                    notice.config(
+                        text=f"Configuration could not be loaded. This list is read-only until it is repaired.\n{error}"
+                    )
+        return getattr(self, "configuration_read_only", False)
+
+    def _set_edit_controls(self, state):
+        for control in (getattr(self, "ent_pattern", None),
+                        getattr(self, "btn_add", None),
+                        getattr(self, "btn_remove", None),
+                        getattr(self, "btn_review", None)):
+            if control is not None:
+                control.config(state=state)
+
     def flush_changes_to_backend_memory(self):
         """Publish the new selection only after the profile was saved successfully."""
+        if ExclusionsTab.update_configuration_state(self):
+            return False
         try:
             sorter_engine.save_ignored_directories(self.active_exclusions_set)
         except (OSError, ValueError) as error:
             self.active_exclusions_set = set(sorter_engine.IGNORED_DIRECTORIES) | {"No Key Info"}
+            self.configuration_read_only = True
+            self.configuration_error = str(error)
+            ExclusionsTab._set_edit_controls(self, "disabled")
+            notice = getattr(self, "configuration_notice", None)
+            if notice is not None:
+                notice.config(
+                    text=f"Configuration could not be saved. This list is read-only until it is repaired.\n{error}"
+                )
             messagebox.showerror("Could not save skipped folders", str(error))
             return False
         return True
@@ -79,13 +125,23 @@ class ExclusionsTab(ttk.Frame):
             bd=0, padx=20, command=self.add_exclusion_pattern
         )
         btn_add.pack(side="right")
-        self.btn_remove = tk.Button(
-            f_row, text="Remove selected", font=("Segoe UI", 9),
-            bg=t["btn_danger"], fg="white", activebackground=t["btn_danger_hover"],
-            activeforeground="white", bd=1, relief="solid", padx=15,
-            command=self.remove_exclusion_pattern
+        self.btn_add = btn_add
+        self.configuration_notice = tk.Label(
+            self, text="", font=("Segoe UI", 9), bg=t["bg_dark"],
+            fg=t["accent_gold"], justify="left", anchor="w", wraplength=900,
         )
-        self.btn_remove.pack(side="right", padx=(0, 8))
+        self.configuration_notice.pack(fill="x", padx=15, pady=(0, 4))
+        self.btn_review = tk.Button(
+            self, text="Review previous settings", command=self.review_previous_settings,
+            bg=t["btn_secondary"], fg=t["fg_light"],
+        )
+        self.btn_review.pack(anchor="w", padx=15, pady=(0, 4))
+        if self.configuration_read_only:
+            error = self.configuration_error or "The configuration could not be loaded."
+            self.configuration_notice.config(
+                text=f"Configuration could not be loaded. This list is read-only until it is repaired.\n{error}"
+            )
+            self._set_edit_controls("disabled")
 
         # 3. INSULATED STYLE CONFIGURATION
         try:
@@ -108,6 +164,14 @@ class ExclusionsTab(ttk.Frame):
         # 4. ENTRY LISTING TABLE WINDOW DISPLAY CONTAINER
         grid_group = ttk.LabelFrame(self, text=" Folders currently skipped ")
         grid_group.pack(fill="both", expand=True, padx=15, pady=10)
+        self.btn_remove = tk.Button(
+            grid_group, text="Remove selected", font=("Segoe UI", 9),
+            bg=t["btn_secondary"], fg=t["fg_light"],
+            activebackground=t["btn_danger_hover"], activeforeground="white",
+            disabledforeground=t["fg_muted"], bd=1, padx=15, state="disabled",
+            command=self.remove_exclusion_pattern,
+        )
+        self.btn_remove.pack(side="bottom", anchor="e", padx=10, pady=(0, 10))
 
         f_tree_frame = tk.Frame(grid_group, bg=t["bg_field"], bd=1, relief="solid")
         f_tree_frame.pack(fill="both", expand=True, padx=10, pady=10)
@@ -122,8 +186,14 @@ class ExclusionsTab(ttk.Frame):
         scroll = ttk.Scrollbar(f_tree_frame, orient="vertical", command=self.tree.yview)
         scroll.pack(side="right", fill="y")
         self.tree.config(yscrollcommand=scroll.set)
+        self.tree.bind("<<TreeviewSelect>>", lambda _event: self._update_remove_state())
 
         self.focus_set()
+
+    def _update_remove_state(self):
+        self.btn_remove.config(
+            state="normal" if self.tree.selection() and not self.configuration_read_only else "disabled"
+        )
 
     def refresh_exclusion_list(self):
         """Wipes and re-populates active registry logs into layout grids accurately."""
@@ -135,8 +205,11 @@ class ExclusionsTab(ttk.Frame):
                         self.tree.insert("", tk.END, values=(item,))
             except Exception:
                 pass
+        self._update_remove_state()
 
     def add_exclusion_pattern(self):
+        if self.update_configuration_state():
+            return
         token = self.ent_pattern.get().strip()
         if not token:
             messagebox.showwarning("Validation Error", "Exclusion token matching string field cannot be blank.")
@@ -152,8 +225,55 @@ class ExclusionsTab(ttk.Frame):
         self.refresh_exclusion_list()
         self.ent_pattern.delete(0, tk.END)
 
+    def review_previous_settings(self):
+        if self.update_configuration_state():
+            return
+        lease = gui_theme.claim_library_job(self, "Skip Folders review")
+        if lease is None:
+            return
+        try:
+            pending = sorter_engine.pending_legacy_exclusions()
+            if not pending:
+                path = filedialog.askopenfilename(
+                    parent=self, title="Select a previous build's library_config.json",
+                    filetypes=[("Profile JSON", "*.json")],
+                )
+                if not path:
+                    return
+                with open(path, "rb") as handle:
+                    contents = handle.read()
+                data = sorter_engine._validate_config(json.loads(contents))
+                pending = [{
+                    "path": path, "digest": hashlib.sha256(contents).hexdigest(),
+                    "missing": data.get("IGNORED_DIRECTORIES", []),
+                }]
+            for entry in pending:
+                if not ask_confirm(
+                    self.winfo_toplevel(), "Restore previous skipped folders?",
+                    f"Profile: {entry['path']}\n\nFolders: {', '.join(entry['missing'])}\n\n"
+                    "Merge these into the current Skip Folders list? Other settings are not replaced.",
+                    "Merge skipped folders",
+                ):
+                    continue
+                sorter_engine.merge_legacy_exclusions(
+                    entry["path"], expected_digest=entry.get("digest"),
+                )
+            self.active_exclusions_set = set(sorter_engine.IGNORED_DIRECTORIES) | {"No Key Info"}
+            self.refresh_exclusion_list()
+            remaining = sorter_engine.pending_legacy_exclusions()
+            self.configuration_notice.config(
+                text="Previous skipped folders still need review before sorting."
+                if remaining else "Skip Folders settings saved in the shared per-user profile."
+            )
+        except (OSError, ValueError) as error:
+            messagebox.showerror("Could not review previous skipped folders", str(error), parent=self)
+        finally:
+            lease.release()
+
     def remove_exclusion_pattern(self):
         """Removes a chosen directory pattern from backend rules with an active safety verification gate."""
+        if self.update_configuration_state():
+            return
         selected_target = self.tree.selection()
         if not selected_target:
             messagebox.showwarning("Selection Error", "Please highlight a target exclusion layout line to drop.")

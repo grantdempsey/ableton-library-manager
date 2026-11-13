@@ -33,6 +33,8 @@ def suggest_rules(library_root, min_files=sorter_engine.MIN_RULE_EVIDENCE, min_s
     """Returns suggestions sorted by evidence: [{token, target, count, examples, is_new_folder}]."""
     if not os.path.isdir(library_root):
         raise ValueError("The Library is unavailable; saved suggestions were not changed.")
+    xo_filter.apply_custom_types()
+
     def scan_error(error):
         raise error
     stem_tokens = []
@@ -53,7 +55,7 @@ def suggest_rules(library_root, min_files=sorter_engine.MIN_RULE_EVIDENCE, min_s
             if sorter_engine.explain_filename(filename)["winner"]:
                 continue
             manual_samples.append(path)
-            sound_type, _ = xo_filter.classify(os.path.join(library_root, filename), library_root)
+            sound_type, _ = xo_filter.classify(path, library_root)
             if sound_type is None:
                 continue
             words = {w for w in re.findall(r"[a-z]+", re.sub(r"[_#\-]", " ", stem.lower())) if len(w) >= 3}

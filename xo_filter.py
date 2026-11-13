@@ -1,8 +1,8 @@
 """Builds an XO-friendly folder of sounds grouped by sound type, using hard links.
 
-XO can filter its sample pool by folder name. This module classifies each audio
-file into a sound type (Kicks, Nature, Vocals, ...) from its filename, its
-folders, then mirrors the files into one folder per type.
+XO can filter its sample pool by folder name. Existing Samples/One-Shots
+categories are preserved; uncategorized audio uses filename/folder keywords.
+Files are flattened into one output folder per category.
 Hard links mean no extra disk space; originals are never modified or moved.
 """
 import hashlib
@@ -10,6 +10,9 @@ import json
 import os
 import re
 import shutil
+import tempfile
+import uuid
+from pathlib import Path
 
 import sorter_engine
 import ableton_tags
@@ -131,6 +134,25 @@ def _inside(path, root):
         return False
 
 
+def _filesystem_device(path):
+    path = os.path.abspath(path)
+    while True:
+        try:
+            return os.stat(path).st_dev
+        except (FileNotFoundError, NotADirectoryError):
+            parent = os.path.dirname(path)
+            if parent == path:
+                raise
+            path = parent
+
+
+def same_filesystem(source, destination):
+    """Checks filesystem identity, resolving a not-yet-created destination to its parent."""
+    source_device = _filesystem_device(source)
+    destination_device = _filesystem_device(destination)
+    return source_device == destination_device
+
+
 def _validated_type_folder(name):
     if (
         not isinstance(name, str) or not name or name in {".", ".."}
@@ -164,36 +186,54 @@ def _validate_custom_types(custom):
     return custom
 
 
-def load_custom_types():
-    """Returns the user's {folder name: [keywords]} from the config file."""
+def _load_profile():
+    if not os.path.exists(sorter_engine.CONFIG_FILE):
+        sorter_engine.XO_CONFIG_LOAD_ERROR = None
+        return sorter_engine._default_config()
     try:
         with open(sorter_engine.CONFIG_FILE, "r", encoding="utf-8") as handle:
-            raw = json.load(handle).get("XO_CUSTOM_TYPES", {})
-    except (OSError, ValueError):
-        return {}
-    return {str(name): [str(w) for w in words] for name, words in raw.items() if isinstance(words, list)}
+            data = sorter_engine._validate_config(json.load(handle))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+        message = (
+            f"Configuration could not be loaded from "
+            f"{sorter_engine.CONFIG_FILE}: {error}"
+        )
+        sorter_engine.XO_CONFIG_LOAD_ERROR = message
+        raise ValueError(message) from error
+    sorter_engine.XO_CONFIG_LOAD_ERROR = None
+    return data
+
+
+def load_custom_types():
+    """Returns the user's {folder name: [keywords]} from the validated config file."""
+    data = _load_profile()
+    try:
+        return _validate_custom_types(data.get("XO_CUSTOM_TYPES", {}))
+    except (ValueError, TypeError) as error:
+        sorter_engine.XO_CONFIG_LOAD_ERROR = (
+            f"XO folder configuration in {sorter_engine.CONFIG_FILE} is invalid: {error}"
+        )
+        raise ValueError(sorter_engine.XO_CONFIG_LOAD_ERROR) from error
 
 
 @sorter_engine.serialized_config
 def save_custom_types(custom):
     """Persists custom types; a built-in name adds keywords to it, a new name creates a folder."""
     _validate_custom_types(custom)
-    data = {}
-    if os.path.exists(sorter_engine.CONFIG_FILE):
-        with open(sorter_engine.CONFIG_FILE, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
+    data = _load_profile()
     data["XO_CUSTOM_TYPES"] = custom
     sorter_engine._write_config(data)
-    apply_custom_types()
+    _rebuild_custom_types(custom)
+    sorter_engine.XO_CONFIG_LOAD_ERROR = None
 
 
 def parse_keywords(text):
     return sorted({w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) >= 2})
 
 
-def all_types():
+def _all_types(custom):
     """Built-in types merged with custom keywords; custom-only types come first so they win ties."""
-    custom = _validate_custom_types(load_custom_types())
+    custom = _validate_custom_types(custom)
     merged = {
         name: {word.casefold() for word in words}
         for name, words in custom.items() if name not in SOUND_TYPES
@@ -203,9 +243,13 @@ def all_types():
     return merged
 
 
-def apply_custom_types():
-    """Rebuilds the token lookup tables from built-in and custom types."""
-    types = all_types()
+def all_types():
+    """Returns built-in types merged with the validated user keywords."""
+    return _all_types(load_custom_types())
+
+
+def _rebuild_custom_types(custom):
+    types = _all_types(custom)
     _TOKEN_TYPE.clear()
     for type_name, words in types.items():
         for word in words:
@@ -214,7 +258,12 @@ def apply_custom_types():
     _TYPE_ORDER.update({name: i for i, name in enumerate(types)})
 
 
-apply_custom_types()
+def apply_custom_types():
+    """Rebuilds the token lookup tables only after the profile loads successfully."""
+    _rebuild_custom_types(load_custom_types())
+
+
+_rebuild_custom_types({})
 
 _STOP_WORDS = {"loop", "loops", "bpm", "one", "shot", "oneshot", "dry", "wet", "with", "from", "and",
                "the", "vol", "pack", "kit", "sample", "samples", "audio", "wav", "demo", "free",
@@ -292,6 +341,17 @@ def _score_tokens(tokens, weight, scores):
             scores[sound_type] = scores.get(sound_type, 0.0) + points
 
 
+def _organized_category(parts):
+    if (
+        len(parts) >= 4
+        and parts[0].casefold() == "samples"
+        and parts[1].casefold() == "one-shots"
+        and parts[2].casefold() != "other one-shots"
+    ):
+        return _validated_type_folder(parts[2])
+    return None
+
+
 def classify(path, library_root):
     """Returns (sound_type or None, is_loop) for one file."""
     rel = os.path.relpath(path, library_root)
@@ -301,14 +361,17 @@ def classify(path, library_root):
     folder_tokens = []
     for part in parts[:-1]:
         folder_tokens.extend(_tokens(part))
+    is_loop = bool(LOOP_TOKENS & set(file_tokens + folder_tokens))
+    category = _organized_category(parts)
+    if category is not None:
+        return category, is_loop
     scores = {}
     _score_tokens(file_tokens, 2.0, scores)
     _score_tokens(folder_tokens, 1.0, scores)
-    is_loop = bool(LOOP_TOKENS & set(file_tokens + folder_tokens))
     if not scores:
         return None, is_loop
     best = max(scores, key=lambda name: (scores[name], -_TYPE_ORDER[name]))
-    return best, is_loop
+    return tag_evidence.TYPE_TO_FOLDER.get(best, best), is_loop
 
 
 def build_plan(library_root, include_loops=False, selected_types=None, should_cancel=None, *, use_live_tags=False):
@@ -346,16 +409,22 @@ def build_plan(library_root, include_loops=False, selected_types=None, should_ca
                     status = "manual kit, multisample or impulse-response role; excluded from build"
                     sound_type = None
                 elif not evidence.alternatives:
-                    status = "manual role only; keyword grouping retained"
+                    status = "manual role only; existing grouping retained"
                 elif not evidence.sound_type:
                     stats["manual_conflicts"] += 1
                     status = "conflicting manual sound types; excluded from build"
                     sound_type = None
                 else:
-                    status = "manual Live type" + (
-                        f" overrides keyword type {sound_type}" if sound_type and sound_type != evidence.sound_type else ""
+                    manual_type = tag_evidence.TYPE_TO_FOLDER[evidence.sound_type]
+                    origin = (
+                        "library category"
+                        if _organized_category(os.path.relpath(path, library_root).split(os.sep))
+                        else "keyword type"
                     )
-                    sound_type = evidence.sound_type
+                    status = "manual Live type" + (
+                        f" overrides {origin} {sound_type}" if sound_type and sound_type != manual_type else ""
+                    )
+                    sound_type = manual_type
                     stats["manual_classified"] += 1
                 stats["evidence"].append({
                     "path": path, "assignments": list(evidence.assignments),
@@ -399,13 +468,286 @@ def _unique_name(dest_dir, source):
         counter += 1
 
 
+_OUTPUT_MANIFEST = ".alm-xo-output.json"
+
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+
+    class _OutputFileBasicInfo(ctypes.Structure):
+        _fields_ = [
+            ("creation", ctypes.c_longlong), ("access", ctypes.c_longlong),
+            ("write", ctypes.c_longlong), ("change", ctypes.c_longlong),
+            ("attributes", wintypes.DWORD),
+        ]
+
+    _output_kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    _output_kernel.CreateFileW.argtypes = (
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    )
+    _output_kernel.CreateFileW.restype = wintypes.HANDLE
+    _output_kernel.GetFileInformationByHandleEx.argtypes = (
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+    )
+    _output_kernel.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    _output_kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    _output_kernel.CloseHandle.restype = wintypes.BOOL
+
+
+def _output_file_identity(path):
+    info = path.stat()
+    change_time = info.st_ctime_ns
+    if os.name == "nt":
+        # Windows st_ctime is creation time; use the filesystem's change clock for hash reuse.
+        handle = _output_kernel.CreateFileW(str(path), 0x80, 7, None, 3, 0, None)
+        if handle == wintypes.HANDLE(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            basic = _OutputFileBasicInfo()
+            if not _output_kernel.GetFileInformationByHandleEx(handle, 0, ctypes.byref(basic), ctypes.sizeof(basic)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            change_time = basic.change
+        finally:
+            if not _output_kernel.CloseHandle(handle):
+                raise ctypes.WinError(ctypes.get_last_error())
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, change_time)
+
+
+class BuildCancelled(Exception):
+    """Cancellation before publication leaves existing output untouched."""
+
+
+def _check_build_cancelled(should_cancel):
+    if should_cancel and should_cancel():
+        raise BuildCancelled()
+
+
+def _output_digest(path, digest_cache, should_cancel, status, phase, count):
+    info = path.stat()
+    identity = _output_file_identity(path)
+    if info.st_ino and identity in digest_cache:
+        return digest_cache[identity]
+    digest = hashlib.sha256()
+    read_bytes = 0
+    with path.open("rb") as stream:
+        while True:
+            _check_build_cancelled(should_cancel)
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            read_bytes += len(chunk)
+            if status:
+                status(f"{phase}: {count:,} files · {path.name} "
+                       f"({read_bytes / (1024 * 1024):,.1f} / {info.st_size / (1024 * 1024):,.1f} MB)")
+    if identity != _output_file_identity(path):
+        raise ValueError(f"XO file changed during verification: {path}")
+    value = digest.hexdigest()
+    if info.st_ino:
+        digest_cache[identity] = value
+    return value
+
+
+def _output_snapshot(folder, *, digest_cache=None, should_cancel=None, status=None,
+                     phase="Checking output", hash_contents=True):
+    _unlinked_output_path(Path(folder))
+    digest_cache = {} if digest_cache is None else digest_cache
+    files, directories = {}, []
+    for current, dirs, names in os.walk(folder, onerror=_raise_walk_error, followlinks=False):
+        _check_build_cancelled(should_cancel)
+        for index, name in enumerate(dirs + names, 1):
+            _check_build_cancelled(should_cancel)
+            if status and index % 100 == 0:
+                status(f"{phase}: inspecting folder entries ({index:,})…")
+            path = Path(current) / name
+            info = path.lstat()
+            if path.is_symlink() or getattr(info, "st_file_attributes", 0) & 0x400:
+                raise ValueError(f"Linked paths are not allowed in XO output: {path}")
+        for name in dirs:
+            directories.append((Path(current) / name).relative_to(folder).as_posix())
+        for name in names:
+            _check_build_cancelled(should_cancel)
+            path = Path(current) / name
+            if not path.is_file():
+                raise ValueError(f"Unsupported XO output entry: {path}")
+            count = len(files) + 1
+            if status:
+                status(f"{phase}: {count:,} files · {path.name}")
+            if hash_contents:
+                value = _output_digest(path, digest_cache, should_cancel, status, phase, count)
+            else:
+                info = path.stat()
+                value = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            files[path.relative_to(folder).as_posix()] = value
+    return {"files": files, "directories": sorted(directories)}
+
+
+def _unlinked_output_path(path):
+    for entry in (path, *path.parents):
+        if entry.exists() or entry.is_symlink():
+            info = entry.lstat()
+            if entry.is_symlink() or getattr(info, "st_file_attributes", 0) & 0x400:
+                raise ValueError(f"XO output cannot use a linked path: {entry}")
+
+
+def review_output_destination(dest_root, library_root, *, digest_cache=None, should_cancel=None, status=None):
+    """Validate output ownership and return the exact contents reviewed for replacement."""
+    destination = Path(os.path.abspath(dest_root))
+    library = Path(os.path.realpath(library_root))
+    _unlinked_output_path(destination)
+    if _inside(destination, library) or _inside(library, destination):
+        raise ValueError("The XO folder and User Library must not overlap.")
+    home = Path.home()
+    if destination == Path(destination.anchor) or destination in {
+        home, *(home / name for name in ("Desktop", "Documents", "Downloads", "Music", "Pictures", "Videos"))
+    }:
+        raise ValueError("Choose a dedicated XO output subfolder, not a home or standard user folder.")
+    if not destination.exists():
+        return {"exists": False, "managed": False, "snapshot": None}
+    if not destination.is_dir():
+        raise ValueError("The XO destination must be a folder.")
+    if status:
+        status("Checking previous output…")
+    snapshot = _output_snapshot(
+        destination, digest_cache=digest_cache, should_cancel=should_cancel,
+        status=status, phase="Checking previous output",
+    )
+    manifest = destination / _OUTPUT_MANIFEST
+    managed = manifest.exists()
+    if managed:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        contents = {
+            "files": {name: digest for name, digest in snapshot["files"].items() if name != _OUTPUT_MANIFEST},
+            "directories": snapshot["directories"],
+        }
+        if not isinstance(data, dict) or data.get("schema") != 1 or data.get("contents") != contents:
+            raise ValueError("The managed XO folder was changed outside the builder. Preserve those changes "
+                             "and choose a new destination before rebuilding.")
+    info = destination.stat()
+    return {
+        "exists": True, "managed": managed, "snapshot": snapshot,
+        "identity": [info.st_dev, info.st_ino],
+    }
+
+
+def _remove_output_snapshot(folder, snapshot, *, digest_cache=None, status=None, hash_contents=True):
+    if _output_snapshot(
+        folder, digest_cache=digest_cache, status=status, phase="Checking old-output cleanup",
+        hash_contents=hash_contents,
+    ) != snapshot:
+        raise ValueError(f"XO output changed during cleanup; retained at {folder}")
+    for count, name in enumerate(snapshot["files"], 1):
+        if status:
+            status(f"Removing previous output: {count:,} / {len(snapshot['files']):,} files")
+        (folder / name).unlink()
+    for name in sorted(snapshot["directories"], key=lambda value: value.count("/"), reverse=True):
+        (folder / name).rmdir()
+    folder.rmdir()
+
+
+def rebuild_folder(plan, dest_root, library_root, progress=None, should_cancel=None, *,
+                   reviewed_destination=None, adopt_existing=False, status=None,
+                   digest_cache=None):
+    """Publish a complete managed replacement; keep existing output on failure/cancellation."""
+    destination = Path(os.path.abspath(dest_root))
+    digest_cache = {} if digest_cache is None else digest_cache
+    reviewed = review_output_destination(
+        destination, library_root, digest_cache=digest_cache, should_cancel=should_cancel, status=status,
+    )
+    if reviewed_destination is not None and reviewed != reviewed_destination:
+        raise ValueError("XO output changed after confirmation. Review the destination again.")
+    nonempty = reviewed["exists"] and bool(
+        reviewed["snapshot"]["files"] or reviewed["snapshot"]["directories"]
+    )
+    if nonempty and not reviewed["managed"] and not adopt_existing:
+        raise ValueError("Existing XO output is not app-managed. Confirm adoption before replacing it.")
+    if status:
+        status("Checking source files…")
+    for sources in plan.values():
+        for source in sources:
+            _check_build_cancelled(should_cancel)
+            path = Path(os.path.abspath(source))
+            _unlinked_output_path(path)
+            if not path.is_file() or not _inside(path, os.path.realpath(library_root)):
+                raise ValueError(f"XO source must be a file inside the User Library: {source}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".alm-xo-build-", dir=destination.parent))
+    backup = None
+    published = False
+    try:
+        if status:
+            status("Creating replacement links/copies…")
+        result = build_folder(plan, staging, library_root, progress, should_cancel)
+        result.update(published=False, retained_backup=None)
+        if result["failed"] or result["cancelled"] or (should_cancel and should_cancel()):
+            result["cancelled"] = result["cancelled"] or bool(should_cancel and should_cancel())
+            return result
+        contents = _output_snapshot(
+            staging, digest_cache=digest_cache, should_cancel=should_cancel,
+            status=status, phase="Verifying replacement",
+        )
+        (staging / _OUTPUT_MANIFEST).write_text(
+            json.dumps({"schema": 1, "contents": contents}, indent=2) + "\n", encoding="utf-8",
+        )
+        if review_output_destination(
+            destination, library_root, digest_cache=digest_cache, should_cancel=should_cancel, status=status,
+        ) != reviewed:
+            raise ValueError("XO output changed while building. Existing output was not replaced.")
+        if should_cancel and should_cancel():
+            result["cancelled"] = True
+            return result
+        if status:
+            status("Switching to the verified replacement…")
+        if reviewed["exists"]:
+            backup = destination.with_name(destination.name + ".previous-" + uuid.uuid4().hex)
+            destination.rename(backup)
+        try:
+            staging.rename(destination)
+        except OSError as error:
+            if backup is not None:
+                try:
+                    backup.rename(destination)
+                except OSError as rollback_error:
+                    raise OSError(f"Could not publish XO output ({error}); rollback failed "
+                                  f"({rollback_error}). Previous output remains at {backup}.") from error
+            raise
+        published = True
+        result["published"] = True
+        if backup is not None:
+            if nonempty and not reviewed["managed"]:
+                result["retained_backup"] = str(backup)
+            else:
+                try:
+                    _remove_output_snapshot(backup, reviewed["snapshot"], digest_cache=digest_cache, status=status)
+                except (OSError, ValueError) as error:
+                    raise OSError(f"New XO output is ready, but previous-output cleanup failed: "
+                                  f"{error}. Review {backup}.") from error
+        return result
+    except BuildCancelled:
+        return {
+            "linked": 0, "copied": 0, "existing": 0, "failed": 0, "cancelled": True,
+            "errors": [], "published": False, "retained_backup": None,
+        }
+    finally:
+        if not published and staging.exists():
+            if status:
+                status("Discarding incomplete replacement; previous output is unchanged…")
+            _remove_output_snapshot(
+                staging, _output_snapshot(staging, hash_contents=False), hash_contents=False,
+            )
+
+
 def build_folder(plan, dest_root, library_root, progress=None, should_cancel=None):
-    """Hard-links (or copies, across drives) each planned file into dest_root/<type>/."""
+    """Hard-links (or copies, across filesystems) each file into dest_root/<type>/."""
     dest_root = os.path.realpath(os.path.abspath(dest_root))
     library_root = os.path.realpath(os.path.abspath(library_root))
     if _inside(dest_root, library_root) or _inside(library_root, dest_root):
         raise ValueError("The XO folder and User Library must not overlap.")
-    result = {"linked": 0, "copied": 0, "existing": 0, "failed": 0, "cancelled": False}
+    result = {
+        "linked": 0, "copied": 0, "existing": 0, "failed": 0,
+        "cancelled": False, "errors": [],
+    }
     total = sum(len(files) for files in plan.values())
     done = 0
     for sound_type, files in plan.items():
@@ -422,23 +764,36 @@ def build_folder(plan, dest_root, library_root, progress=None, should_cancel=Non
                 result["cancelled"] = True
                 return result
             done += 1
-            if progress and done % 200 == 0:
+            if progress:
                 progress(done, total)
             target, exists = _unique_name(dest_dir, source)
             if exists:
                 result["existing"] += 1
                 continue
+            try:
+                can_link = same_filesystem(source, dest_dir)
+            except OSError as error:
+                result["failed"] += 1
+                result["errors"].append({
+                    "source": source,
+                    "destination": target,
+                    "error": str(error),
+                })
+                continue
             while True:
-                try:
-                    os.link(source, target)
-                    result["linked"] += 1
-                    break
-                except FileExistsError:
-                    target, exists = _unique_name(dest_dir, source)
-                    if exists:
-                        result["existing"] += 1
+                if can_link:
+                    try:
+                        os.link(source, target)
+                        result["linked"] += 1
                         break
-                except OSError:
+                    except FileExistsError:
+                        target, exists = _unique_name(dest_dir, source)
+                        if exists:
+                            result["existing"] += 1
+                            break
+                    except OSError:
+                        can_link = False
+                if not can_link:
                     try:
                         with open(source, "rb") as incoming:
                             with open(target, "xb") as outgoing:
@@ -457,8 +812,13 @@ def build_folder(plan, dest_root, library_root, progress=None, should_cancel=Non
                         if exists:
                             result["existing"] += 1
                             break
-                    except OSError:
+                    except OSError as error:
                         result["failed"] += 1
+                        result["errors"].append({
+                            "source": source,
+                            "destination": target,
+                            "error": str(error),
+                        })
                         break
     if progress:
         progress(total, total)

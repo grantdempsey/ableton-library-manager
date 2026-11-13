@@ -230,7 +230,7 @@ def themed_dialog(anchor, title, message, buttons, default=None, heading=None, c
     for index, (label, value) in enumerate(reversed(buttons)):
         primary = value is True or len(buttons) == 1
         tk.Button(
-            row, text=label, command=lambda v=value: choose(v), width=12, height=1,
+            row, text=label, command=lambda v=value: choose(v), padx=16, height=1,
             bg=theme["btn_primary"] if primary else theme["btn_secondary"],
             fg=theme["btn_primary_fg"] if primary else theme["fg_light"], bd=0, font=("Segoe UI", 9, "bold")
         ).pack(side="right", padx=(8, 0))
@@ -866,10 +866,13 @@ def build(parent, status_label_ref):
         candidate_section,
         text=f"Only suggestions with at least {sorter_engine.MIN_RULE_EVIDENCE} supporters are shown, including saved suggestions. "
              "Scan evidence also requires at least 90% agreement. "
-             "Select a suggestion, then choose Use or Dismiss. Nothing is changed automatically. "
+             "Select a suggestion, then choose Use or Dismiss. Refresh scans the current User Library's "
+             "Samples/One-Shots/Other One-Shots catch-all and may add candidates, update their evidence, "
+             "or mark unsupported pending candidates for this Library as stale. A later scan can restore them. "
+             "Refreshing never activates a rule or moves files; it runs when Rules opens and after imports or Organize. "
              "Priority uses the same scale as the rules below: a higher number is checked first, so new words go to the bottom (1) and never take files from a more specific rule.",
         font=("Segoe UI", 8), bg=gui_theme.THEME["bg_dark"], fg=gui_theme.THEME["fg_muted"],
-        wraplength=760, justify="left"
+        wraplength=600, justify="left"
     ).pack(anchor="w", pady=(0, 4))
     candidate_wrapper = ttk.Frame(candidate_section)
     candidate_wrapper.pack(fill="both", expand=True)
@@ -1570,8 +1573,9 @@ def build(parent, status_label_ref):
                 if _status_label_ref is not None:
                     _status_label_ref.config(
                         text=f" Application Status: Suggestions refreshed; {result['added']} new suggestion(s). "
-                             "Evidence updated; unsupported suggestions retired. Review on the Rules tab.",
-                        fg=gui_theme.THEME["accent_neon"])
+                                 "Evidence updated; unsupported pending suggestions for this Library marked stale. "
+                                 "No rules or files changed. Review on the Rules tab.",
+                            fg=gui_theme.THEME["accent_neon"])
             except tk.TclError:
                 pass
 
@@ -1581,7 +1585,7 @@ def build(parent, status_label_ref):
         else:
             review_state["scanning"] = False
 
-    add_action_button("Advanced options…", lambda: open_advanced_options(parent), primary=True, bottom=5)
+    add_action_button("Advanced options…", lambda: open_advanced_options(parent), bottom=5)
     add_action_button("Test a filename…", lambda: open_filename_tester(parent), bottom=0)
     tk.Label(
         preset_panel, text="Advanced options",
@@ -1593,13 +1597,11 @@ def build(parent, status_label_ref):
         font=("Segoe UI", 9), bg=gui_theme.THEME["bg_field"],
         fg=gui_theme.THEME["fg_muted"], wraplength=190, justify="left", anchor="w"
     ).pack(fill="x", pady=(0, 6))
-    add_action_button("Advanced options…", lambda: open_advanced_options(parent), primary=True, bottom=0,
+    add_action_button("Advanced options…", lambda: open_advanced_options(parent), bottom=0,
                       panel=preset_panel)
 
     footer = tk.Frame(master_workspace, bg=gui_theme.THEME["bg_dark"])
     footer.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-    tk.Label(footer, text="Profile (all rules and settings):", font=("Segoe UI", 9),
-             bg=gui_theme.THEME["bg_dark"], fg=gui_theme.THEME["fg_muted"]).pack(side="left")
     tk.Button(
         footer, text="Refresh suggestions", command=lambda: auto_suggest_from_library(),
         bg=gui_theme.THEME["btn_secondary"], fg=gui_theme.THEME["fg_light"],
@@ -1607,12 +1609,12 @@ def build(parent, status_label_ref):
         activeforeground=gui_theme.THEME["accent_neon"], bd=1, relief="solid",
         font=("Segoe UI", 9, "bold")
     ).pack(side="left", padx=12)
-    for text, command in (("Import", lambda: execute_profile_json_import(parent)),
-                          ("Export", lambda: execute_profile_json_export(parent))):
+    for text, command in (("Import profile…", lambda: execute_profile_json_import(parent)),
+                          ("Export profile…", lambda: execute_profile_json_export(parent))):
         tk.Button(footer, text=text, command=command, bg=gui_theme.THEME["btn_secondary"],
                   fg=gui_theme.THEME["fg_light"], activebackground=gui_theme.THEME["btn_secondary_hover"],
                   activeforeground=gui_theme.THEME["accent_neon"], bd=1, relief="solid",
-                  font=("Segoe UI", 9, "bold"), width=9).pack(side="right", padx=(6, 0))
+                  font=("Segoe UI", 9, "bold")).pack(side="right", padx=(6, 0))
 
     refresh_matrix_data()
     global _auto_suggest_ref

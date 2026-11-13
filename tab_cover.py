@@ -11,19 +11,23 @@ def build(parent_frame):
     t = gui_theme.THEME
 
     # 1. Main Background Container
-    f_center_box = tk.Frame(parent_frame, bg=t["bg_dark"])
-    f_center_box.place(relx=0.5, y=12, anchor="n")
-    parent_frame.bind(
+    canvas = tk.Canvas(parent_frame, bg=t["bg_dark"], highlightthickness=0)
+    scroll = ttk.Scrollbar(parent_frame, orient="vertical", command=canvas.yview)
+    scroll.pack(side="right", fill="y")
+    canvas.pack(fill="both", expand=True)
+    canvas.configure(yscrollcommand=scroll.set)
+    f_center_box = tk.Frame(canvas, bg=t["bg_dark"])
+    window = canvas.create_window((20, 12), window=f_center_box, anchor="nw")
+    canvas.bind(
         "<Configure>",
-        lambda event: f_center_box.place_configure(
-            width=max(520, min(event.width - 40, 820))
-        )
+        lambda event: canvas.itemconfigure(window, width=max(1, event.width - 40))
     )
+    f_center_box.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
 
     # 2. Main Header Branding
     lbl_brand = tk.Label(
         f_center_box, 
-        text="🎧  ABLETON SAMPLE LIBRARY MANAGER", 
+        text="Ableton Library Manager",
         font=("Segoe UI", 16, "bold"), 
         bg=t["bg_dark"], 
         fg=t["accent_neon"]
@@ -33,7 +37,7 @@ def build(parent_frame):
     # 3. System Deployment Subtitle
     lbl_version = tk.Label(
         f_center_box, 
-        text="Organize your sounds, presets, and samples with confidence • Version 2.1.1",
+        text="Import, organize and find your sounds. Build information is in About.",
         font=("Segoe UI", 11, "italic"), 
         bg=t["bg_dark"], 
         fg=t["fg_muted"]
@@ -48,9 +52,10 @@ def build(parent_frame):
 
     lbl_guide_body = tk.Label(
         f_info_card,
-        text="1. Open Import and choose Preview only to see what will happen.\n"
-             "2. Review the suggested folders, then run the organizer when you are ready.\n"
-             "3. Use Library to search later and edit tags, or Rules to review suggestions.",
+        text="Import: bring new sounds into your library.\n"
+             "Organize: clean up sounds already in your library.\n"
+             "Preview the plan before applying either operation.\n"
+             "Library: find sounds and edit Live tags. Rules: review sorting suggestions.",
         font=("Segoe UI", 11), bg=t["bg_field"], fg=t["fg_muted"],
         justify="left", wraplength=760
     )
@@ -184,18 +189,6 @@ def build(parent_frame):
         justify="left", wraplength=760
     )
     lbl_smart_hint.pack(anchor="w", padx=15, pady=(4, 4))
-
-    # 6. STUDIO ENVIRONMENT COMMUNITY FOOTNOTE
-    f_footnote = tk.Frame(f_center_box, bg=t["bg_field"], bd=1, relief="solid", highlightbackground=t["bg_panel"], highlightcolor=t["bg_panel"])
-    f_footnote.pack(fill="x", padx=10, ipady=2)
-
-    lbl_cohort = tk.Label(
-        f_footnote, 
-        text="📁  Mentorship Cohort Support • Created by Grant Dempsey\n"
-             "Community: Ancient Future Collective (AFC) Production Pipeline",
-        font=("Segoe UI", 9, "bold"), bg=t["bg_field"], fg=t["accent_gold"], justify="center"
-    )
-    lbl_cohort.pack(fill="x", pady=4)
 
     # 7. Navigation Footer Prompt
     tk.Label(

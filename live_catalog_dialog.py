@@ -155,7 +155,7 @@ class _CatalogBrowser:
         detail_scroll.pack(side="right", fill="y")
         self.details = tk.Text(
             detail_frame, height=5, wrap="word", state="disabled", bg="#181b20", fg=theme["fg_light"],
-            selectbackground=theme["accent_neon"], selectforeground=theme["btn_primary_fg"],
+            selectbackground=theme["btn_primary"], selectforeground=theme["btn_primary_fg"],
             padx=10, pady=8, font=("Segoe UI", 10), bd=0, yscrollcommand=detail_scroll.set
         )
         self.details.pack(fill="x")

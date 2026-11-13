@@ -1,8 +1,146 @@
-# 🎹 Ableton Production Assets & Sample Studio Manager v2.1.1
+# 🎹 Ableton Library Manager
 
 A high-performance, cross-platform desktop tool designed to automate the categorization, sorting, and structural cleanup of Ableton audio libraries, presets, and preferences.
 
-## Release status: v2.1.1 unsigned community release
+See [the improvement roadmap](ROADMAP.md) for the stabilization priorities,
+acceptance criteria, and planned architecture and release improvements.
+For the active candidate, package validation and outstanding platform/manual
+gates, see [the current release handoff](RELEASE-HANDOFF.md). Previous builds and
+release decisions are archived in [release history](RELEASE-HISTORY.md).
+
+## Everyday workflow
+
+1. Choose the active User Library in the top bar.
+2. **Import** adds new sounds; **Organize** cleans up sounds already in the library.
+3. Use **Preview plan**, review the results, then **Apply plan**. Keep the
+   Organize backup option enabled unless you have another verified backup.
+4. Organize's **More tools** contains complete plan export and repeated-folder
+   repair. **History / Recovery** in the top bar contains undo/recovery actions.
+5. Use **Library** to search and tag sounds. Saved searches are in its **Saved**
+   sidebar; **Rescan library** is beside metadata freshness at the bottom.
+6. In **Advanced**, edit settings first, then **Save changes** or **Reload settings
+   from disk**. The help link opens Ableton's documentation.
+
+### Current source safety improvements
+
+- Routing folders must be relative to the selected library. Absolute paths,
+  traversal components and linked destination paths are rejected; valid nested
+  routes support either slash style.
+- Ordinary copies create destinations exclusively, verify content, and remove
+  their own incomplete output after an I/O failure. Ordinary transfers now stage
+  and verify audio before publishing a final filename, with interruption journals
+  for audio and sidecar rollback; see transfer recovery below.
+- Cancelled scans still complete the UI lifecycle. Organize reports incomplete
+  previews and partial/cancelled cleanup rather than claiming the library is clean.
+- Unresolved undo entries remain retryable. Completed entries are checkpointed
+  when a partial undo finishes, so retry does not repeat those restorations.
+  Keep the move logs and duplicate recovery files until recovery is complete.
+- Ordinary Import and Organize reserve final filenames in stable source-path
+  order before moving anything. Different contents receive `_1`, `_2`, etc.;
+  identical contents at the original or suffixed name are reported as duplicates.
+  Planned duplicates wait for their destination's initial copy/move to finish.
+  Copy keeps sources; Move merges duplicate tags and retains undo recovery.
+- Preview logs show the exact destination filename and copy/move/duplicate
+  decision (first 100 records). Content checks read the files, not just filenames
+  or CRC32. Transfers refuse changed sources, changed duplicate targets, and
+  newly occupied destinations instead of silently choosing a different name.
+  Applying a reviewed plan rechecks every input and destination before transfers;
+  preview again after external changes. Complete JSON export includes all planned
+  transfers and skip reasons. Exported reports are for review, not resumable jobs.
+- Moves no longer overwrite files that appear during transfer. Cross-volume
+  transfers use the same staged, verified copies before removing the source.
+  These protections do not replace backups or guarantee survival of power loss,
+  filesystem corruption, or simultaneous external edits.
+
+### One library job at a time
+
+Within one running manager, library-affecting jobs now share exclusive ownership:
+ordinary/Serum imports and previews, cleanup (including its backup), undo, nested
+repairs, transfer recovery, Live tag saves, favorites/tag-state updates, index
+rescans/metadata refreshes, and XO scans/builds. A busy warning names the active
+operation; wait for completion or cancel it before starting another. Cancellation
+retains ownership until the worker actually finishes. Backup-to-cleanup ownership
+is continuous, including the decision to proceed after a backup failure.
+
+Automatic Live metadata monitoring pauses while another operation runs, and
+automatic rescans retry without opening busy dialogs. Read-only browsing and
+search remain available. This deliberately serializes conflicting jobs even
+when different library folders are selected because application/index state is
+shared.
+
+App jobs use a per-user process lock as well as in-process coordination, so
+instances of this version cannot run conflicting library writes or startup
+recovery at the same time. Older manager builds, Live, OneDrive, and external
+editors do not participate in this lock; close them before tag writes or
+recovery. Whole-job restart reconciliation remains roadmap work.
+
+### Transfer recovery
+
+Ordinary imports, cleanup, nested-file repairs, and ordinary move undo use a verified staging
+copy on the destination filesystem. A durable per-transfer JSON journal records
+audio identities and the before/after bytes of changed Live sidecars. Final
+filenames are published without replacement; the original audio stays until
+sidecar writes succeed. A move temporarily needs space for another full copy.
+Filesystems must support hard links or (on Windows) a no-replace same-volume
+rename; unsupported publication fails explicitly rather than using overwrite.
+Complete Serum resource imports retain their separate copy-only implementation.
+
+After an unexpected exit, close Live and let any other manager operation finish
+before restarting the manager. On startup, it automatically checks the active User
+Library and paths referenced by the app's move history, including original
+folders outside the User Library for interrupted undo operations. Recovery runs
+in the background before the Library rescan: unfinished transfers are rolled
+back, committed transfers are kept, and associated index/undo state is replayed
+when the journal contains enough application intent. The app reports recovered
+records and any entries retained for review.
+
+Changed or conflicting files and invalid records are not silently replaced.
+Use **Organize > Scan transfer recovery** to review and retry retained journals.
+Older journals without application intent can restore audio, but require a
+Library rescan to rebuild index state safely. The automatic process is per
+transfer, not a restart or resume of an entire Import or Organize job.
+
+- Unfinished transfers roll back their audio and changed sidecars. Transfers
+  already marked committed are kept; only their recovery files are cleaned.
+- Changed audio, changed sidecars, linked paths, corrupt records, or uncertain
+  ownership are not silently replaced. The activity log names retained journals.
+  Recovery can be retried after resolving conflicts.
+- Recovery journals/staging audio live in
+  `Ableton Folder Info/ALM Transfer Recovery` beside the destination.
+  Do not remove these while recovery is outstanding. New transfers involving
+  the same source/destination folder are blocked until its journals are resolved.
+- New application transfers also record their index destination and exact undo
+  record before changing audio. Journals stay until SQLite changes commit and
+  undo state is reconciled. Confirmed recovery automatically replays committed
+  transfers' classification, favorites, retained tag states, and Live-tag cache.
+  Rolled-back moves are removed from the outstanding undo count.
+- Ordinary move undo records its reverse transfer in the same way. Retrying Undo
+  first reconciles associated pending application journals, so it does not repeat
+  an already committed restoration.
+- Keep the original manager/profile directory, SQLite database, move logs, and
+  duplicate backups. Recovery refuses a different index/profile or missing,
+  changed, or ambiguous undo record. If index/log reconciliation fails, audio
+  already committed stays in place and the journal remains for retry.
+- **Older journals without application intent still require a Library rescan.**
+  They cannot reconstruct missing classification/undo intent safely. Full Serum
+  resource copies, duplicate-merge undo, and whole-job restart/reconciliation
+  are not covered by the new application replay protocol.
+
+Automated tests terminate a separate process during copying, publication,
+sidecar writes, source deletion, SQLite commit, undo checkpoints, and recovery
+itself, including interrupted ordinary undo. They establish those
+process-interruption cases, not guaranteed power-loss durability on OneDrive,
+network drives, or every filesystem. Global cross-instance writer coordination
+and comprehensive job/index crash reconciliation remain roadmap work.
+
+## Distribution status
+
+The next candidate is **v2.2.0-rc.1**, covering Windows x64, macOS Apple Silicon
+and macOS Intel. See [candidate release notes](RELEASE-NOTES.md) for changes and
+known limitations. The tagged release workflow publishes an explicitly unsigned
+prerelease only after all three platform builds, source/bundled tests, native
+startup and archive checks pass. It does not claim signing, notarization or
+hands-on Live/Serum/XO acceptance.
 
 Download [v2.1.1](https://github.com/grantdempsey/ableton-library-manager/releases/tag/v2.1.1)
 for Windows x64, Mac Apple Silicon, or Mac Intel. Compare your archive with the
@@ -13,23 +151,10 @@ apps are not Developer ID signed or notarized. OS protections may block them.
 protections.** Record any block; the documented Python source workflow is an
 alternative when appropriate. Keep backups and start with disposable content.
 
-The user authorized this release for the project's small community, accepting
-the documented limitations rather than claiming production certification.
-The optional-preview workflow is pushed as `720c418`; its focused
-Windows source suite passes 86 tests. The new Windows test candidate ran 226
-bundled-code tests successfully (one POSIX-only skip), passed archive integrity
-checks, and passed native fresh/upgrade-profile startup, resize, responsiveness
-and graceful close. This supersedes the older candidate's blocked launch;
-no security policy was bypassed or changed.
-Updated source `e74f77b` passed native macOS 15 validation on Apple Silicon and
-Intel in [run 40925607380](https://github.com/grantdempsey/ableton-library-manager/actions/runs/40925607380):
-source tests, native builds, bundled-code fixtures, startup/profile checks and
-extracted-ZIP smoke. The matching Mac archives are attached to the release so
-downloads do not depend on temporary CI artifact retention. Signing credentials
-are unavailable; publication does not establish trusted publisher identity.
-Full hands-on Ableton Live acceptance (deferred by the user) and trusted
-signing/download validation remain unverified. See
-[RELEASE-HANDOFF.md](RELEASE-HANDOFF.md) for exact evidence and hashes.
+That published release predates the expanded candidate and current UI/XO changes.
+Do not use its historical test counts or macOS passes to certify the current
+source. Exact prior evidence is in [RELEASE-HISTORY.md](RELEASE-HISTORY.md);
+current limits and validation are in [RELEASE-HANDOFF.md](RELEASE-HANDOFF.md).
 
 **Full tagging parity is not complete.** Library is an editable sound browser;
 the separate read-only Ableton catalog viewer and source switch have been removed.
@@ -57,7 +182,10 @@ filter path validation, scan error reporting, and custom-folder handling.
   and Intel validation passes on macOS 15 for source `e74f77b`, including the
   optional-preview change. Hands-on native input, older macOS releases and
   full Live acceptance remain unverified.
-- **OneDrive Insulation:** Automatically detects and isolates asset paths to protect local libraries from intrusive OneDrive sync locks.
+- **Explicit library paths:** Remembers the selected User Library across tabs/builds
+  and recognizes common OneDrive Documents locations. This does not isolate files
+  from synchronization or prevent cloud locks; Live, OneDrive and external tools
+  remain outside the manager's operation lock.
 - **Background Execution:** Leverages multi-threaded workers to execute tasks without freezing the interface.
   Closing the app requests a safe cancellation and lets the current file finish before shutting down.
 - **Safe Smart Learning:** Repeated metadata-backed filename evidence is persisted as reviewable rule
@@ -81,13 +209,15 @@ filter path validation, scan error reporting, and custom-folder handling.
 
 ## 🎛️ Workspace Layout Modules
 1. **Home:** A simple starting point with a guided preview-first workflow and optional Smart Learning.
-2. **Import:** Choose the folders, preview the suggested organization, and then copy or move files into the library.
+2. **Import:** Choose folders, then follow the left-to-right groups: Audio type,
+   Operation (Copy/Move), and Review and import.
 3. **Organize:** Clean up an existing library after reviewing the available safety options.
 4. **Library:** Find and audition indexed sounds, review assigned tags, and edit selected sounds in a dedicated tag editor.
 5. **Integrations:** Prepare categorized sample folders for XO using the existing folder builder.
 6. **Rules:** Review the app's sorting rules and approve or reject learning suggestions.
 7. **Skip Folders:** Tell the app which folders should never be scanned.
-8. **Advanced:** Optional performance and Ableton configuration tools for experienced users.
+8. **Advanced:** Optional Ableton Options.txt settings for experienced users;
+   performance logging remains internal.
 
 ## 🧠 Smart learning workflow
 
@@ -103,10 +233,25 @@ The current learning foundation is intentionally conservative:
 
 This staged workflow prevents a single sample pack or a noisy filename from silently changing the active taxonomy. Classification previews now make the proposed destination and reason visible before a file operation.
 
+Refreshing suggestions scans eligible files in the current User Library's
+`Samples/One-Shots/Other One-Shots` catch-all. It can add newly supported
+candidates, update evidence and examples for pending candidates in that Library,
+or mark unsupported pending candidates for that Library as stale; a later scan
+can restore them. Historical candidates without a recorded Library scope may
+also be marked stale on the first completed refresh. A refresh never activates
+a sorting rule or moves files. It runs automatically when the Rules tab opens
+and after imports or Organize operations, as well as from **Refresh suggestions**.
+
 ## 🔎 Classification preview
 
-The **Import** tab includes **Preview only (no file changes)**. Preview mode runs the same
-classification logic as an import, but does not move, copy, delete, rename, or clean up files.
+**Preview** runs the same classification logic as execution without moving,
+copying, deleting, renaming or cleaning up library files. It also leaves the
+profile, asset index and sidecar tags unchanged; missing indexes are not created.
+WAL-mode indexes are read from a verified disposable snapshot, including committed
+WAL entries, so SQLite cannot create bookkeeping files beside the real index.
+Concurrent snapshot changes are reported rather than ignored.
+Automatic timing logs and operation locks remain local operational bookkeeping,
+not library/index writes.
 Each preview record reports:
 
 - Source filename
@@ -117,7 +262,22 @@ Each preview record reports:
 
 The preview is written to the execution console, with the first 100 records displayed directly
 to keep the interface responsive for large libraries. Use this mode before Move Mode when
-reviewing new rules or unfamiliar sample packs.
+reviewing new rules or unfamiliar sample packs. **Export plan** saves the complete
+JSON plan, including final filenames, duplicate/collision decisions, skipped paths
+and reasons, metadata inputs and routing settings. Export outside both source and
+destination; existing reports cannot be overwritten. Unlike timing logs, exported
+plans contain paths and tag values: share them only deliberately.
+
+**Apply plan** in Import or Organize regenerates and
+compares the complete plan before any
+transfer. Changed inputs, sidecars, routing/profile settings, index routing tags,
+file inventory or destinations invalidate approval. Individual transfers still
+recheck content identities and use the existing verified recovery machinery.
+Destination-sidecar identities are included too, so a changed duplicate target's
+tags cannot silently alter an approved merge. Changes detected during planning
+abort the whole pre-write phase, not only the affected file. External tools can
+still change files after validation; per-transfer verification remains essential.
+This is not whole-job resume or power-loss durability certification.
 
 ### Manual Live-tag evidence (review only)
 
@@ -145,7 +305,8 @@ destination. A Type role alone does not invent an instrument. `Type|One Shot` do
 not silently override an existing filename loop classification.
 
 The Rules catch-all scan can now propose previously unknown filename words using
-manual sound-type evidence. By default, at least 20 samples must support the same
+sound-type evidence classified from each sample's full nested path. Filename words
+still come from the filename itself. By default, at least 20 samples must support the same
 type and at least 90% of eligible catch-all samples containing that word must agree.
 Untagged and ambiguously tagged samples count against that share, rather than
 quietly strengthening the result. Filename loops and non-one-shot roles are excluded
@@ -181,8 +342,8 @@ supporters are retained but hidden and cannot be approved, even through bulk or
 direct approval. Legacy learning-count candidates use accumulated observations,
 not a reconstructible distinct-file scan. They must reach 20 to appear for review,
 but approval requires refreshing into verified current-file evidence.
-XO no longer flattens cached Live or generated
-tags into keyword hints. Its optional manual-evidence mode is described below.
+XO does not flatten cached Live or generated tags into keyword hints. Its
+folder builder preserves existing library categories as described below.
 
 ### Loop-layout tag evidence
 
@@ -213,7 +374,7 @@ content into editable library items. Use **Edit Live tags... → Tag suggestions
 to choose a Live database independently of the removed viewer. A single detected
 database is used automatically; multiple databases require an explicit choice.
 
-### Library hints and opt-in XO grouping
+### Library hints and XO folders
 
 Custom manual assignments are not limited to Sounds. The single Live tag editor
 offers an editable group selector covering the
@@ -262,29 +423,58 @@ Suggestions use the **cached** Live assignments and are read-only. Use **Reload 
 in **Edit Live tags...** (or the metadata watcher/rescan) to update that cache. Multi-selection
 does not present one sample's advice as representative.
 
-In **Integrations → Build XO filter folder**, enable **Use manual Live sound types**
-before scanning to opt in. Each scan reads current sidecars by full sample path.
-A single mapped manual type takes precedence over keyword grouping; conflicting
-manual types are excluded rather than guessed. Unknown or Character-only assignments use normal keyword
-grouping. Manual `Type|Loop`, Drums loop hierarchies and `Sounds|Loop` assignments
-participate in loop exclusion. Kits, multisamples and impulse responses are excluded
-from the opt-in audio build.
-**Edit folders → Find suggestions** inherits the builder's Live-tag option: already
-classified sounds and conflicting/non-one-shot evidence are not mined as new folder
-words. Failed sidecar reads report an error instead of showing an empty success.
+In **Integrations → Build XO filter folder**, choose an output folder, **Scan**,
+select the categories you want, then **Build folder**. The builder preserves the
+immediate category under `Samples/One-Shots`, including custom folder names:
+`Cymbals & Crashes` stays `Cymbals & Crashes`, regardless of filename keywords.
+Nested subfolders are flattened into that category in the XO output.
+Audio in `Other One-Shots`, directly under `One-Shots`, or elsewhere in the library
+uses the existing filename/folder keyword fallback; unrecognized files are skipped.
+Fallback results use the shared library category names: for example, 808 sounds
+join `808 Sub Bass` and cymbals join `Cymbals & Crashes`, rather than creating
+parallel XO-only categories.
+Previously saved custom XO keywords remain available to that fallback, but cannot
+override an existing category.
 
-Scan reports manual classifications and ambiguous samples. **Evidence** opens a
-scrollable snapshot of exact assignments, keyword disagreements, chosen types, and
-loop flags in a dark, resizable viewer. The XO builder is resizable, with a scrollable
-type list that keeps its action buttons accessible for large taxonomies. The existing
-type checkboxes and **Include loops** still control the
-build. Changing either classification option rescans; scan failures disable Build
-and report the error. The default keyword-only mode remains unchanged.
+Loops identified by `loop`, `loops`, or `lp` in filenames/folders are excluded
+unless **Include loops** is checked. This is name-based filtering, not audio
+analysis. Changing that option rescans; scan failures disable Build and report
+the error. The resizable builder has a scrollable category list.
+The separate XO keyword editor, learning suggestions, manual Live-tag override
+and Evidence controls have been removed from this workflow. Live tag editing and
+library hints elsewhere in the application are unchanged.
 
-Building uses the reviewed scan snapshot; it does not re-read metadata at Build time.
-Rescan after editing tags. Existing XO output is additive: rerunning does not remove
-older links from previously chosen groups. Originals, manual sidecars, and manager
-rules are not changed by this grouping mode.
+Building uses the reviewed scan snapshot. Files are hard-linked where possible
+and copied otherwise; hard links share contents and are not independent backups.
+Use the default **XO Samples for Filters** directly beneath your home folder
+on Windows or macOS, outside the User Library and cloud-synced folders. On the
+same filesystem as the library, hard links can avoid duplicate audio storage.
+For a library on another drive, a dedicated local output folder on that drive
+is also suitable.
+
+Successful rebuilds replace the entire managed output with the current selected
+categories, removing outdated groups. A replacement is built separately before
+switching it in; failed or cancelled builds leave the previous output intact.
+Destination checks run in the background. While building, the dialog shows the
+current phase (checking old output, creating links/copies, verifying replacement,
+switching folders or cleanup) and file/byte progress. Cancel stops
+before publication and keeps previous output; final switch/cleanup finishes
+safely once publication starts. Unchanged verified file hashes are reused within
+the job, with file identity/change-time checks, rather than rereading all audio
+for each later verification. Large first-time verification still needs disk reads.
+The first replacement of an older unmarked folder requires confirmation and
+retains all its old contents in a sibling `.previous-...` backup. Once checked,
+that backup can be removed manually; do not confuse it with original library
+content. Later rebuilds refuse output changed outside the builder rather than
+silently deleting manually added or edited files. Choose a new destination if
+you need to preserve such changes.
+
+Select the output folder in XO and verify the sounds. Originals, manual
+sidecars, and manager rules are not changed by the builder. File failures report
+source, destination and filesystem error (first 25 in the dialog). Close XO
+while rebuilding if it is holding generated files open. The internal
+`build_folder` helper remains additive for compatibility; the Build XO folder
+interface uses managed replacement.
 
 ## ⚙️ Rule lifecycle
 
@@ -323,7 +513,7 @@ This keeps asset history separate from portable rule configuration:
 
 The index is updated during scans and file operations. Re-indexing an asset refreshes
 generated tags and manual sidecar assignments, and replaces stale generated tags
-rather than creating duplicates. When a previewed asset is moved into the library, its existing
+rather than creating duplicates. Preview itself does not index assets. When an asset is moved into the library, its existing
 index record and favorites move with it instead of leaving a duplicate source record. Copies
 remain represented at both paths because both files still exist. Preview output displays
 the visible tags for each record, making it possible to inspect Ableton metadata and
@@ -344,8 +534,8 @@ exported, or used for classification and routing.
 
 The browser only shows sound and MIDI records whose paths are inside the configured Ableton
 User Library. On Windows, the app checks both local Documents and the OneDrive Documents
-location and uses the existing folder. Preview records for source files elsewhere, including
-files inside the project folder, are not shown there. Tag counts use the same boundary. Library reads the existing index so the page stays
+location and uses the existing folder. Preview records are shown in the operation
+review/export, not added to the Library browser. Tag counts use the same boundary. Library reads the existing index so the page stays
 responsive; use Import or Organize to discover and index new files before browsing them.
 The results table shows the file name and its folder relative to the User Library; the full
 path is available only in Sound details.
@@ -363,7 +553,7 @@ the library. Favorite uses the same lavender visual treatment as enabled tags. T
 summary shows the visible results for the active search, collection, and tag filters. Tag
 counts, collection totals, and the overall indexed-library total load from the indexed User
 Library in the background so collection navigation stays responsive.
-Import and Organize completion (including previews, undo, and nested-folder repairs)
+Import and Organize execution completion (including undo and nested-folder repairs)
 invalidates the browser's cached results and counts. They reload immediately if the
 browser is visible, or when you next open Library, without another filesystem scan.
 Your search, collection, and tag filters are preserved, and paging returns to the first page.
@@ -378,6 +568,141 @@ are reported rather than treated as deleted files.
 Generated filename tags use the `name:` namespace and remain separate from routing rules. For
 example, `dark_kick_v2.wav` produces `name:dark` and `name:kick`; these tags improve discovery
 without causing unexpected reclassification.
+
+### Synthetic performance baseline
+
+Run the disposable benchmark harness from the repository root:
+
+```powershell
+python tests/benchmark_workloads.py --indexed-files 10000 --io-files 500
+```
+
+The harness emits JSON and removes its generated libraries, profile, index, lock,
+and archive when it exits. On Windows 11 (build 26200), Python 3.14.8, SQLite
+3.50.4, one run with 10,000 indexed records and 500 16-KiB files measured:
+
+| Workload | Result |
+|---|---:|
+| First indexed page query (100 rows plus next-page probe) | 39 ms; 92 KiB peak Python allocation |
+| Warm one-result search query (median of 5) | 46 ms; 7 KiB peak Python allocation |
+| Unchanged Live sidecar poll across 10,000 records (median of 5) | 269 ms |
+| Verified backup of 500 files / 8.2 MB | 2.06 s |
+| Cancellation to worker completion, after 2 preview files | 6.6 ms |
+| Copy import of 500 files / 8.2 MB | 26.6 s (18.8 files/s) |
+
+These are a local synthetic baseline, not universal budgets or a full UI-rendering
+measurement. Query memory uses `tracemalloc` and excludes native SQLite allocations.
+Repeat on representative storage and supported platforms before setting performance
+budgets or optimizing.
+
+### Save a read-only benchmark of your library
+
+Use the existing app index and save a new JSON report outside your User Library:
+
+```powershell
+python .\tests\benchmark_workloads.py --library "C:\path\to\User Library" --report "$env:USERPROFILE\Desktop\library-performance.json"
+```
+
+Use your actual library path. The default index is the app's current per-user
+`library_assets.db`; `--index "C:\path\to\library_assets.db"` selects another existing
+index. Rescan the library in the app first if its index is missing or stale.
+`--search "kick"` chooses the warm-search query and `--repeats 5` controls sampling.
+On macOS/Linux, use your native library and report paths.
+
+This mode reads a temporary SQLite snapshot of the index and reads Live sidecars,
+including ancestor metadata folders used by normal polling. It does not import,
+move, preview, back up, rescan, or modify your real index or tags. If sidecars
+change during sampling, the benchmark fails rather than refreshing the cache.
+Pause other library operations and Live tag edits for a stable measurement.
+
+The report includes a UTC timestamp, platform/runtime versions, counts, query and
+poll timings, and Python allocation peaks, but excludes library paths, filenames,
+tag values and search text. It cannot overwrite an existing report or write inside
+the selected library. This standalone report is separate from automatic app timing logs.
+Snapshot queries exclude UI rendering and use a temporary database on the system
+temporary filesystem, so they do not measure the original index drive's cold-read
+performance. The report stays local; no upload is performed.
+
+### Automatic performance logs from normal runs
+
+No benchmark command is needed for normal app use. **Import/Organize** (including
+previews and Serum resource copies), verified backups, Library page rendering/search,
+and Live sidecar polling automatically write local JSON-lines timing records.
+Import/Organize records include file counts, transferred bytes, throughput, outcome,
+and cancellation-request-to-worker-finish latency when applicable. Backup records
+include file and source-byte counts. Browser timings include the query, counts and
+widget update work, but not asynchronous sidebar completion or display repaint.
+Completed-file throughput includes verified duplicate skips; byte throughput counts
+only actual transfers. A separate processed-file rate covers preview work as well.
+New records break browser work into page/count queries, row insertion and selected-item
+display, and sidecar polling into index scope, fingerprint and refresh phases. These
+timings locate bottlenecks without extra scans or weakening transfer verification.
+Import records also separate planning, pre-write approval validation and transfers.
+Validation rechecks the source inventory and all planned identities before starting
+any transfers; its cost is measured rather than hidden in copy throughput.
+Unfiltered All sounds pages reuse the exact loaded sidebar count until rescan.
+In the reviewed real log, that count query cost 0.283 s median; on an 82,215-record
+fixture it cost 233.9 ms versus under 0.007 ms for reuse. This is not a measured
+end-to-end speedup on your library. Filtered counts and Live SHA checks are unchanged.
+
+### Import cancellation, undo and previous skipped folders
+
+For sample libraries such as MDrummer, select **Audio only**, choose
+**Copy (keep originals)** or **Move (remove originals)**, then use **Preview**
+before **Apply plan**. Defaults are Copy and Audio + supported presets.
+Audio only filters the
+plan by supported audio extensions (case-insensitive): WAV, AIF/AIFF, FLAC, MP3,
+OGG/OGA, M4A, AAC, WMA, OPUS, CAF, AU and SND. It excludes MIDI, presets,
+`.mdDrumset` files and other non-audio resources before classification. Source
+resources remain in place. Copy also keeps source audio; Move removes transferred
+source audio and retains undo history. Audio-only Move asks for confirmation
+because installed presets may break when their sample paths change. Overlapping
+source/destination folders are rejected. This is an extension filter, not a test that every audio
+file is a standalone one-shot: audio wavetables, multisamples and impulse responses
+can also have these extensions. Review the preview and use Skip Folders as needed.
+**Audio + supported presets** accepts supported audio and explicitly allowlisted,
+configured preset formats; it does not admit MIDI or unknown resource formats
+merely because their filenames match a sound rule. Complete Serum resource roots
+retain their separate copy-only workflow with a reviewed resource plan.
+
+**Cancel import** requests a safe stop: in-flight transfers finish, but new files
+are not started. Completed copies remain; completed moves can be undone.
+**History / Recovery** contains **Undo Move import...**, separate from the primary
+Import choices. It lets you choose the recorded import log (stored in the
+per-user `move_logs` folder), review its date, original folders and remaining file
+count, and restore its moves and duplicate merges. Changed, missing or occupied
+paths are not overwritten; unresolved records remain for retry. Preview and Copy
+imports, including Serum resource copies, are not removed by this action.
+
+Skip Folders now uses the shared per-user profile across builds. If a registered
+older profile contains unreviewed exclusions missing from the current profile,
+Import/Organize is blocked rather than silently processing those folders.
+Use **Skip Folders > Review previous settings** to explicitly merge exclusions,
+leaving other settings unchanged. If an older build was never registered, select
+its `library_config.json` using that action. Legacy profiles remain untouched;
+no arbitrary folders on your disk are searched automatically.
+
+Diagnostics run in the background without controls on the Advanced page. For
+support/development, logs can be retrieved manually from
+`performance_logs` beside the app's asset index, normally in its per-user data
+directory. Each app session has its own file and session ID; each record includes
+a UTC timestamp, platform/Python version, elapsed seconds and numeric measurements.
+Files rotate at 2 MiB, keeping one previous segment per session. Automatic retention
+targets inactive, marked sessions older than 30 days or exceeding a combined 50 MiB.
+Active sessions and legacy logs without activity markers are protected; the target
+is not a hard quota when protected data exceeds it.
+
+The internal `housekeeping.storage_summary()` helper can report profile storage,
+known build artifacts and selected-library ZIP backups for support/development;
+it is not exposed as an end-user control. Inaccessible locations are reported
+explicitly. Backups, undo logs and unresolved recovery data are never
+automatically removed.
+
+No library paths, filenames, tag values, search text or error messages are recorded;
+errors are recorded by exception type only. Nothing is uploaded. You can share these
+logs for review after a real run; the assistant does not automatically receive them.
+These lightweight logs do not collect memory profiles or perform extra library scans.
+An app started from an older packaged build will need an updated build to log timings.
 
 ---
 
@@ -396,6 +721,21 @@ Outputs are under `release_builds\candidate-*\dist`. Smoke-test a separate copy
 and inspect the final archive for private profiles, asset databases, journals,
 sidecar backups and move-recovery data. Never archive a used runtime directory
 as the release. A source test pass is not a packaged-app certification.
+About displays the build version and identity. Packaged metadata records the base
+revision, dirty-source flag, build time, runtime and source-file SHA-256 manifest;
+uncommitted changes are not mislabeled as a clean commit.
+
+Build startup considers only marked, inactive managed candidates older than
+30 days or exceeding a 5 GiB managed target. Unknown/legacy candidates, active
+processes/locks, links and runtime/recovery data block cleanup. Validated
+distributions are protected; only their disposable `work` folder is eligible.
+After validation, call `housekeeping.mark_validated(candidate)` to record that
+boundary. Protected storage can exceed the target; no release or backup is
+silently deleted to enforce a quota.
+
+The Windows validation workflow tests Python 3.11 and 3.14 and prepares native
+build, bundled-code, clean archive and fresh/upgrade/extracted startup gates.
+Adding the workflow is not evidence of a successful remote run.
 
 macOS builds must be produced on a Mac; a Windows build is not a Mac app.
 The manual `macOS release validation` GitHub workflow prepares separate Apple
@@ -445,6 +785,9 @@ that Live accepts every supported metadata shape.
 
 Advanced exposes only options checked against Ableton's
 [Options.txt documentation](https://help.ableton.com/hc/en-us/articles/6003224107292-Options-txt-file):
+open the documentation from the tab's help button, or use its displayed URL if
+the system browser cannot open the page. The button only opens Ableton's
+reference; it does not validate settings or guarantee that Live supports them.
 
 - `-EnableArmOnSelection` (not recommended with Push 2 or Push 3).
 - `-DontCombineAPCs`.
@@ -488,7 +831,7 @@ unmanaged. Reload from disk if preferences changed externally.
 - **Metadata freshness:** A visible Live-tag monitor checks sidecars in the background, waits for two stable probes, and updates cached assignments without writing audio or sidecars. Full-scan and library metadata-check times are displayed separately.
 - **Shared Live tags:** Read manual Live 12 sidecars on scans and review cached assignments in the inspector. **Edit Live tags...** opens one editor with current assignments, selected-sound counts, add/remove/rename, optional multiple edits, and Save with optional Preview. Existing sidecars receive backups; concurrent changes detected during review abort saving. Close Live during writes.
 - **Tag-preserving operations:** Manual assignments follow sample copy/move, duplicate merging, nested-folder repair, and undo. See the shared-tag section for limitations and recovery guidance.
-- **Integrations workspace:** The XO folder builder has a dedicated home for third-party workflows. Serum support is not included.
+- **Integrations workspace:** The XO folder builder and Serum resource/preset import workflows prepare files for third-party tools; neither verifies that XO recognizes its folder or that Serum resolves copied resources.
 - **Accurate library counts:** Rescans remove confirmed-missing files after external deletion; operation completion refreshes the browser and its sidebar counts.
 - **Live acceptance:** On October 29, the user confirmed an added tag appeared in Live and disappeared after removal. Rename visibility, untouched-neighbor/audio checks, and exact Live/Windows versions remain unreported; full acceptance is still open.
 - **Focused Library:** Removed the separate read-only Ableton catalog viewer and source switch while retaining shared Live vocabulary and all editing features. Results have explicit page navigation, a source-separated generated/manual tag summary, and detailed folder evidence in Sound details.
@@ -499,11 +842,14 @@ unmanaged. Reload from disk if preferences changed externally.
 - Sounds & Tags: independent category/tag highlights, accurate result counts, waveform strip, Auto-play, saved searches, keyboard shortcuts, favorites, faster startup via cached tag counts.
 - Rules: priorities, shadowed-rule detection, explain-a-filename, backup/restore of rules.
 - Home: library status card and in-app README viewer.
-- XO filter folder: **Integrations > Build XO folder** groups your sounds by type (kicks, snares, nature, foley, vocals, textures...) into one folder per type so XO can filter by folder. Choose a destination that does not overlap your User Library. Files are hard-linked when possible and copied otherwise (copies use extra disk space). Originals are never moved. Hard links share file contents and are not independent backups. Keep the folder outside OneDrive. This is a folder-based workflow, not direct XO control. Serum preset management is not implemented yet.
+- XO filter folder: **Integrations > Build XO folder** groups your sounds by type (kicks, snares, nature, foley, vocals, textures...) into one folder per type so XO can filter by folder. The default destination is under your home folder. Choose a destination that does not overlap your User Library. The app compares filesystem device IDs to explain when links are unavailable; hard links are attempted on the same filesystem and files are copied across filesystems or when linking is unsupported. Copies use disk space. Originals are never moved. Hard links share file contents and are not independent backups. Keep the folder outside OneDrive. This is a folder-based workflow, not direct XO control; select the folder in XO and verify the expected sounds appear.
 - Rule suggestions: the Rules tab scans your catch-all folder (Other One-Shots) when the app opens and after every Organize or Import, and proposes new keyword rules (e.g. "djembe" → `Samples/One-Shots/Percussion`, "rain" → a new Nature folder). Each suggestion shows the priority it would get; **Use this suggestion** ranks it automatically, and **Use all suggestions** adds them in one go. Nothing changes until you approve.
 - Loop folder layout: on the Rules tab's **Loops** tab, **Edit layout…** lets you choose which levels loops are filed into (Tempo, Key) and reorder them with ▲/▼. The recommendation puts the level with the fewest folders first and leaves out a level most of your loops can't fill. Organize applies the layout to new loops and re-files loops that sit in folders this app created; folders you made yourself are left alone. Use Preview changes first; Undo covers it.
 - The Rules tab is split into **Loops**, **One-shots** and **Presets & racks** tabs, so each kind of file shows where it goes and the controls for changing it.
-- XO folders are editable: **Edit folders…** in the XO builder lets you add your own keywords to any folder, create new folders, and **Find suggestions** learns candidate folder names from words common in sounds no folder recognizes yet.
+- Historical XO releases included a separate keyword editor and folder-learning
+  suggestions. Those controls are removed from the current simplified builder;
+  existing library categories take precedence.
+- Unreadable or malformed profile/XO-folder settings are reported rather than treated as an empty custom-folder list. If loading fails, **Skip Folders** becomes read-only to protect the existing profile; repair the configuration and restart the app to edit it again.
 - Organize now re-checks the Other One-Shots folder, so files that match a rule (or a rule you approve later) move to the right folder. Use **Preview** first; Undo is available.
 - Local app tags were separate from Ableton tags; v2.1.0 adds the explicit shared manual-tag workflow described below.
 - Polish: all dialogs centre on the app, unified green and lavender theme, progress bar with file counts.
@@ -529,7 +875,7 @@ unmanaged. Reload from disk if preferences changed externally.
 The application shell is sized for the Library and Rules views and remains resizable.
 For the safest workflow:
 
-1. Use **Preview only** on the Import tab for unfamiliar packs.
+1. Use **Preview plan** on the Import tab for unfamiliar packs.
 2. Review destination, confidence, and tags before using Move Mode.
 3. Use the **Library** tab to search by filename or exact tag and curate shared Live tags.
 4. Use **Rules** to review suggestions, disable questionable rules, and check conflicts.
@@ -546,11 +892,78 @@ The automated test suite includes temporary-directory integration workflows for 
 and Move modes. These tests verify the complete worker lifecycle, file placement, and searchable
 index results without modifying a user's library.
 
+### Import a complete Serum 2 resource folder
+
+In **Import**, choose the installed **Serum 2 Presets** folder itself, normally under
+`Documents/Xfer/Serum 2 Presets` (possibly inside OneDrive on Windows).
+Choose **Make copies**, and use **Preview first** to review the plan.
+The importer detects the complete resource root and copies everything inside it into
+`User Library/Serum 2 Presets`, without adding another nested `Serum 2 Presets` folder.
+The source must contain `Presets`, `Tables`, and `Samples`.
+
+All relative paths and empty folders are preserved, including Factory/User presets,
+wavetables, samples, skins, LFO resources, and system files. Resource audio is not
+classified as ordinary Ableton one-shots or loops, and existing preset folders are not
+recategorized. A complete resource import is always copy-only: the original Xfer
+installation is never moved, deleted, or edited. Preview creates no destination files
+or folders and does not index Serum resource audio as library sounds.
+
+Repeat imports skip byte-identical files and keep library-only files. If any existing
+file differs or a file/folder conflicts, the import stops before copying anything;
+review the Activity log and resolve the conflict rather than overwriting resources.
+Overlapping source/destination paths and linked resource paths are rejected. Each new
+copy is checked against its source; errors stop the import and are reported explicitly.
+Cancellation keeps completed copies and leaves originals untouched.
+After copying, select the new resource location in Serum 2 if you want it to use the
+library copy; the importer does not change Serum's own preferences. A successful
+copy verifies the copied files, not that Serum resolves their dependencies. Open a
+representative preset in Serum 2 and confirm its samples and tables load. The completion
+notice and Activity log show the exact destination and remind you to select the
+`Serum 2 Presets` resource root in Serum 2 (including when it is opened inside Ableton),
+not the `Presets/User` subfolder. Find the copy under User Library in Ableton's browser,
+or add the folder to Places if needed. Neither application's preferences are changed
+automatically. Preview only shows the proposed location; setup instructions appear
+after a successful copy or an already-identical import.
+
+### Import individual Serum presets
+
+Serum `.SerumPreset` and `.fxp` files (case-insensitive) route to categories beneath
+`Serum 2 Presets/Presets/User` directly under the selected User Library;
+`.fxb` banks remain in `Serum Banks`.
+This is inside Serum 2's required resource root, not alongside it. Recognized preset, device, and MIDI extensions
+take precedence over sound-name rules, including nested percussion rules. This is file
+sorting, not a Serum preset-editing integration. Existing profiles using the old
+`Serum Presets` destination for these two extensions are upgraded and backed up on load.
+The previously nested `Serum Presets/Serum 2 Presets/Presets/User` rule is also upgraded.
+Other custom destinations are preserved without category routing. Profiles missing the
+`.serumpreset` rule can restore missing defaults through **Rules**.
+Re-running **Organize Library** migrates loose presets from `Serum Presets` and recovers
+`.SerumPreset` files previously misplaced inside `Live Instrument Racks`.
+Preview shows these corrections before moving; normal move logs support undo.
+Leading category prefixes determine the User subfolder: `808` becomes `Bass/808`,
+`ARP` becomes `Arp`, `BASS`/`BS` becomes `Bass`, `CH`/`CHORD` becomes `Chord`,
+`DRUM` becomes `Drum`, `FX` becomes `SFX`, `INSTRUMENT` becomes `Instrument`,
+`KEYS` becomes `Keyboard`, `LD`/`LEAD` becomes `Lead`, `PAD`/`PD` becomes `Pad`,
+`PL`/`PLUCK` becomes `Pluck`, `SEQ` becomes `Seq`, and `SYN` becomes `Synth`.
+Unclear names go to `User/Unsorted`, rather than guessing categories from arbitrary words
+or technical metadata such as Mono or Wavetable. Factory content is never merged with
+user presets. Files and empty resource folders already inside `Serum 2 Presets`
+(including Presets, Tables, Samples, and LFO Shapes) stay untouched, as do actual `.adg` racks.
+Changing routing does not move an installed resource folder automatically. If your
+resource root is still nested inside `Serum Presets`, move that entire `Serum 2 Presets`
+folder to the User Library root in a separately reviewed migration before organizing
+loose presets. Import and Organize stop with an explicit error while that nested resource
+root exists, rather than silently creating a second resource tree.
+Do not merge or replace an existing destination resource root. Remove
+the old outer `Serum Presets` folder only when empty, and reselect the resource folder
+in Serum 2 if it still points to the former location.
+
 ### Folder nesting safety
 
 The organizer is designed to be safe to run more than once. Files already inside an organized
 top-level structure such as `Samples/One-Shots`, `Samples/Loops`, `Midi`, or Ableton preset/device
-folders are left where they are. One-shot percussion is stored under
+folders are left where they are, except for loose Serum presets and misplaced `.SerumPreset`
+files in `Live Instrument Racks` as described above. One-shot percussion is stored under
 `Samples/One-Shots/Percussion` (with shakers under its `Shakers` folder). Existing legacy
 top-level `Percussion` folders are left untouched. Suspicious repeated structures such as
 `Samples/Loops/.../Loops` are also skipped rather than moved or deleted. This prevents a second
@@ -628,8 +1041,8 @@ Playback and waveform support are unchanged.
 
 **Saved collections** in the sidebar are reusable searches, not copies of your sounds.
 Choose your search, collection, and tag filters, then use **Save current...** and give
-the view a name. Click its name to restore that combination of filters. The existing
-**Saved searches** menu uses the same saved views and storage. **Delete** removes only
+the view a name. Click its name to restore that combination of filters. The
+**Saved** sidebar is the single saved-search entry point. **Delete** removes only
 the saved view, never sounds or tags. Saving with an existing name replaces that view.
 Active search, collection, and tag filters appear above the results; click a chip's
 **x** to remove just that filter, or **Clear all** to return to All sounds.
@@ -654,6 +1067,10 @@ The searchable cache uses `ableton:` before the exact Live hierarchy, for exampl
 `ableton:Sounds|Test Tag`. This prefix identifies provenance inside the app only;
 it is never written to Live. Local tag actions cannot edit these cached entries.
 The `.xmp` sidecar remains the source of truth for these manual Live assignments.
+Saving sidecars and updating the manager's index confirms only those file operations;
+it does not prove that Ableton Live accepts or displays every assignment. Verify
+the result in Live, and consult the documented limits below for unsupported tag
+shapes and non-audio items.
 
 The left sidebar separates **All tags**, **Live manual tags**, and
 **Generated tags**. Live assignments sort first and display as `Live: Group|Tag`,
@@ -678,6 +1095,8 @@ reads the selected sounds' sidecars in the background and lists assigned tags,
 with counts such as `18/25` or `25/25`. Click a row to select its exact hierarchy
 for removal or renaming. Choose **add** to assign a new tag;
 suggestions come from indexed Live assignments and the read-only Live vocabulary.
+If a catalog keyword references a missing or incomplete hierarchy, loading reports
+the problem and retains previous choices instead of silently omitting that tag.
 The **Group** field qualifies plain labels; an explicit `Group|Tag|Subtag` hierarchy
 overrides that field. Dropdown choices are suggestions, not assigned tags.
 Choose **add**, **remove**, or **rename** in this same editor. **Save changes**
@@ -751,7 +1170,7 @@ also apply to queued batches.
 
 ### Discovery and curation searches
 
-**Discovery...** beside the search controls adds constraints to the current
+**More filters…** beside the search controls adds constraints to the current
 search. Select several indexed tags with Ctrl/Shift, then choose **Match all**,
 **Match any**, or **Exclude selected**. You can also choose **No manual Live tags**,
 **Has manual Live tags**, or enter a **Missing Live group** such as `Character`.
@@ -901,7 +1320,7 @@ application must be stopped there. Playback stops automatically when you change 
 tag, search, or tab. Tick **Auto-play on select** to hear each sound as you click it; it is
 greyed out for MIDI files, which would otherwise open an external player on every click.
 WAV files also show a waveform strip. Shortcuts: **Ctrl+F** focuses search, **Space**
-plays or stops the selected sound, and **F** toggles Favorite. **Saved searches** stores
+plays or stops the selected sound, and **F** toggles Favorite. The **Saved** sidebar stores
 and recalls your favorite search strings. Empty tag lists (for example in Favorites) show
 **None**. Tag counts are cached between launches and refreshed whenever the index
 changes. Double-click a sound to open its details. Generated `name:` search-tag
@@ -931,6 +1350,26 @@ alone during normal imports.
 Use this checklist the first time you set up the app on a computer. The first test is
 intentionally non-destructive.
 
+The manager keeps settings, the asset index, saved views, backups and move logs
+in a stable per-user application-data folder, independent of the current
+working directory and outside the app bundle:
+
+- Windows: `%LOCALAPPDATA%\AbletonLibraryManager` (or `%APPDATA%` if LocalAppData
+  is unavailable).
+- macOS: `~/Library/Application Support/AbletonLibraryManager`.
+- Linux: `$XDG_DATA_HOME/AbletonLibraryManager`, or
+  `~/.local/share/AbletonLibraryManager`.
+
+On first launch, known state in the previous working, executable or source
+folder is copied into this location. The SQLite index is copied through
+SQLite's backup API and checked for integrity. Original files are retained.
+Existing stable files are never overwritten; if a legacy settings file or
+database conflicts with the stable profile, the legacy profile and its related
+logs remain together and the app warns that manual recovery may be needed.
+Choose the shared **Active User Library** from the bar at the top of the
+window; Import, Organize and Library all use that selection, which is saved in
+the application settings.
+
 ### Windows
 
 - [ ] Install Python 3.11 or newer and make sure **Tkinter** is included.
@@ -943,7 +1382,7 @@ intentionally non-destructive.
       python AbletonLibraryManager.pyw
       ```
 
-- [ ] Confirm that **Your Ableton Library** points to the intended library folder.
+- [ ] Confirm that **Active User Library** points to the intended library folder.
 
 ### macOS
 
@@ -963,35 +1402,26 @@ intentionally non-destructive.
       bash Launch-Mac.command
       ```
 
-- [ ] Confirm that **Your Ableton Library** points to:
+- [ ] Confirm that **Active User Library** points to:
       `~/Music/Ableton/User Library`, or choose the correct library location.
-
-Frozen Mac apps keep settings, the asset index, saved views and move logs under
-`~/Library/Application Support/AbletonLibraryManager`, independent of Finder's
-working directory and outside the app bundle. Source launches retain their
-project-local state. There is no automatic migration from an older source or
-portable folder: close both copies and preserve the original profile, database,
-saved views and move logs before relocating anything. Do not assume a fresh
-profile means earlier settings or recovery files were deleted.
 
 ### Safe first test — Windows or macOS
 
 - [ ] Open **Import**.
 - [ ] Choose a small folder containing a few test samples, not your only copy of a library.
-- [ ] Leave **Make copies (recommended)** selected.
-- [ ] Select **Preview only (make no changes)**.
-- [ ] Click **Organize Samples**.
+- [ ] Leave **Copy (keep originals)** selected.
+- [ ] Click **Preview plan**.
 - [ ] Review the Activity list for the proposed destination folders, tags, and confidence.
 - [ ] Confirm that the original test files are still in place.
-- [ ] Only after the preview looks correct, run a small real test using copy mode.
-- [ ] Open **Tags** and confirm that the test assets can be searched.
+- [ ] Only after the preview looks correct, click **Apply plan** for a small copy test.
+- [ ] Open **Library** and confirm that the test assets can be searched.
 
 ### Before using Move files
 
 - [ ] Make sure the preview results are correct.
 - [ ] Keep a backup of important files.
 - [ ] Confirm that the source folder is not a shared, synced, or actively edited folder.
-- [ ] Use **Move files (remove originals)** only when you intentionally want the source files
+- [ ] Use **Move (remove originals)** only when you intentionally want the source files
       removed after they are copied into the library.
 
 If the app opens but Tkinter is missing, the Python installation needs to be repaired or

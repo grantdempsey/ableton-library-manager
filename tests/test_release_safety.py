@@ -35,6 +35,8 @@ class ReleaseSafetyTests(unittest.TestCase):
             "BPM_RANGES", "DRUM_KEYWORDS", "SYNTH_EXTS", "NATIVE_EXTS",
             "IGNORED_DIRECTORIES", "RULE_METADATA", "SMART_LEARNING_ENABLED",
             "LEARNING_COUNTS", "LEARNED_RULE_CANDIDATES", "LOOP_LAYOUT",
+            "CONFIG_LOAD_ERROR",
+            "XO_CONFIG_LOAD_ERROR",
         ):
             original = getattr(sorter_engine, name)
             self.addCleanup(setattr, sorter_engine, name, original)
@@ -58,6 +60,11 @@ class ReleaseSafetyTests(unittest.TestCase):
             sorter_engine._write_config({"keep": "mine"}, expected_content=before)
         self.assertEqual({"keep": "external"}, json.loads(self.config.read_text()))
 
+    def test_profile_write_creates_missing_stable_directory(self):
+        sorter_engine.CONFIG_FILE = str(self.root / "new-state" / "library_config.json")
+        sorter_engine._write_config(sorter_engine._default_config(), create_backup=False)
+        self.assertTrue(Path(sorter_engine.CONFIG_FILE).is_file())
+
     def test_exclusions_initialization_does_not_write_profile(self):
         before = self.config.read_bytes()
         page = SimpleNamespace(active_exclusions_set=set())
@@ -77,6 +84,27 @@ class ReleaseSafetyTests(unittest.TestCase):
         self.assertEqual({"keep", "No Key Info"}, page.active_exclusions_set)
         self.assertEqual(before, self.config.read_bytes())
         show_error.assert_called_once()
+
+    def test_exclusions_become_read_only_after_configuration_load_failure(self):
+        sorter_engine.CONFIG_LOAD_ERROR = "Malformed profile"
+        page = SimpleNamespace(active_exclusions_set={"new"})
+        with mock.patch.object(sorter_engine, "save_ignored_directories") as save:
+            self.assertFalse(tab_exclusions.ExclusionsTab.flush_changes_to_backend_memory(page))
+        save.assert_not_called()
+        self.assertTrue(page.configuration_read_only)
+        self.assertEqual("Malformed profile", page.configuration_error)
+
+    def test_exclusions_disable_edit_controls_after_configuration_load_failure(self):
+        sorter_engine.XO_CONFIG_LOAD_ERROR = "Malformed XO folders"
+        controls = [mock.Mock() for _ in range(3)]
+        page = SimpleNamespace(
+            ent_pattern=controls[0], btn_add=controls[1], btn_remove=controls[2],
+            configuration_notice=mock.Mock(),
+        )
+        self.assertTrue(tab_exclusions.ExclusionsTab.update_configuration_state(page))
+        for control in controls:
+            control.config.assert_called_once_with(state="disabled")
+        page.configuration_notice.config.assert_called_once()
 
     def test_exclusions_save_preserves_other_settings(self):
         sorter_engine.save_ignored_directories(["Vendor"])
@@ -267,12 +295,16 @@ class ReleaseSafetyTests(unittest.TestCase):
     def test_import_ui_preview_does_not_create_destination(self):
         destination = self.root / "not-created"
         panel = mock.MagicMock()
+        panel.winfo_toplevel.return_value._closing = False
+        panel.active_sorter = None
+        panel._undo_pending = False
+        panel._selected_scope.return_value = (False, True)
         panel.src_dir_var.get.return_value = str(self.root)
         panel.dest_dir_var.get.return_value = str(destination)
         panel.preview_only_var.get.return_value = True
         panel.copy_mode_var.get.return_value = True
         with mock.patch("tab_import.ParallelLibrarySorter") as sorter:
-            ImportTab.kickoff_pipeline_sorting(panel)
+            ImportTab._start_import(panel, preview=True)
         sorter.return_value.start_parallel_sort.assert_called_once()
         self.assertTrue(sorter.call_args.kwargs["preview_only"])
         self.assertFalse(destination.exists())
@@ -283,14 +315,18 @@ class ReleaseSafetyTests(unittest.TestCase):
         private = used / "profile.json"
         private.write_text("must not touch")
         with mock.patch.object(build_app, "__file__", str(self.root / "build_app.py")), mock.patch.object(
-            build_app.subprocess, "run"
-        ) as run:
+            build_app.build_info, "create_metadata", return_value={"source_sha256": "fixture"}
+        ), mock.patch.object(build_app.build_info, "source_hash", return_value="fixture"), mock.patch.object(
+            build_app.subprocess, "Popen"
+        ) as compiler:
+            compiler.return_value.pid = 123456
+            compiler.return_value.wait.return_value = 0
             first = build_app.run_production_compiler_pipeline()
             second = build_app.run_production_compiler_pipeline()
         self.assertNotEqual(first, second)
         self.assertEqual("must not touch", private.read_text())
-        self.assertEqual(2, run.call_count)
-        command = run.call_args.args[0]
+        self.assertEqual(2, compiler.call_count)
+        command = compiler.call_args.args[0]
         self.assertNotIn("--noconfirm", command)
         self.assertEqual(str(second / "dist"), command[command.index("--distpath") + 1])
 

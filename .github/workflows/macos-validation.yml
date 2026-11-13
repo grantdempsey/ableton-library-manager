@@ -1,6 +1,7 @@
 name: macOS release validation
 
 on:
+  workflow_call:
   workflow_dispatch:
   push:
     branches: [main]

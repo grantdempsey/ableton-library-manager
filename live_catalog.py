@@ -200,6 +200,26 @@ def read_vocabulary(database):
         if not roots:
             raise ValueError("Live catalog has no supported keyword vocabulary root.")
         values = set()
+        referenced_keywords = {
+            file_id for (file_id,) in connection.execute("SELECT DISTINCT keyw_id FROM keywords")
+        }
+        for keyword_id in referenced_keywords:
+            parts = []
+            seen = set()
+            current = keyword_id
+            while current in nodes and current not in roots:
+                if current in seen:
+                    raise ValueError("Cycle in Live catalog vocabulary.")
+                seen.add(current)
+                current, name = nodes[current]
+                parts.append(name)
+            if current not in roots or not parts:
+                raise ValueError(
+                    f"Incomplete Live catalog vocabulary hierarchy for keyword node {keyword_id}."
+                )
+            if any(not isinstance(part, str) or not part.strip() for part in parts):
+                raise ValueError("Invalid Live catalog vocabulary value.")
+            values.add("|".join(reversed(parts)))
         for file_id in nodes:
             parts = []
             seen = set()

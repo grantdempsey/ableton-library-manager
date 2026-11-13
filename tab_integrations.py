@@ -16,8 +16,7 @@ class IntegrationsTab(ttk.Frame):
         ).pack(anchor="w", padx=15, pady=(15, 5))
         tk.Label(
             self,
-            text="Prepare your library for other music apps. "
-                 "Each tool explains what it creates before you run it.",
+            text="Prepare sample folders for other music apps.",
             bg=theme["bg_dark"], fg=theme["fg_muted"],
             justify="left", anchor="w", wraplength=900
         ).pack(fill="x", padx=15, pady=(0, 15))
@@ -26,11 +25,12 @@ class IntegrationsTab(ttk.Frame):
         xo_group.pack(fill="x", padx=15, pady=(0, 10))
         tk.Label(
             xo_group,
-            text="Build categorized sample folders that you can add to XO. "
-                 "This is a folder-based workflow, not direct control of XO.\n\n"
-                 "Files are hard-linked when possible and copied otherwise. "
-                 "Originals are not moved. Hard links share file contents; "
-                 "they are not independent backups. Choose an output folder outside OneDrive.",
+            text="Keep your library's one-shot categories in a folder you can add to XO.\n\n"
+                 "Originals stay put; output uses hard links or copies. Links share contents, "
+                 "so they are not backups. Choose a folder outside OneDrive.\n"
+                 "Successful rebuilds replace managed output and remove old groups. "
+                 "Older unmarked folders require confirmation and are kept as backups. "
+                 "Add the output in XO and verify the sounds.",
             bg=theme["bg_dark"], fg=theme["fg_muted"],
             justify="left", anchor="w", wraplength=850
         ).pack(fill="x", padx=12, pady=(10, 8))

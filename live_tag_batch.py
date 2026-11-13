@@ -375,6 +375,9 @@ class LiveTagBatchDialog(tk.Toplevel):
         if self.plan is None:
             self.review(save_after_review=True)
             return
+        lease = gui_theme.claim_library_job(self, "Live tag save")
+        if lease is None:
+            return
         plan = self.plan
         self.set_busy(True, saving=True)
         self.status_var.set("Saving reviewed sidecars. Do not close the app...")
@@ -392,7 +395,16 @@ class LiveTagBatchDialog(tk.Toplevel):
                 self.results.put(("cache", backups, error))
             else:
                 self.results.put(("save", (backups, summary), None))
-        threading.Thread(target=worker, daemon=False).start()
+        try:
+            thread = gui_theme.start_background_job(self, worker, lease=lease)
+        except RuntimeError as error:
+            self.results.put(("save", None, error))
+            self.after(30, self.finish)
+            return
+        if thread is None:
+            self.set_busy(False)
+            self.save_button.configure(state="normal")
+            return
         self.after(30, self.finish)
 
     def finish(self):
@@ -481,7 +493,10 @@ class LiveTagBatchDialog(tk.Toplevel):
             self.tag_var.set("")
             self.replacement_var.set("")
             self.set_preview("")
-            self.status_var.set(f"Changes saved. {len(backups):,} sidecar backup(s) created.")
+            self.status_var.set(
+                f"Changes saved. {len(backups):,} sidecar backup(s) created. "
+                "Live acceptance is not verified."
+            )
             self.show_assignments(summary)
             try:
                 self.browser._render_results(refresh_sidebar=True)

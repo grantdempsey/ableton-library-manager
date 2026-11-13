@@ -195,6 +195,25 @@ class AdvancedSafetyTests(unittest.TestCase):
         self.assertNotIn("Auto-Verified", status_text)
         self.assertNotIn("Auto-disabling", status_text)
 
+    def test_options_help_opens_ableton_documentation(self):
+        with mock.patch("tab_experimental.webbrowser.open", return_value=True) as open_page:
+            self.assertTrue(self.panel.open_options_help())
+
+        open_page.assert_called_once_with(
+            "https://help.ableton.com/hc/en-us/articles/6003224107292-Options-txt-file"
+        )
+        self.assertIn("Opened Ableton's Options.txt documentation", self.panel.status_lbl.config.call_args.kwargs["text"])
+
+    def test_options_help_reports_browser_failure_and_keeps_manual_url(self):
+        with mock.patch("tab_experimental.webbrowser.open", return_value=False), mock.patch(
+            "tab_experimental.messagebox.showerror"
+        ) as error:
+            self.assertFalse(self.panel.open_options_help())
+
+        error.assert_called_once()
+        self.assertIn("Open this URL manually", error.call_args.args[1])
+        self.assertIn("https://help.ableton.com/", error.call_args.args[1])
+
     def test_underscored_absolute_mouse_flag_is_not_exposed_as_a_toggle(self):
         self.assertNotIn("-_AbsoluteMouseMode", self.panel.options_state)
 

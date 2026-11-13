@@ -19,6 +19,7 @@ import tag_evidence
 import live_catalog
 from live_tag_batch import LiveTagBatchDialog
 import live_tag_sync
+import performance_log
 
 
 SUPPORTED_AUDIO_EXTENSIONS = {
@@ -196,25 +197,11 @@ class TagsTab(ttk.Frame):
             activeforeground=theme["btn_primary_fg"], bd=1
         )
         self.filter_button.pack(side="left", padx=6)
-        self.saved_button = tk.Button(
-            search_controls, text="Saved searches ▾", command=self._show_saved_searches_menu,
-            bg=theme["btn_secondary"], fg=theme["fg_light"],
-            activebackground=theme["btn_secondary_hover"],
-            activeforeground=theme["fg_light"], bd=1
-        )
-        self.saved_button.pack(side="left", padx=6)
         self.discovery_button = tk.Button(
-            search_controls, text="Discovery...", command=self._open_discovery_filters,
+            search_controls, text="More filters…", command=self._open_discovery_filters,
             bg=theme["btn_secondary"], fg=theme["fg_light"], bd=1
         )
         self.discovery_button.pack(side="left", padx=4)
-        self.rescan_button = tk.Button(
-            search_controls, text="Rescan library", command=self.rescan_library,
-            bg=theme["btn_secondary"], fg=theme["fg_light"],
-            activebackground=theme["btn_secondary_hover"],
-            activeforeground=theme["fg_light"], bd=1
-        )
-        self.rescan_button.pack(side="left", padx=6)
 
         view_controls = tk.Frame(self._editable_content, bg=theme["bg_dark"])
         view_controls.pack(fill="x", padx=15, pady=(0, 3))
@@ -233,6 +220,13 @@ class TagsTab(ttk.Frame):
         self.filter_chips.pack(fill="x", padx=15, pady=(0, 4))
         freshness = tk.Frame(self._editable_content, bg=theme["bg_dark"])
         freshness.pack(side="bottom", fill="x", padx=15, pady=(0, 6))
+        self.rescan_button = tk.Button(
+            freshness, text="Rescan library", command=self.rescan_library,
+            bg=theme["btn_secondary"], fg=theme["fg_light"],
+            activebackground=theme["btn_secondary_hover"],
+            activeforeground=theme["fg_light"], bd=1,
+        )
+        self.rescan_button.pack(side="right", padx=(8, 0))
         self.monitor_live_check = tk.Checkbutton(
             freshness, text="Auto-refresh Live tags", variable=self.monitor_live_var,
             command=self._monitor_toggled, bg=theme["bg_dark"], fg=theme["fg_light"],
@@ -252,15 +246,18 @@ class TagsTab(ttk.Frame):
             selection_bar, textvariable=self.selection_count_var, bg=theme["bg_dark"],
             fg=theme["fg_muted"], anchor="w"
         ).pack(side="left")
+        self._selection_buttons = {}
         for text, command in (
             ("Select page", self._select_page),
             ("Select all matching", self._select_all_matching),
             ("Clear selection", self._clear_selection),
         ):
-            tk.Button(
+            button = tk.Button(
                 selection_bar, text=text, command=command,
                 bg=theme["btn_secondary"], fg=theme["fg_light"], bd=1
-            ).pack(side="right", padx=(5, 0))
+            )
+            button.pack(side="right", padx=(5, 0))
+            self._selection_buttons[text] = button
 
         self.browser_panes = tk.PanedWindow(
             self._editable_content, orient="horizontal", bg=theme["bg_dark"], bd=0,
@@ -629,6 +626,9 @@ class TagsTab(ttk.Frame):
         except ValueError as error:
             messagebox.showerror("Live tags", str(error))
             return
+        lease = gui_theme.claim_library_job(self, "Selected Live metadata refresh")
+        if lease is None:
+            return
         results = queue.Queue()
         self._live_refresh_queue = results
         self._show_selected_asset()
@@ -640,7 +640,16 @@ class TagsTab(ttk.Frame):
                 results.put(error)
             else:
                 results.put(None)
-        threading.Thread(target=worker, daemon=True).start()
+        try:
+            thread = gui_theme.start_background_job(self, worker, lease=lease)
+        except RuntimeError as error:
+            results.put(error)
+            self.after(30, self._finish_selected_live_refresh, len(paths))
+            return
+        if thread is None:
+            self._live_refresh_queue = None
+            self._show_selected_asset()
+            return
         self.after(30, self._finish_selected_live_refresh, len(paths))
 
     def _finish_selected_live_refresh(self, count):
@@ -857,36 +866,6 @@ class TagsTab(ttk.Frame):
         self._safe_render_results()
         self._request_sidebar_load(gui_theme.USER_LIBRARY_PATH)
 
-    def _show_saved_searches_menu(self):
-        theme = gui_theme.THEME
-        menu = tk.Menu(
-            self, tearoff=0, bg=theme["bg_panel"], fg=theme["fg_light"],
-            activebackground=theme["btn_primary"], activeforeground=theme["btn_primary_fg"]
-        )
-        menu.add_command(label="Save current search…", command=self._save_current_search)
-        items = self._load_saved_searches()
-        if items is None:
-            menu.destroy()
-            return
-        if items:
-            menu.add_separator()
-            for item in items:
-                menu.add_command(label=item["name"], command=lambda i=item: self._apply_saved_search(i))
-            menu.add_separator()
-            delete_menu = tk.Menu(
-                menu, tearoff=0, bg=theme["bg_panel"], fg=theme["fg_light"],
-                activebackground=theme["btn_primary"], activeforeground=theme["btn_primary_fg"]
-            )
-            for item in items:
-                delete_menu.add_command(label=item["name"], command=lambda i=item: self._delete_saved_search(i))
-            menu.add_cascade(label="Delete a saved search", menu=delete_menu)
-        x = self.saved_button.winfo_rootx()
-        y = self.saved_button.winfo_rooty() + self.saved_button.winfo_height()
-        try:
-            menu.tk_popup(x, y)
-        finally:
-            menu.grab_release()
-
     def _describe_search(self, item):
         parts = []
         if item.get("collection") and item["collection"] != "All sounds":
@@ -1096,6 +1075,11 @@ class TagsTab(ttk.Frame):
             self._set_freshness("Live-tag monitoring paused during scan / selected refresh / batch editing.")
             self._metadata_after_id = self.after(5000, self._poll_live_metadata)
             return
+        lease = gui_theme.claim_library_job(self, "Live metadata monitor", notify=False)
+        if lease is None:
+            self._set_freshness("Live-tag monitoring paused while another library operation runs.")
+            self._metadata_after_id = self.after(5000, self._poll_live_metadata)
+            return
         root = gui_theme.USER_LIBRARY_PATH
         if root != self._metadata_root:
             self._metadata_baseline = None
@@ -1113,7 +1097,16 @@ class TagsTab(ttk.Frame):
                 results.put((None, None, error))
             else:
                 results.put((state, snapshot, None))
-        threading.Thread(target=worker, daemon=True).start()
+        try:
+            thread = gui_theme.start_background_job(self, worker, lease=lease)
+        except RuntimeError as error:
+            results.put((None, None, error))
+            self._metadata_after_id = self.after(30, self._finish_metadata_poll, root)
+            return
+        if thread is None:
+            self._metadata_queue = None
+            self._show_selected_asset()
+            return
         self._metadata_after_id = self.after(30, self._finish_metadata_poll, root)
 
     def _finish_metadata_poll(self, root):
@@ -1167,13 +1160,25 @@ class TagsTab(ttk.Frame):
             self._set_freshness("Library unavailable; cached results may be stale.")
             messagebox.showerror("Rescan library", "The configured User Library is unavailable.")
             return
+        lease = gui_theme.claim_library_job(self, "Library rescan", notify=notify_busy)
+        if lease is None:
+            if not notify_busy:
+                self.after(500, lambda: self.rescan_library(notify_busy=False))
+            return
         self._refresh_running = True
         self.rescan_button.configure(state="disabled")
         self._set_status("Scanning the library for sounds...")
         self._set_freshness("Scanning audio and manual Live metadata...")
-        threading.Thread(
-            target=self._discover_then_refresh, args=(library_root,), daemon=True
-        ).start()
+        try:
+            thread = gui_theme.start_background_job(
+                self, lambda: self._discover_then_refresh(library_root), lease=lease,
+            )
+        except RuntimeError as error:
+            self._library_work_results.put(("scan", 0, error, None))
+            return
+        if thread is None:
+            self._refresh_running = False
+            self.rescan_button.configure(state="normal")
 
     def _discover_then_refresh(self, library_root):
         try:
@@ -1358,9 +1363,32 @@ class TagsTab(ttk.Frame):
             self._cached_tags = sidebar_data["tags"]
             self._cached_tag_scope = sidebar_data["tag_scope"]
             self._sidebar_loaded = True
+        else:
+            self._sidebar_loaded = False
         self._page_index = 0
         self._render_results(refresh_sidebar=sidebar_data is None)
 
+    def _count_browser_results(self, library_root, search_text):
+        if (
+            self._sidebar_loaded
+            and self._active_collection == "All sounds"
+            and not self.favorites_only
+            and not self.active_tag_filter
+            and not search_text
+        ):
+            return self._cached_total_count
+        return sorter_engine.count_indexed_assets(
+            library_root, search_text, self.active_tag_filter,
+            self.favorites_only
+        )
+
+    @performance_log.timed("library_page_render", lambda result, self, *args, **kwargs: {
+        "page": self._page_index + 1,
+        "visible_rows": len(self._asset_paths),
+        "has_search": bool(self.search_var.get()),
+        "has_tag_filter": bool(self.active_tag_filter),
+        "favorites_only": self.favorites_only,
+    })
     def _render_results(self, refresh_sidebar=False, load_sidebar=True):
         if refresh_sidebar:
             self._tag_suggestions_revision += 1
@@ -1414,11 +1442,12 @@ class TagsTab(ttk.Frame):
             search_text = (
                 f"{search_text} {collection_queries[self._active_collection]}"
             ).strip()
-        records = sorter_engine.list_indexed_assets(
-            search_text, self.active_tag_filter, self.favorites_only,
-            limit=self._page_size + 1, offset=self._page_index * self._page_size,
-            library_root=library_root
-        )
+        with performance_log.measure_phase("page_query"):
+            records = sorter_engine.list_indexed_assets(
+                search_text, self.active_tag_filter, self.favorites_only,
+                limit=self._page_size + 1, offset=self._page_index * self._page_size,
+                library_root=library_root
+            )
         has_next_page = len(records) > self._page_size
         records = records[:self._page_size]
         self.page_label.configure(
@@ -1430,10 +1459,10 @@ class TagsTab(ttk.Frame):
         self._filtered_count = self._page_index * self._page_size + len(records)
         if has_next_page:
             try:
-                self._filtered_count = sorter_engine.count_indexed_assets(
-                    library_root, search_text, self.active_tag_filter,
-                    self.favorites_only
-                )
+                with performance_log.measure_phase("count_query"):
+                    self._filtered_count = self._count_browser_results(
+                        library_root, search_text
+                    )
             except (OSError, sorter_engine.sqlite3.Error):
                 pass
         total_text = (
@@ -1449,31 +1478,33 @@ class TagsTab(ttk.Frame):
         self.next_page_button.configure(
             state="normal" if has_next_page else "disabled"
         )
-        self.asset_tree.delete(*self.asset_tree.get_children())
-        self._asset_paths.clear()
-        selected_items = []
-        for record in records:
-            folder = os.path.relpath(record["destination"], library_root)
-            if folder == ".":
-                folder = "User Library"
-            item_id = self.asset_tree.insert(
-                "", "end",
-                values=(
-                    record["filename"], folder
+        with performance_log.measure_phase("tree_render"):
+            self.asset_tree.delete(*self.asset_tree.get_children())
+            self._asset_paths.clear()
+            selected_items = []
+            for record in records:
+                folder = os.path.relpath(record["destination"], library_root)
+                if folder == ".":
+                    folder = "User Library"
+                item_id = self.asset_tree.insert(
+                    "", "end",
+                    values=(
+                        record["filename"], folder
+                    )
                 )
-            )
-            self._asset_paths[item_id] = record["path"]
-            if record["path"] in selected_paths:
-                selected_items.append(item_id)
-        if not records:
-            self.asset_tree.insert(
-                "", "end",
-                values=("No matching sounds", "Try another filter")
-            )
-        elif selected_items:
-            self.asset_tree.selection_set(selected_items)
-            self.asset_tree.focus(selected_items[0])
-        self._show_selected_asset()
+                self._asset_paths[item_id] = record["path"]
+                if record["path"] in selected_paths:
+                    selected_items.append(item_id)
+            if not records:
+                self.asset_tree.insert(
+                    "", "end",
+                    values=("No matching sounds", "Try another filter")
+                )
+            elif selected_items:
+                self.asset_tree.selection_set(selected_items)
+                self.asset_tree.focus(selected_items[0])
+        with performance_log.measure_phase("selected_details"):
+            self._show_selected_asset()
 
     def _previous_page(self):
         if self._page_index:
@@ -1513,7 +1544,9 @@ class TagsTab(ttk.Frame):
             "Generated tags: category: and name: labels derived by the manager, not Live tags.\n\n"
             "Live tag editor: dropdown suggestions can include Live's stored vocabulary, "
             "including unused tags. Use Tag suggestions source... to choose a database when more than "
-            "one is available. Suggestions do not assign tags or change manual-tag counts.\n\n"
+            "one is available. Suggestions do not assign tags or change manual-tag counts. "
+            "If a catalog keyword points to a missing or incomplete hierarchy, loading fails visibly "
+            "and the previous suggestions are retained instead of silently omitting that tag.\n\n"
             "Ableton's automatic/factory tags, colored Collections, and its complete global tag "
             "vocabulary are not imported by this sidecar workflow. Tags on external folders will "
             "not appear unless the sounds are imported into the configured library.\n\n"
@@ -1735,6 +1768,11 @@ class TagsTab(ttk.Frame):
             if paths else "No sounds selected"
         )
         state = "normal" if paths else "disabled"
+        self._selection_buttons["Clear selection"].configure(state=state)
+        for action in ("Select page", "Select all matching"):
+            self._selection_buttons[action].configure(
+                state="normal" if self._asset_paths else "disabled"
+            )
         for control in (
             self.favorite_button, self.unfavorite_button
         ):
@@ -2048,7 +2086,11 @@ class TagsTab(ttk.Frame):
             "Update selected"
         ):
             return False
-        sorter_engine.bulk_update_asset_tags(paths, normalized_tag, remove=remove)
+        lease = gui_theme.claim_library_job(self, "Favorite update")
+        if lease is None:
+            return False
+        with lease:
+            sorter_engine.bulk_update_asset_tags(paths, normalized_tag, remove=remove)
         self._render_results(refresh_sidebar=True)
         self._set_status(
             f"Tag '{normalized_tag}' {'removed from' if remove else 'applied to'} "
@@ -2268,8 +2310,12 @@ class TagsTab(ttk.Frame):
     def _toggle_asset_tag(self, path, tag, tag_states, tag_button):
         """Enables or disables a tag for the sound shown in the details dialog."""
         enabled = not tag_states[tag]
+        lease = gui_theme.claim_library_job(self, "Tag state update")
+        if lease is None:
+            return
         try:
-            sorter_engine.set_asset_tag_enabled(path, tag, enabled)
+            with lease:
+                sorter_engine.set_asset_tag_enabled(path, tag, enabled)
         except (OSError, ValueError, sorter_engine.sqlite3.Error) as error:
             messagebox.showerror("Tag Update Failed", str(error))
             return

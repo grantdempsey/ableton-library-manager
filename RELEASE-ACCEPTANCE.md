@@ -5,6 +5,50 @@ Do not disable Windows Application Control, Gatekeeper or other protection.
 If the operating system blocks an app, record the exact message and stop.
 Unsigned/ad-hoc signatures do not establish trusted publisher identity.
 
+## Automated manager workflow acceptance (November 12, 2026)
+
+The earlier `windows-20261112-organize-fixes` candidate passed an expanded
+disposable-fixture pass: 56 focused source cases (one skip) and 561 bundled-code
+cases (three skips). The bundled run exercises 25 production modules extracted
+from the executable with host Python/Tk. Application code and the existing
+EXE/ZIP hashes are unchanged; no replacement build is needed for these tests.
+
+The full-application tests in `tests/test_release_acceptance.py` now cover:
+
+- Import Copy and Move: Preview, complete JSON export and Apply; audio-only
+  exclusion, unchanged preview inputs/profile/library, original preservation
+  for Copy, and verified audio/Live-sidecar/index results.
+- Global History / Recovery: select the real Move log and use Undo selected
+  for both Import and Organize; verify restored audio, tags and index state,
+  archived completed history and refreshed history list.
+- Organize with backup enabled: Preview, More tools export, Apply, and a
+  CRC-checked ZIP containing every original file and metadata sidecar.
+- Import Copy/Move and Organize Cancel after one real completed transfer:
+  completed files remain, pending sources survive, Apply requires a new
+  preview, and completed moves can be undone through History.
+- Rename collisions and duplicate Move merges: preserve the existing
+  destination, transfer to the reviewed alternate name and restore both
+  original sources through History.
+- Input changes after preview: both Apply actions report failure, preserve
+  the changed input/library and invalidate the approved plan.
+
+Primary Preview/Apply/Cancel buttons receive synthetic Tk press/release events;
+radio controls, export menus and History actions use their widget commands.
+Dialog responses are supplied by the fixture. Sorting, backup, transfer,
+metadata and undo implementations remain real; cancellation uses a bounded
+test gate after the first transfer to make the partial-work state repeatable.
+This is not physical mouse/keyboard automation of a running packaged process,
+high-DPI certification, a power-loss test or acceptance inside Live/Serum/XO.
+Native executable startup/resize/fresh/upgrade checks are recorded separately.
+
+Evidence: `release_builds/windows-20261112-organize-fixes/validation/verification.json`
+and `workflow-bundled-tests.txt` in the same validation directory. Run the
+existing `tests/verify_windows_bundle.py` harness against the candidate to
+repeat the bundled tests; use disposable HOME, USERPROFILE, APPDATA and
+LOCALAPPDATA values and remove OneDrive environment overrides before importing
+application modules. Tests additionally isolate their own profiles/libraries.
+Do not run acceptance against personal content.
+
 ## Windows: disposable Live test
 
 This tests the current source, not native packaged input or signing. It creates

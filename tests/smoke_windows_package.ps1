@@ -33,6 +33,9 @@ function Save-AppWindow([IntPtr]$Window, [string]$Path) {
 $package = (Resolve-Path -LiteralPath $PackageDirectory).Path
 $executable = Join-Path $package 'AbletonLibraryManager.exe'
 if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { throw "Missing executable: $executable" }
+$identity = Get-Content -LiteralPath (Join-Path $package '_internal\build_info.json') -Raw | ConvertFrom-Json
+if ($identity.source_sha256 -notmatch '^[0-9a-f]{64}$') { throw 'Missing or invalid packaged source identity' }
+$expectedBuild = 'Build ' + $identity.source_sha256.Substring(0, 12)
 $privateNames = @('library_config.json', 'library_assets.db', 'sidebar_cache.json', 'saved_searches.json', 'Options.txt', 'Log.txt')
 $files = @(Get-ChildItem -LiteralPath $package -Recurse -File)
 $private = @($files | Where-Object { $_.Name -in $privateNames -or $_.Name -match '\.(bak|db-journal|db-wal|db-shm)$' })
@@ -52,7 +55,9 @@ try {
         $fixtureHome = Join-Path $run 'home'
         $library = Join-Path $fixtureHome 'Documents\Ableton\User Library'
         New-Item -ItemType Directory -Path $library -Force | Out-Null
-        $profile = Join-Path $copy 'library_config.json'
+        $legacyProfile = Join-Path $copy 'library_config.json'
+        $stateDirectory = Join-Path $fixtureHome 'AppData\Local\AbletonLibraryManager'
+        $profile = Join-Path $stateDirectory 'library_config.json'
         if ($scenario -eq 'upgrade') {
             $legacy = @{
                 DRUM_KEYWORDS = @{ '\bkick\b' = 'Kicks' }
@@ -62,7 +67,7 @@ try {
             }
             $legacyJson = $legacy | ConvertTo-Json -Depth 8
             [System.IO.File]::WriteAllText(
-                $profile, $legacyJson, [System.Text.UTF8Encoding]::new($false)
+                $legacyProfile, $legacyJson, [System.Text.UTF8Encoding]::new($false)
             )
         }
         $info = [System.Diagnostics.ProcessStartInfo]::new()
@@ -87,9 +92,11 @@ try {
         if ($window -eq [IntPtr]::Zero) { throw "$scenario did not create a window" }
         Start-Sleep -Milliseconds 1000
         $running.Refresh()
-        if ($running.MainWindowTitle -notlike '*Sample Studio Manager v2.1.1*') {
+        if ($running.MainWindowTitle -notlike '*Ableton Library Manager*' -or
+            -not $running.MainWindowTitle.Contains($expectedBuild)) {
             throw "$scenario unexpected window: $($running.MainWindowTitle)"
         }
+        $actualTitle = $running.MainWindowTitle
         $reply = [IntPtr]::Zero
         if ([PackageSmokeNative]::SendMessageTimeout($window, 0, [IntPtr]::Zero, [IntPtr]::Zero, 2, 2000, [ref]$reply) -eq [IntPtr]::Zero) {
             throw "$scenario window is unresponsive"
@@ -107,15 +114,21 @@ try {
         Save-AppWindow $window (Join-Path $evidence "$scenario-minimum-home.png")
         if (-not (Test-Path -LiteralPath $profile)) { throw "$scenario did not create/load the fixture profile" }
         $saved = Get-Content -LiteralPath $profile -Raw | ConvertFrom-Json
+        if (-not (Test-Path -LiteralPath (Join-Path $stateDirectory 'library_assets.db'))) {
+            throw "$scenario did not create the stable per-user asset index"
+        }
         if ($scenario -eq 'upgrade' -and $saved.XO_CUSTOM_TYPES.'Keep my folder'[0] -ne 'preserved') {
             throw 'Legacy profile custom settings were not preserved'
+        }
+        if ($scenario -eq 'upgrade' -and -not (Test-Path -LiteralPath $legacyProfile)) {
+            throw 'Legacy profile was not retained as a recovery copy'
         }
         [PackageSmokeNative]::PostMessage($window, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
         if (-not $running.WaitForExit(15000)) { throw "$scenario did not close gracefully" }
         if ($running.ExitCode -ne 0) { throw "$scenario exit code: $($running.ExitCode)" }
         $results += @{
             scenario = $scenario; startup = 'passed'; responsive = $true; graceful_exit = $running.ExitCode
-            title = 'Ableton Production Assets & Sample Studio Manager v2.1.1'
+            title = $actualTitle
             profile = 'isolated'
             navigation = 'Not tested by this startup smoke; source UI acceptance is separate.'
         }
@@ -132,7 +145,10 @@ try {
 } finally {
     if ($null -ne $running) {
         $running.Refresh()
-        if (-not $running.HasExited) { Stop-Process -Id $running.Id -Force }
+        if (-not $running.HasExited) {
+            Stop-Process -Id $running.Id -Force
+            if (-not $running.WaitForExit(10000)) { throw 'Disposable smoke process did not stop' }
+        }
         $running.Dispose()
     }
     Remove-Item -LiteralPath $temporary -Recurse -Force

@@ -31,7 +31,8 @@ def main():
     archive = CArchiveReader(str(executable))
     bundled = archive.open_embedded_archive("PYZ.pyz")
     root = Path(__file__).resolve().parents[1]
-    local_names = {path.stem for path in root.glob("*.py")}
+    # The build driver is host tooling, not an application runtime module.
+    local_names = {path.stem for path in root.glob("*.py") if path.stem != "build_app"}
     loaded = set()
 
     class BundleLoader(importlib.abc.MetaPathFinder, importlib.abc.Loader):
@@ -50,6 +51,9 @@ def main():
             loaded.add(module.__name__)
             exec(bundled.extract(module.__name__), module.__dict__)
 
+        def get_code(self, fullname):
+            return bundled.extract(fullname)
+
     class EntryLoader(importlib.machinery.SourceFileLoader):
         def get_code(self, fullname):
             if fullname == "release_acceptance_app":
@@ -59,6 +63,7 @@ def main():
 
     finder = BundleLoader()
     sys.meta_path.insert(0, finder)
+    sys.path.insert(0, str(root))
     sys.path.insert(0, str(root / "tests"))
     for variable, folder in (("TCL_LIBRARY", "_tcl_data"), ("TK_LIBRARY", "_tk_data")):
         data = internal / folder
@@ -75,12 +80,32 @@ def main():
         "test_rules_transactions",
         "test_live_tag_sync",
         "test_integration_workflow",
+        "test_preset_routing",
+        "test_serum_resource_import",
+        "test_safety_stabilization",
+        "test_collision_planning",
+        "test_transfer_recovery",
+        "test_library_jobs",
+        "test_library_state",
+        "test_recovery_reconciliation",
         "test_ableton_tags",
         "test_advanced_safety",
         "test_library_inspector",
         "test_rule_suggester",
         "test_tag_evidence",
         "test_xo_filter",
+        "test_performance_log",
+        "test_import_recovery_ui",
+        "test_reviewed_plans",
+        "test_release_ui",
+        "test_foundation_ui.FoundationUiTests.test_xo_destination_verification_keeps_ui_responsive_and_can_be_cancelled",
+        "test_foundation_ui.FoundationUiTests.test_confirmation_buttons_fit_full_labels_at_multiple_scales",
+        "test_housekeeping",
+        "test_build_info",
+        "test_performance_regressions",
+        "test_index_reconciliation",
+        "test_learning_foundation",
+        "test_release_safety",
     )
     try:
         with mock.patch.object(importlib.machinery, "SourceFileLoader", EntryLoader):
@@ -89,7 +114,11 @@ def main():
         required = {
             "AbletonLibraryManager", "ableton_tags", "sorter_engine", "tab_tags",
             "live_tag_batch", "tab_experimental", "rule_suggester", "tag_evidence",
-            "xo_filter",
+            "xo_filter", "serum_presets",
+            "library_jobs",
+            "library_state",
+            "performance_log",
+            "housekeeping", "build_info",
         }
         missing = required - loaded
         if missing:
