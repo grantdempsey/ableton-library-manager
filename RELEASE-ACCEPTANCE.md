@@ -1,6 +1,7 @@
 # Final release acceptance
 
-These are **unpublished test builds**, not signed/trusted public distributions.
+These are **unsigned release-candidate test builds**, not signed/trusted
+distributions.
 Do not disable Windows Application Control, Gatekeeper or other protection.
 If the operating system blocks an app, record the exact message and stop.
 Unsigned/ad-hoc signatures do not establish trusted publisher identity.

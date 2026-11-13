@@ -1,10 +1,35 @@
 # Current release handoff
 
-Updated November 12, 2026.
+Updated November 13, 2026.
 
-## Cross-platform candidate preparation
+## Published cross-platform release candidate
 
-The prepared candidate version is **v2.2.0-rc.9**. The tag-triggered
+**v2.2.0-rc.9 is published as an unsigned prerelease:**
+[downloads](https://github.com/grantdempsey/ableton-library-manager/releases/tag/v2.2.0-rc.9).
+The public release and all five uploaded assets were verified on November 13,
+2026: Windows, macOS arm64 and macOS x86_64 ZIPs, SHA256SUMS.txt, and the
+acceptance guide. The checksum file matches GitHub's published archive digests.
+
+- Tagged commit: `de81d17159ffa343efe0bcb82a95ad2ca9b2d9fd`.
+- [Release CI run 43373222115](https://github.com/grantdempsey/ableton-library-manager/actions/runs/43373222115)
+  passed every job, including Windows Python 3.11/3.14 source tests, both macOS
+  source/native/bundled/startup/archive jobs, Windows packaged/native/archive
+  checks and synthetic evidence upload, and the final publisher.
+- Publication completed at 05:45 UTC. The publisher verified original checksums
+  and matching clean commit/version/source identity before publishing.
+- Windows ZIP SHA-256:
+  `883875d1b0a0daa1146e836cdf2494eda9e19171b800546b4e26856aad344650`.
+- macOS arm64 ZIP SHA-256:
+  `f41b1a387e7210baf2d08c297ba853d644c79cafd7dde99aa519cee46161f5b0`.
+- macOS x86_64 ZIP SHA-256:
+  `b3e48bcbdb0df4a407c8ef9772e581dd70d4c91c4218e27f705c590f13e86c8e`.
+
+The release tag and packaged source remain unchanged; this handoff is a
+documentation-only follow-up. Earlier local packages described below do not
+contain the current menu and Serum changes. No personal presets were moved or
+copied during release preparation.
+
+The tag-triggered
 `release-candidate.yml` workflow calls Windows and both macOS architecture
 validation workflows before creating an unsigned GitHub prerelease. Windows
 tests Python 3.11 and 3.14; packaging uses Python 3.14.
@@ -12,11 +37,15 @@ tests Python 3.11 and 3.14; packaging uses Python 3.14.
 Publication requires all archives to identify the same clean tagged commit,
 version and source hash. Source files use LF checkout endings on every platform
 so byte-level build identity is comparable. Release notes and manual acceptance
-instructions accompany the candidate. CI validation remains pending until its
-run completes; the local build evidence below is not substituted for it.
+instructions accompany the candidate. The tagged CI run passed; historical
+local build evidence below is not substituted for it.
 
 Hands-on third-party acceptance, high-DPI/native interactions and trusted signing
 remain unverified and are explicitly disclosed rather than claimed passed.
+
+## Candidate preparation history
+
+The pending statuses below describe earlier attempts, not the published rc.9.
 The first rc.1 run was blocked by source test failures; nothing was published.
 The follow-up uses physical temporary directories on CI, fixes XO alias
 containment, and makes UI fixture assertions respect mapped widgets and actual
