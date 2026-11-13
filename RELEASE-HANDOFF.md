@@ -4,7 +4,7 @@ Updated November 12, 2026.
 
 ## Cross-platform candidate preparation
 
-The prepared candidate version is **v2.2.0-rc.5**. The tag-triggered
+The prepared candidate version is **v2.2.0-rc.6**. The tag-triggered
 `release-candidate.yml` workflow calls Windows and both macOS architecture
 validation workflows before creating an unsigned GitHub prerelease. Windows
 tests Python 3.11 and 3.14; packaging uses Python 3.14.
@@ -43,6 +43,14 @@ helper rather than the already-initialized destination constant. The rc.5
 fixture patches the actual entry default to a separate temporary output root,
 outside the library; production linked-path/overlap guards remain unchanged.
 The rc.4 tag is retained and publication stays gated on all platform jobs.
+The rc.4 Windows Python 3.14 run completed all source tests but exceeded the
+40-file collision fixture's arbitrary 10-second completion bound. The rc.6
+stress case allows 30 seconds without reducing any destination, byte, or
+source-preservation checks; smaller cases retain their original bound. Timed-out
+fixture workers are cancelled/joined before cleanup. The unchanged stress case
+passed with serialized 0.3-second-per-file latency in 12.98 seconds.
+Both rc.5 macOS source suites passed; arm64 native build also passed. Native
+package/bundled/download validation and the final rc.6 gates remain pending.
 
 ## Candidate scope
 

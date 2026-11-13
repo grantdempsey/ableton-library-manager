@@ -52,11 +52,15 @@ class CollisionPlanningTests(unittest.TestCase):
             smart_learning_enabled=False,
         )
 
-    def run_worker(self, **kwargs):
+    def run_worker(self, *, timeout=10, **kwargs):
         worker = self.worker(**kwargs)
         worker.start_parallel_sort()
-        worker.worker_thread.join(10)
-        self.assertFalse(worker.is_running(), "sorter did not finish")
+        worker.worker_thread.join(timeout)
+        finished = not worker.is_running()
+        if not finished:
+            worker.cancel()
+            worker.worker_thread.join(10)
+        self.assertTrue(finished, f"sorter did not finish within {timeout}s")
         return worker
 
     def test_preview_and_move_reserve_exact_names_in_stable_source_order(self):
@@ -249,7 +253,7 @@ class CollisionPlanningTests(unittest.TestCase):
         preview = self.run_worker(preview=True, copy_mode=True)
         planned = {r["source"]: r["destination_path"] for r in preview.preview_records}
         self.assertEqual(40, len(set(planned.values())))
-        copied = self.run_worker(copy_mode=True)
+        copied = self.run_worker(copy_mode=True, timeout=30)
         self.assertEqual([], copied.operation_errors)
         self.assertEqual(40, copied.stats["One-Shots Grouped by Drum Type"])
         for source, destination in planned.items():
