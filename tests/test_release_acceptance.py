@@ -405,7 +405,8 @@ class WindowsReleaseAcceptanceTests(unittest.TestCase):
                     if not release.wait(10):
                         raise TimeoutError("Fixture did not release first completed transfer")
         def cancel_when_ready():
-            if transferred.is_set() and cancel_button.cget("state") == "normal":
+            if (transferred.is_set() and cancel_button.winfo_ismapped()
+                    and cancel_button.cget("state") == "normal"):
                 self.click_button(cancel_button)
                 release.set()
             else:

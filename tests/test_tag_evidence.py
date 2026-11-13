@@ -140,7 +140,7 @@ class TagEvidenceWorkflowTests(unittest.TestCase):
             ableton_tags.prepare_edit([path], tag).commit()
         return path
 
-    def run_sorter(self, preview=True, copy_mode=True):
+    def run_sorter(self, preview=True, copy_mode=True, *, timeout=5):
         class Window:
             def after(self, _delay, callback):
                 callback()
@@ -150,8 +150,11 @@ class TagEvidenceWorkflowTests(unittest.TestCase):
             lambda *_args: completed.set(), copy_mode=copy_mode, preview_only=preview
         )
         sorter.start_parallel_sort()
-        self.assertTrue(completed.wait(5))
-        sorter.worker_thread.join(5)
+        finished = completed.wait(timeout)
+        if not finished:
+            sorter.cancel()
+        sorter.worker_thread.join(10)
+        self.assertTrue(finished, f"sorter did not complete within {timeout}s")
         self.assertFalse(sorter.worker_thread.is_alive())
         return sorter
 
@@ -627,7 +630,7 @@ class TagEvidenceWorkflowTests(unittest.TestCase):
         self.assertTrue(all(record["reason"] == "filename_rule" for record in preview.preview_records))
         self.assertTrue(all(record["tag_suggestion"]["status"] == "supports existing classification"
                             for record in preview.preview_records))
-        moved = self.run_sorter(preview=False, copy_mode=False)
+        moved = self.run_sorter(preview=False, copy_mode=False, timeout=30)
         self.assertEqual([], moved.operation_errors)
         for record in preview.preview_records:
             destination = os.path.join(record["destination"], record["filename"])

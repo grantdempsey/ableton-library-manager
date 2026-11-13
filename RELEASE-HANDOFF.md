@@ -4,7 +4,7 @@ Updated November 12, 2026.
 
 ## Cross-platform candidate preparation
 
-The prepared candidate version is **v2.2.0-rc.6**. The tag-triggered
+The prepared candidate version is **v2.2.0-rc.7**. The tag-triggered
 `release-candidate.yml` workflow calls Windows and both macOS architecture
 validation workflows before creating an unsigned GitHub prerelease. Windows
 tests Python 3.11 and 3.14; packaging uses Python 3.14.
@@ -51,6 +51,11 @@ fixture workers are cancelled/joined before cleanup. The unchanged stress case
 passed with serialized 0.3-second-per-file latency in 12.98 seconds.
 Both rc.5 macOS source suites passed; arm64 native build also passed. Native
 package/bundled/download validation and the final rc.6 gates remain pending.
+The follow-up rc.7 fixtures wait for Cancel to be both mapped and enabled before
+clicking, covering the intermittent source/bundled macOS timing failure. The
+20-file tagged Move/Undo stress case also receives a bounded 30-second transfer
+allowance after Windows exceeded its former five-second wait; all metadata,
+file-preservation, and undo assertions remain. Final publication is still pending.
 
 ## Candidate scope
 
