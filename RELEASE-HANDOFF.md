@@ -4,7 +4,7 @@ Updated November 12, 2026.
 
 ## Cross-platform candidate preparation
 
-The prepared candidate version is **v2.2.0-rc.8**. The tag-triggered
+The prepared candidate version is **v2.2.0-rc.9**. The tag-triggered
 `release-candidate.yml` workflow calls Windows and both macOS architecture
 validation workflows before creating an unsigned GitHub prerelease. Windows
 tests Python 3.11 and 3.14; packaging uses Python 3.14.
@@ -61,6 +61,12 @@ with only the separate 21-file learned-rule Move fixture exceeding ten seconds.
 The rc.8 fixture uses the same bounded 30-second stress allowance, joins the
 worker before restoring shared settings, and cleans its temporary profile.
 No production transfer behavior or file-count assertion is weakened.
+The rc.8 run passed all Windows 3.11/3.14 source tests, both macOS source/native/
+bundled/startup/archive gates, and Windows build/bundled/native/archive checks.
+Publication was blocked only when upload-artifact excluded the hidden
+`.ci-evidence` directory. The rc.9 workflow explicitly includes hidden files for
+that narrowly scoped synthetic evidence upload; missing evidence still fails.
+All release/archive identity and checksum gates remain required.
 
 ## Candidate scope
 
