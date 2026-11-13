@@ -29,6 +29,9 @@ jobs:
       - name: Run source tests with an isolated profile
         shell: pwsh
         run: |
+          $env:TEMP = (python -c "import os, tempfile; print(os.path.realpath(tempfile.gettempdir()))").Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:TMP = $env:TEMP
           $homeDir = Join-Path $env:GITHUB_WORKSPACE '.ci-profile'
           New-Item -ItemType Directory -Force (Join-Path $homeDir 'Documents\Ableton\User Library') | Out-Null
           $env:USERPROFILE = $homeDir
@@ -53,6 +56,10 @@ jobs:
       - name: Install build tools and build
         shell: pwsh
         run: |
+          $env:TEMP = (python -c "import os, tempfile; print(os.path.realpath(tempfile.gettempdir()))").Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:TMP = $env:TEMP
+          "TEMP=$env:TEMP", "TMP=$env:TMP" | Add-Content $env:GITHUB_ENV
           python -m pip install -r requirements-build.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python build_app.py

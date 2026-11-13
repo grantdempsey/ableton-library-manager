@@ -370,9 +370,12 @@ class ReleaseUiTests(unittest.TestCase):
         self.root.geometry("1020x700")
         self.root.update()
         initial_height = panel.console_log.winfo_height()
+        initial_window_height = self.root.winfo_height()
         self.root.geometry("1020x900")
         self.root.update()
-        self.assertGreaterEqual(panel.console_log.winfo_height(), initial_height + 190)
+        window_growth = self.root.winfo_height() - initial_window_height
+        self.assertGreater(window_growth, 0)
+        self.assertGreaterEqual(panel.console_log.winfo_height(), initial_height + window_growth - 10)
         expanded_height = panel.console_log.winfo_height()
         panel.toggle_repair_options()
         self.root.update()

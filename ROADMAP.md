@@ -43,7 +43,7 @@ hands-on Live/Serum/XO and current native macOS acceptance remain pending.
 
 ### November 12 cross-platform release candidate preparation
 
-- Feature freeze at v2.2.0-rc.1; Windows x64 and both macOS architectures.
+- Feature freeze at v2.2.0-rc.2; Windows x64 and both macOS architectures.
 - Reuse platform validation workflows from a tag-triggered candidate workflow.
   Publish an unsigned prerelease only after source/bundled/native/archive checks
   succeed on all platforms and all archives match the clean tagged source.

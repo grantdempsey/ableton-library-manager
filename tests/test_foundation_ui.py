@@ -170,12 +170,18 @@ class FoundationUiTests(unittest.TestCase):
             with self.subTest(scaling=scaling):
                 root.tk.call("tk", "scaling", scaling)
                 measurements = []
+                deadline = time.monotonic() + 3
 
                 def inspect_dialog():
                     dialog = next(widget for widget in root.winfo_children()
                                   if isinstance(widget, tk.Toplevel))
                     row = dialog.winfo_children()[-1]
                     buttons = row.winfo_children()
+                    dialog.update_idletasks()
+                    if (not dialog.winfo_ismapped() or any(button.winfo_width() <= 1 for button in buttons)
+                            ) and time.monotonic() < deadline:
+                        root.after(20, inspect_dialog)
+                        return
                     for button in buttons:
                         text_width = tkfont.Font(font=button.cget("font")).measure(button.cget("text"))
                         padding = button.winfo_pixels(button.cget("padx"))

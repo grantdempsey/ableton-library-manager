@@ -18,6 +18,18 @@ class XoFilterTests(unittest.TestCase):
             handle.write(data)
         return path
 
+    def test_containment_compares_resolved_aliases_on_both_sides(self):
+        source = self._make("Samples/kick.wav")
+        alias = os.path.join(self.root, "alias", "kick.wav")
+        original = os.path.realpath
+
+        def resolve(path):
+            return source if os.fspath(path) == alias else original(path)
+
+        with mock.patch.object(xo_filter.os.path, "realpath", side_effect=resolve):
+            self.assertTrue(xo_filter._inside(alias, self.root))
+            self.assertFalse(xo_filter._inside(alias, os.path.join(self.root, "outside")))
+
     def test_rebuild_replaces_categories_and_keeps_library_bytes(self):
         source = self._make("Samples/kick.wav", b"original")
         with tempfile.TemporaryDirectory() as parent:

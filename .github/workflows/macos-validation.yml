@@ -28,6 +28,7 @@ jobs:
           python-version: "3.14"
       - name: Record native runtime
         run: |
+          echo "TMPDIR=$(python -c 'import os, tempfile; print(os.path.realpath(tempfile.gettempdir()))')" >> "$GITHUB_ENV"
           uname -m
           sw_vers
           bash -n Launch-Mac.command

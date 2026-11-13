@@ -4,7 +4,7 @@ Updated November 12, 2026.
 
 ## Cross-platform candidate preparation
 
-The frozen candidate version is **v2.2.0-rc.1**. The tag-triggered
+The frozen candidate version is **v2.2.0-rc.2**. The tag-triggered
 `release-candidate.yml` workflow calls Windows and both macOS architecture
 validation workflows before creating an unsigned GitHub prerelease. Windows
 tests Python 3.11 and 3.14; packaging uses Python 3.14.
@@ -17,6 +17,11 @@ run completes; the local build evidence below is not substituted for it.
 
 Hands-on third-party acceptance, high-DPI/native interactions and trusted signing
 remain unverified and are explicitly disclosed rather than claimed passed.
+The first rc.1 run was blocked by source test failures; nothing was published.
+The follow-up uses physical temporary directories on CI, fixes XO alias
+containment, and makes UI fixture assertions respect mapped widgets and actual
+window growth. Linked-path refusal remains unchanged. The failed tag is retained
+rather than rewritten.
 
 ## Candidate scope
 

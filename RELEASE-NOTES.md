@@ -1,4 +1,4 @@
-# v2.2.0-rc.1 - Windows and macOS release candidate
+# v2.2.0-rc.2 - Windows and macOS release candidate
 
 This is an **unsigned prerelease for testing**, not a signed/notarized stable
 distribution. Keep normal OS protections enabled. If the app is blocked, record
@@ -21,6 +21,7 @@ the message; do not disable protections or remove quarantine.
   publication, and safe per-job hash reuse. No elapsed-time display.
 - Confirmation buttons fit their labels, including the XO adoption action.
 - Persistent per-user settings/index and build version/source identity.
+- Correct XO containment checks when Windows supplies short-name path aliases.
 
 ## Downloads and checks
 

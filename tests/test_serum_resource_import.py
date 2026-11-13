@@ -263,7 +263,8 @@ class SerumResourceImportTests(unittest.TestCase):
         except OSError as error:
             self.skipTest(f"Creating a symlink is unavailable: {error}")
         worker = self.run_import()
-        self.assertIn("Linked resource paths", worker.operation_errors[0]["error"])
+        self.assertIn("Linked paths are not supported", worker.operation_errors[0]["error"])
+        self.assertIn(str(link), worker.operation_errors[0]["error"])
         self.assertFalse(self.library.exists())
 
     def test_import_ui_auto_selects_resource_copy_worker(self):

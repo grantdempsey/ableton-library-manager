@@ -128,6 +128,8 @@ def _raise_walk_error(error):
 
 def _inside(path, root):
     try:
+        path = os.path.normcase(os.path.realpath(path))
+        root = os.path.normcase(os.path.realpath(root))
         common = os.path.commonpath((path, root))
         return os.path.normcase(common) == os.path.normcase(root)
     except ValueError:
@@ -598,8 +600,9 @@ def review_output_destination(dest_root, library_root, *, digest_cache=None, sho
     _unlinked_output_path(destination)
     if _inside(destination, library) or _inside(library, destination):
         raise ValueError("The XO folder and User Library must not overlap.")
-    home = Path.home()
-    if destination == Path(destination.anchor) or destination in {
+    canonical_destination = Path(os.path.realpath(destination))
+    home = Path(os.path.realpath(Path.home()))
+    if canonical_destination == Path(canonical_destination.anchor) or canonical_destination in {
         home, *(home / name for name in ("Desktop", "Documents", "Downloads", "Music", "Pictures", "Videos"))
     }:
         raise ValueError("Choose a dedicated XO output subfolder, not a home or standard user folder.")

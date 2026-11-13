@@ -135,7 +135,7 @@ and comprehensive job/index crash reconciliation remain roadmap work.
 
 ## Distribution status
 
-The next candidate is **v2.2.0-rc.1**, covering Windows x64, macOS Apple Silicon
+The next candidate is **v2.2.0-rc.2**, covering Windows x64, macOS Apple Silicon
 and macOS Intel. See [candidate release notes](RELEASE-NOTES.md) for changes and
 known limitations. The tagged release workflow publishes an explicitly unsigned
 prerelease only after all three platform builds, source/bundled tests, native
