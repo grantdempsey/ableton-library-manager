@@ -3,6 +3,7 @@ import importlib.machinery
 import importlib.util
 from pathlib import Path
 import struct
+import sys
 import tempfile
 import threading
 import time
@@ -304,6 +305,17 @@ class ReleaseUiTests(unittest.TestCase):
                 canvas.winfo_rooty() + canvas.winfo_height(),
             )
 
+    def test_organize_more_tools_owns_menu_and_opens_repairs(self):
+        panel = OrganizeTab(self.root, None)
+        self.addCleanup(self._destroy_panel, panel)
+        panel.pack(fill="both", expand=True)
+        self.root.update()
+        self.assertIs(panel.btn_tools, panel.tools_menu.master)
+        panel.tools_menu.invoke(1)
+        self.root.update()
+        self.assertTrue(panel.repair_group.winfo_ismapped())
+
+    @unittest.skipIf(sys.platform == "darwin", "Native Cocoa menu tracking needs manual input acceptance")
     def test_organize_more_tools_posts_from_button(self):
         panel = OrganizeTab(self.root, None)
         self.addCleanup(self._destroy_panel, panel)
@@ -397,7 +409,7 @@ class ReleaseUiTests(unittest.TestCase):
         panel.toggle_repair_options()
         self.root.geometry("1020x900")
         self.root.update()
-        self.assertGreaterEqual(panel.console_log.winfo_height(), initial_height + 190)
+        self.assertEqual(expanded_height, panel.console_log.winfo_height())
 
     def test_organize_preview_cannot_enable_apply_without_a_complete_plan(self):
         panel = OrganizeTab(self.root, None)

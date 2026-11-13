@@ -1,4 +1,4 @@
-# v2.2.0-rc.2 - Windows and macOS release candidate
+# v2.2.0-rc.3 - Windows and macOS release candidate
 
 This is an **unsigned prerelease for testing**, not a signed/notarized stable
 distribution. Keep normal OS protections enabled. If the app is blocked, record
@@ -39,6 +39,9 @@ Before using valuable content, follow `RELEASE-ACCEPTANCE.md` with disposable
 libraries and keep verified backups. Hands-on Live tag round trips, Serum
 resource loading, XO indexing and high-DPI/native interaction acceptance remain
 unverified. Signing/notarization is not included in this candidate.
+Native Cocoa menu tracking is an explicit manual check: automated tests verify
+menu ownership and repair commands on macOS, but do not certify native posting.
+The Windows fixture exercises actual native menu posting.
 
 ## Known boundaries
 

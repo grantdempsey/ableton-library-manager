@@ -8,7 +8,7 @@ import re
 import subprocess
 import sys
 
-VERSION = "2.2.0-rc.2"
+VERSION = "2.2.0-rc.3"
 
 
 def source_paths(root):

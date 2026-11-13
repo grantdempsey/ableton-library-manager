@@ -4,7 +4,7 @@ Updated November 12, 2026.
 
 ## Cross-platform candidate preparation
 
-The frozen candidate version is **v2.2.0-rc.2**. The tag-triggered
+The frozen candidate version is **v2.2.0-rc.3**. The tag-triggered
 `release-candidate.yml` workflow calls Windows and both macOS architecture
 validation workflows before creating an unsigned GitHub prerelease. Windows
 tests Python 3.11 and 3.14; packaging uses Python 3.14.
@@ -22,6 +22,11 @@ The follow-up uses physical temporary directories on CI, fixes XO alias
 containment, and makes UI fixture assertions respect mapped widgets and actual
 window growth. Linked-path refusal remains unchanged. The failed tag is retained
 rather than rewritten.
+The rc.2 run cleared the path-related Windows failures but remained blocked by
+a second screen-height assertion and native Cocoa menu tracking. The rc.3
+fixture compares restored Activity size with its observed expanded size.
+Menu ownership/repair commands are tested on all platforms; native Cocoa posting
+is explicitly manual acceptance rather than a timer-driven automation claim.
 
 ## Candidate scope
 
