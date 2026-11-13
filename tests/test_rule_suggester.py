@@ -16,7 +16,9 @@ class _Window:
 
 class RuleSuggesterTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        fixture = tempfile.TemporaryDirectory()
+        self.addCleanup(fixture.cleanup)
+        self.tmp = fixture.name
         self._config = sorter_engine.CONFIG_FILE
         self._index = sorter_engine.ASSET_INDEX_FILE
         sorter_engine.CONFIG_FILE = os.path.join(self.tmp, "cfg.json")
@@ -177,7 +179,12 @@ class RuleSuggesterTests(unittest.TestCase):
             self.lib, self.lib, _Window(), lambda _m: None,
             lambda *_: done.set(), copy_mode=False)
         sorter.start_parallel_sort()
-        self.assertTrue(done.wait(10))
+        finished = done.wait(30)
+        if not finished:
+            sorter.cancel()
+        sorter.worker_thread.join(10)
+        self.assertTrue(finished, "tagged stress Move did not complete within 30s")
+        self.assertFalse(sorter.worker_thread.is_alive())
         percussion = os.path.join(self.lib, "Samples", "One-Shots", "Percussion")
         self.assertEqual(20, len([
             name for name in os.listdir(percussion)

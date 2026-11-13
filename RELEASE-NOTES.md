@@ -1,4 +1,4 @@
-# v2.2.0-rc.7 - Windows and macOS release candidate
+# v2.2.0-rc.8 - Windows and macOS release candidate
 
 This is an **unsigned prerelease for testing**, not a signed/notarized stable
 distribution. Keep normal OS protections enabled. If the app is blocked, record

@@ -4,7 +4,7 @@ Updated November 12, 2026.
 
 ## Cross-platform candidate preparation
 
-The prepared candidate version is **v2.2.0-rc.7**. The tag-triggered
+The prepared candidate version is **v2.2.0-rc.8**. The tag-triggered
 `release-candidate.yml` workflow calls Windows and both macOS architecture
 validation workflows before creating an unsigned GitHub prerelease. Windows
 tests Python 3.11 and 3.14; packaging uses Python 3.14.
@@ -56,6 +56,11 @@ clicking, covering the intermittent source/bundled macOS timing failure. The
 20-file tagged Move/Undo stress case also receives a bounded 30-second transfer
 allowance after Windows exceeded its former five-second wait; all metadata,
 file-preservation, and undo assertions remain. Final publication is still pending.
+The rc.7 Windows 3.11 source job passed again. Windows 3.14 completed 660 cases
+with only the separate 21-file learned-rule Move fixture exceeding ten seconds.
+The rc.8 fixture uses the same bounded 30-second stress allowance, joins the
+worker before restoring shared settings, and cleans its temporary profile.
+No production transfer behavior or file-count assertion is weakened.
 
 ## Candidate scope
 
